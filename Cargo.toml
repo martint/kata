@@ -1,0 +1,49 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/kata-core",
+    "crates/kata-jj",
+    "crates/kata-mcp",
+    "crates/kata-server",
+    "crates/kata-service",
+    "crates/kata-storage",
+]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.95"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+async-trait = "0.1"
+axum = { version = "0.8", features = ["macros", "json", "tokio"] }
+futures = "0.3"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
+clap = { version = "4", features = ["derive", "env"] }
+hex = "0.4"
+http-body-util = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+similar = "2"
+thiserror = "2"
+tempfile = "3"
+toml = "0.9"
+tokio = { version = "1", features = ["macros", "process", "rt-multi-thread", "fs", "io-util", "signal", "sync"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rmcp = { version = "0.8", features = ["server", "transport-streamable-http-server", "macros", "schemars"] }
+rust-embed = { version = "8", features = ["debug-embed", "interpolate-folder-path"] }
+mime_guess = "2"
+schemars = "1"
+uuid = { version = "1", features = ["v7", "serde"] }
+
+kata-core = { path = "crates/kata-core" }
+kata-jj = { path = "crates/kata-jj" }
+kata-mcp = { path = "crates/kata-mcp" }
+kata-server = { path = "crates/kata-server" }
+kata-service = { path = "crates/kata-service" }
+kata-storage = { path = "crates/kata-storage" }

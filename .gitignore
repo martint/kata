@@ -1,0 +1,9 @@
+/target
+
+# Node tooling that some setups place at the workspace root rather than
+# inside `web/`. The per-directory `web/.gitignore` covers the same names
+# scoped to `web/`, but pnpm may emit a `.pnpm-store` at the repo root
+# when no store-dir is configured, so we also ignore it here.
+node_modules/
+.pnpm-store/
+dist/

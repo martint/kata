@@ -1,0 +1,369 @@
+:root {
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.45;
+  --app-header-h: 48px;
+
+  /* Light palette (GitHub-ish) */
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --bg-panel: #f6f8fa;
+  --bg-elevated: #eef0f3;
+  --border: #d0d7de;
+  --border-muted: #eef0f3;
+  --text: #1f2328;
+  --text-muted: #57606a;
+  --text-faint: #8c959f;
+  --link: #0969da;
+  --link-bg: #ddf4ff;
+  --add-bg: #e6ffec;
+  --add-bg-strong: #ccffd8;
+  --add-text: #1a7f37;
+  --remove-bg: #ffebe9;
+  --remove-bg-strong: #ffd7d5;
+  --remove-text: #82071e;
+  --warn-bg: #fff1cf;
+  --warn-text: #9a6700;
+  --attention-bg: #fff8c5;
+  --attention-border: #d4a72c;
+  --attention-text: #9a6700;
+  --error-bg: #ffebe9;
+  --error-border: #ffaba8;
+  --error-text: #82071e;
+  --success-bg: #dafbe1;
+  --success-text: #1a7f37;
+  --selection-tint: rgba(9, 105, 218, 0.12);
+  --selection-rule: #0969da;
+  /* Text color drawn on top of saturated accent backgrounds (primary
+   * buttons, active tabs, hovered + buttons). Same in both palettes
+   * because the underlying accent backgrounds keep enough contrast. */
+  --on-accent: #ffffff;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d1117;
+    --bg-panel: #161b22;
+    --bg-elevated: #21262d;
+    --border: #30363d;
+    --border-muted: #21262d;
+    --text: #e6edf3;
+    --text-muted: #7d8590;
+    --text-faint: #6e7681;
+    --link: #58a6ff;
+    --link-bg: rgba(56, 139, 253, 0.15);
+    --add-bg: rgba(46, 160, 67, 0.18);
+    /* Solid pre-mix of rgb(46,160,67) at 35% over --bg (#0d1117). The
+     * gutter `.ln` cells are `position: sticky` and need an opaque
+     * background; rgba lets the scrolling diff text show through. */
+    --add-bg-strong: #1a4326;
+    --add-text: #56d364;
+    --remove-bg: rgba(248, 81, 73, 0.18);
+    /* Solid pre-mix of rgb(248,81,73) at 35% over --bg. Same reason. */
+    --remove-bg-strong: #5f2728;
+    --remove-text: #f85149;
+    --warn-bg: rgba(187, 128, 9, 0.18);
+    --warn-text: #d29922;
+    --attention-bg: rgba(187, 128, 9, 0.18);
+    --attention-border: #bb8009;
+    --attention-text: #d29922;
+    --error-bg: rgba(248, 81, 73, 0.18);
+    --error-border: rgba(248, 81, 73, 0.35);
+    --error-text: #f85149;
+    --success-bg: rgba(46, 160, 67, 0.18);
+    --success-text: #56d364;
+    --selection-tint: rgba(56, 139, 253, 0.25);
+    --selection-rule: #58a6ff;
+  }
+}
+
+body {
+  margin: 0;
+  color: var(--text);
+  background: var(--bg);
+}
+
+main {
+  max-width: 920px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+main.wide {
+  max-width: none;
+  margin: 0;
+  padding: 16px 24px;
+}
+
+header.app {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 24px;
+  height: var(--app-header-h);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-panel);
+  position: sticky;
+  top: 0;
+  z-index: 30;
+}
+
+header.app h1 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+header.app .author {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+header.app .draft-count {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+header.app .draft-count strong {
+  color: var(--attention-text);
+}
+
+header.app button {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+.spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border);
+  border-top-color: var(--link);
+  border-radius: 50%;
+  display: inline-block;
+  animation: spin 0.8s linear infinite;
+}
+
+/* Shown by App.svelte when a permalink (/r/<repo>/<id>) is opened in a
+ * fresh tab — keeps the review-list from flashing before the review
+ * finishes loading. */
+.loading-permalink {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 48px auto;
+  padding: 16px 20px;
+  max-width: 480px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.loading-permalink code {
+  background: var(--bg-elevated);
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 12px;
+  color: var(--text);
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+h2 {
+  font-size: 16px;
+  margin: 24px 0 8px;
+}
+
+h3 {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  margin: 24px 0 8px;
+}
+
+.muted {
+  color: var(--text-muted);
+}
+
+.error {
+  background: var(--error-bg);
+  border: 1px solid var(--error-border);
+  color: var(--error-text);
+  padding: 8px 12px;
+  border-radius: 6px;
+  margin: 12px 0;
+}
+
+button {
+  font: inherit;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 12px;
+  cursor: pointer;
+  color: var(--text);
+}
+
+button:hover {
+  background: var(--bg-elevated);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+button.primary {
+  background: var(--success-text);
+  border-color: var(--success-text);
+  color: var(--on-accent);
+}
+
+button.primary:hover {
+  filter: brightness(1.08);
+}
+
+select,
+input[type='text'] {
+  font: inherit;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.review-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.review-list li + li {
+  border-top: 1px solid var(--border);
+}
+
+.review-list button.row {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 12px 16px;
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  /* Without min-width:0 the children below would push the row past the
+   * column width when a bookmark name (or revset) is long. */
+  min-width: 0;
+}
+
+.review-list button.row:hover {
+  background: var(--bg-panel);
+}
+
+.review-list .row > strong {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.review-list .meta {
+  color: var(--text-muted);
+  font-size: 12px;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.create-form {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+}
+
+.files {
+  list-style: none;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.files li {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  padding: 8px 12px;
+}
+
+.files li + li {
+  border-top: 1px solid var(--border-muted);
+}
+
+.status {
+  display: inline-block;
+  width: 20px;
+  text-align: center;
+  font-weight: 600;
+  font-size: 11px;
+  border-radius: 3px;
+  padding: 1px 0;
+}
+
+.status-added {
+  background: var(--success-bg);
+  color: var(--success-text);
+}
+
+.status-deleted {
+  background: var(--error-bg);
+  color: var(--error-text);
+}
+
+.status-modified {
+  background: var(--warn-bg);
+  color: var(--warn-text);
+}
+
+.status-renamed {
+  background: var(--link-bg);
+  color: var(--link);
+}
+
+.flag {
+  display: inline-block;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 9999px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.flag-must-do {
+  background: var(--error-bg);
+  color: var(--error-text);
+}
+
+.flag-suggestion {
+  background: var(--link-bg);
+  color: var(--link);
+}
+
+.flag-other {
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+}

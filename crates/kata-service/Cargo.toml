@@ -1,0 +1,20 @@
+[package]
+name = "kata-service"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait = { workspace = true }
+chrono = { workspace = true }
+kata-core = { workspace = true }
+kata-jj = { workspace = true }
+kata-storage = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[features]
+default = []

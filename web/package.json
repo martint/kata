@@ -1,0 +1,30 @@
+{
+  "name": "kata-web",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "bun --bun vite",
+    "build": "bun --bun vite build",
+    "preview": "bun --bun vite preview",
+    "check": "bun --bun svelte-check --tsconfig ./tsconfig.json",
+    "test": "bun --bun vitest run",
+    "test:watch": "bun --bun vitest"
+  },
+  "packageManager": "pnpm@11.1.0",
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^5.0.3",
+    "@tsconfig/svelte": "^5.0.4",
+    "jsdom": "^29.1.1",
+    "svelte": "^5.16.0",
+    "svelte-check": "^4.1.1",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.7",
+    "vitest": "^4.1.5"
+  },
+  "dependencies": {
+    "dompurify": "^3.4.2",
+    "marked": "^18.0.3",
+    "shiki": "^4.0.2"
+  }
+}

@@ -1,0 +1,561 @@
+//! Build a [`Diff`] by parsing jj's `--git`-format unified diff. One
+//! subprocess per review beats spawning `jj file show` twice per changed
+//! file, which is the difference between ~150 jj invocations and 1.
+
+use std::time::Instant;
+
+use kata_core::{
+    CommitId, Diff, FileChange, FileStatus, Hunk, HunkLine, LineOrigin, LineRange,
+};
+
+use crate::backend::JjBackend;
+use crate::error::{Error, Result};
+
+/// Lines of context kept on each side of every hunk.
+const CONTEXT_LINES: usize = 3;
+
+pub async fn build_diff<B: JjBackend + ?Sized>(
+    backend: &B,
+    base: &CommitId,
+    tip: &CommitId,
+) -> Result<Diff> {
+    let t = Instant::now();
+    let bytes = backend.git_diff(base, tip, CONTEXT_LINES).await?;
+    tracing::debug!(
+        elapsed_ms = t.elapsed().as_millis() as u64,
+        bytes = bytes.len(),
+        "build_diff: jj git_diff",
+    );
+
+    let t = Instant::now();
+    let files = parse_git_diff(&bytes)?;
+    tracing::debug!(
+        elapsed_ms = t.elapsed().as_millis() as u64,
+        files = files.len(),
+        "build_diff: parse",
+    );
+
+    Ok(Diff {
+        base: base.clone(),
+        tip: tip.clone(),
+        files,
+    })
+}
+
+/// State carried while parsing one file's section of the git-diff output.
+#[derive(Default)]
+struct PartialFile {
+    /// `Some` once we've seen any path indication, regardless of source.
+    a_path: Option<String>,
+    b_path: Option<String>,
+    rename_from: Option<String>,
+    rename_to: Option<String>,
+    saw_new_file: bool,
+    saw_deleted_file: bool,
+    binary: bool,
+    hunks: Vec<Hunk>,
+    /// Non-`None` once we're inside `@@ … @@` and haven't moved on yet.
+    cur: Option<PartialHunk>,
+}
+
+struct PartialHunk {
+    base_start: u32,
+    tip_start: u32,
+    base_cursor: u32,
+    tip_cursor: u32,
+    base_end: u32,
+    tip_end: u32,
+    saw_base: bool,
+    saw_tip: bool,
+    lines: Vec<HunkLine>,
+}
+
+impl PartialHunk {
+    fn new(base_start: u32, base_count: u32, tip_start: u32, tip_count: u32) -> Self {
+        Self {
+            base_start,
+            tip_start,
+            // Empty range (count == 0) means "before line `start`"; cursors
+            // are still 1-based for the first real line on each side.
+            base_cursor: if base_count == 0 { base_start + 1 } else { base_start },
+            tip_cursor: if tip_count == 0 { tip_start + 1 } else { tip_start },
+            base_end: 0,
+            tip_end: 0,
+            saw_base: false,
+            saw_tip: false,
+            lines: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, origin: LineOrigin, content: String) {
+        let (base_line, tip_line) = match origin {
+            LineOrigin::Context => {
+                let b = self.base_cursor;
+                let t = self.tip_cursor;
+                self.base_cursor += 1;
+                self.tip_cursor += 1;
+                self.base_end = b;
+                self.tip_end = t;
+                self.saw_base = true;
+                self.saw_tip = true;
+                (Some(b), Some(t))
+            }
+            LineOrigin::Added => {
+                let t = self.tip_cursor;
+                self.tip_cursor += 1;
+                self.tip_end = t;
+                self.saw_tip = true;
+                (None, Some(t))
+            }
+            LineOrigin::Removed => {
+                let b = self.base_cursor;
+                self.base_cursor += 1;
+                self.base_end = b;
+                self.saw_base = true;
+                (Some(b), None)
+            }
+        };
+        self.lines.push(HunkLine {
+            origin,
+            base_line,
+            tip_line,
+            content,
+        });
+    }
+
+    fn into_hunk(self) -> Hunk {
+        let base_range = if self.saw_base {
+            Some(LineRange {
+                start: self.base_start,
+                end: self.base_end,
+            })
+        } else {
+            None
+        };
+        let tip_range = if self.saw_tip {
+            Some(LineRange {
+                start: self.tip_start,
+                end: self.tip_end,
+            })
+        } else {
+            None
+        };
+        Hunk {
+            base_range,
+            tip_range,
+            lines: self.lines,
+        }
+    }
+}
+
+impl PartialFile {
+    fn commit_hunk(&mut self) {
+        if let Some(h) = self.cur.take() {
+            self.hunks.push(h.into_hunk());
+        }
+    }
+
+    fn finalize(mut self) -> Result<FileChange> {
+        self.commit_hunk();
+
+        // Determine status + paths from whatever signals jj gave us. We
+        // prefer the `rename from/to` headers when present; fall back to
+        // the `+++ /dev/null` / `--- /dev/null` markers, then to the
+        // `new file` / `deleted file` lines.
+        let (path, status) = if let (Some(from), Some(to)) =
+            (self.rename_from.clone(), self.rename_to.clone())
+        {
+            (to, FileStatus::Renamed { old_path: from })
+        } else if self.saw_new_file || self.a_path.as_deref() == Some("/dev/null") {
+            let path = self
+                .b_path
+                .clone()
+                .ok_or_else(|| Error::Parse("added file with no +++ path".into()))?;
+            (path, FileStatus::Added)
+        } else if self.saw_deleted_file || self.b_path.as_deref() == Some("/dev/null") {
+            let path = self
+                .a_path
+                .clone()
+                .ok_or_else(|| Error::Parse("deleted file with no --- path".into()))?;
+            (path, FileStatus::Deleted)
+        } else {
+            let path = self
+                .b_path
+                .clone()
+                .or_else(|| self.a_path.clone())
+                .ok_or_else(|| Error::Parse("file section with no path".into()))?;
+            (path, FileStatus::Modified)
+        };
+
+        let hunks = if self.binary { None } else { Some(self.hunks) };
+        Ok(FileChange {
+            path,
+            status,
+            hunks,
+            binary: self.binary,
+        })
+    }
+}
+
+/// Parse the output of `jj diff --git` into structured per-file changes.
+///
+/// The parser walks the output line-by-line as a small state machine.
+/// `diff --git` lines split files; `--- ` / `+++ ` declare path & status;
+/// `@@ ` opens a hunk; subsequent `+`/`-`/space-prefixed lines feed it.
+fn parse_git_diff(bytes: &[u8]) -> Result<Vec<FileChange>> {
+    let text = std::str::from_utf8(bytes)
+        .map_err(|e| Error::Parse(format!("git diff not utf-8: {e}")))?;
+    let mut files: Vec<FileChange> = Vec::new();
+    let mut cur: Option<PartialFile> = None;
+
+    for raw in text.split_inclusive('\n') {
+        let line = raw.strip_suffix('\n').unwrap_or(raw);
+
+        if let Some(rest) = line.strip_prefix("diff --git ") {
+            if let Some(p) = cur.take() {
+                files.push(p.finalize()?);
+            }
+            let mut next = PartialFile::default();
+            // Seed paths from the `diff --git a/X b/Y` line. `--- `/`+++ `
+            // override these later if jj emits them (binary diffs don't).
+            if let Some((a, b)) = parse_diff_git_paths(rest) {
+                next.a_path = Some(a);
+                next.b_path = Some(b);
+            }
+            cur = Some(next);
+            continue;
+        }
+
+        let Some(p) = cur.as_mut() else { continue };
+
+        // Inside a hunk body, only the marker character dictates routing.
+        if p.cur.is_some() && matches_hunk_body(line) {
+            // jj follows git's convention of `\ No newline at end of file`
+            // on its own line — skip; it doesn't add a logical line.
+            if let Some(rest) = line.strip_prefix('\\') {
+                let _ = rest;
+                continue;
+            }
+            let marker = line.as_bytes().first().copied();
+            let origin = match marker {
+                Some(b' ') => LineOrigin::Context,
+                Some(b'+') => LineOrigin::Added,
+                Some(b'-') => LineOrigin::Removed,
+                _ => continue,
+            };
+            // `raw[1..]` keeps the trailing newline if present, matching
+            // the convention the UI expects (it strips `\n` at render).
+            let content = raw.get(1..).unwrap_or("").to_string();
+            if let Some(h) = p.cur.as_mut() {
+                h.push(origin, content);
+            }
+            continue;
+        }
+
+        if line.starts_with("@@ ") {
+            p.commit_hunk();
+            let (bs, bc, ts, tc) = parse_hunk_header(line)?;
+            p.cur = Some(PartialHunk::new(bs, bc, ts, tc));
+            continue;
+        }
+
+        if let Some(rest) = line.strip_prefix("--- ") {
+            p.a_path = Some(strip_prefix(rest, "a/").to_string());
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("+++ ") {
+            p.b_path = Some(strip_prefix(rest, "b/").to_string());
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("rename from ") {
+            p.rename_from = Some(rest.to_string());
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("rename to ") {
+            p.rename_to = Some(rest.to_string());
+            continue;
+        }
+        if line.starts_with("new file mode ") {
+            p.saw_new_file = true;
+            continue;
+        }
+        if line.starts_with("deleted file mode ") {
+            p.saw_deleted_file = true;
+            continue;
+        }
+        if line.starts_with("Binary files ") {
+            p.binary = true;
+            continue;
+        }
+        // `index`, `similarity`, `copy from/to`, mode changes, etc.
+        // Everything else in the header we don't care about.
+    }
+
+    if let Some(p) = cur.take() {
+        files.push(p.finalize()?);
+    }
+
+    Ok(files)
+}
+
+/// True when `line` looks like a hunk-body line (` `, `+`, `-`, `\`). We
+/// need this discriminator because some header lines like `--- a/foo` and
+/// `+++ b/foo` would otherwise be mistaken for `-` / `+` content.
+fn matches_hunk_body(line: &str) -> bool {
+    match line.as_bytes().first() {
+        Some(b' ') | Some(b'\\') => true,
+        Some(b'+') => !line.starts_with("+++ "),
+        Some(b'-') => !line.starts_with("--- "),
+        _ => false,
+    }
+}
+
+fn strip_prefix<'a>(s: &'a str, prefix: &str) -> &'a str {
+    s.strip_prefix(prefix).unwrap_or(s)
+}
+
+/// Parse the path pair from a `diff --git a/X b/Y` line's tail (after the
+/// `diff --git ` prefix). Returns `None` for shapes we don't recognise
+/// (e.g. quoted paths, which jj only emits for unusual filenames — we'd
+/// rather fall through to the `--- `/`+++ ` lines for those).
+fn parse_diff_git_paths(rest: &str) -> Option<(String, String)> {
+    if rest.starts_with('"') {
+        return None;
+    }
+    let (a, b) = rest.split_once(' ')?;
+    let a = a.strip_prefix("a/")?;
+    let b = b.strip_prefix("b/")?;
+    Some((a.to_string(), b.to_string()))
+}
+
+/// Parse `@@ -ba[,bn] +ta[,tn] @@ [optional]` into `(ba, bn, ta, tn)`.
+/// Missing counts default to 1, matching git's convention.
+fn parse_hunk_header(line: &str) -> Result<(u32, u32, u32, u32)> {
+    let rest = line
+        .strip_prefix("@@ ")
+        .ok_or_else(|| Error::Parse(format!("hunk header missing @@: {line:?}")))?;
+    let end = rest
+        .find(" @@")
+        .ok_or_else(|| Error::Parse(format!("hunk header missing closing @@: {line:?}")))?;
+    let spec = &rest[..end];
+    let mut parts = spec.split_whitespace();
+    let base = parts
+        .next()
+        .ok_or_else(|| Error::Parse(format!("hunk header missing base spec: {line:?}")))?;
+    let tip = parts
+        .next()
+        .ok_or_else(|| Error::Parse(format!("hunk header missing tip spec: {line:?}")))?;
+    let base = base
+        .strip_prefix('-')
+        .ok_or_else(|| Error::Parse(format!("hunk header base missing `-`: {line:?}")))?;
+    let tip = tip
+        .strip_prefix('+')
+        .ok_or_else(|| Error::Parse(format!("hunk header tip missing `+`: {line:?}")))?;
+    let (bs, bc) = parse_range(base, line)?;
+    let (ts, tc) = parse_range(tip, line)?;
+    Ok((bs, bc, ts, tc))
+}
+
+fn parse_range(spec: &str, line: &str) -> Result<(u32, u32)> {
+    let (start, count) = match spec.split_once(',') {
+        Some((s, c)) => (s, c),
+        None => (spec, "1"),
+    };
+    let start: u32 = start
+        .parse()
+        .map_err(|_| Error::Parse(format!("hunk start not a u32: {line:?}")))?;
+    let count: u32 = count
+        .parse()
+        .map_err(|_| Error::Parse(format!("hunk count not a u32: {line:?}")))?;
+    Ok((start, count))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lines(s: &str) -> Vec<(LineOrigin, Option<u32>, Option<u32>, String)> {
+        let files = parse_git_diff(s.as_bytes()).unwrap();
+        let mut out = Vec::new();
+        for f in &files {
+            for h in f.hunks.as_ref().unwrap() {
+                for l in &h.lines {
+                    out.push((l.origin, l.base_line, l.tip_line, l.content.clone()));
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn parses_modified_file_with_one_hunk() {
+        let input = "\
+diff --git a/foo.txt b/foo.txt
+--- a/foo.txt
++++ b/foo.txt
+@@ -1,3 +1,3 @@
+ one
+-two
++TWO
+ three
+";
+        let files = parse_git_diff(input.as_bytes()).unwrap();
+        assert_eq!(files.len(), 1);
+        let f = &files[0];
+        assert_eq!(f.path, "foo.txt");
+        assert!(matches!(f.status, FileStatus::Modified));
+        let h = &f.hunks.as_ref().unwrap()[0];
+        assert_eq!(h.base_range, Some(LineRange { start: 1, end: 3 }));
+        assert_eq!(h.tip_range, Some(LineRange { start: 1, end: 3 }));
+        assert_eq!(h.lines.len(), 4);
+        assert_eq!(h.lines[1].origin, LineOrigin::Removed);
+        assert_eq!(h.lines[1].base_line, Some(2));
+        assert_eq!(h.lines[1].tip_line, None);
+        assert_eq!(h.lines[2].origin, LineOrigin::Added);
+        assert_eq!(h.lines[2].base_line, None);
+        assert_eq!(h.lines[2].tip_line, Some(2));
+    }
+
+    #[test]
+    fn parses_added_file_via_dev_null() {
+        let input = "\
+diff --git a/new.txt b/new.txt
+new file mode 100644
+--- /dev/null
++++ b/new.txt
+@@ -0,0 +1,2 @@
++hello
++world
+";
+        let files = parse_git_diff(input.as_bytes()).unwrap();
+        assert_eq!(files[0].path, "new.txt");
+        assert!(matches!(files[0].status, FileStatus::Added));
+        let h = &files[0].hunks.as_ref().unwrap()[0];
+        assert!(h.base_range.is_none());
+        assert_eq!(h.tip_range, Some(LineRange { start: 1, end: 2 }));
+    }
+
+    #[test]
+    fn parses_deleted_file() {
+        let input = "\
+diff --git a/gone.txt b/gone.txt
+deleted file mode 100644
+--- a/gone.txt
++++ /dev/null
+@@ -1,2 +0,0 @@
+-bye
+-bye
+";
+        let files = parse_git_diff(input.as_bytes()).unwrap();
+        assert!(matches!(files[0].status, FileStatus::Deleted));
+        let h = &files[0].hunks.as_ref().unwrap()[0];
+        assert_eq!(h.base_range, Some(LineRange { start: 1, end: 2 }));
+        assert!(h.tip_range.is_none());
+    }
+
+    #[test]
+    fn parses_rename_with_modifications() {
+        let input = "\
+diff --git a/old.txt b/new.txt
+rename from old.txt
+rename to new.txt
+--- a/old.txt
++++ b/new.txt
+@@ -1 +1 @@
+-old
++new
+";
+        let files = parse_git_diff(input.as_bytes()).unwrap();
+        assert_eq!(files[0].path, "new.txt");
+        match &files[0].status {
+            FileStatus::Renamed { old_path } => assert_eq!(old_path, "old.txt"),
+            other => panic!("expected renamed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_binary_file() {
+        let input = "\
+diff --git a/bin b/bin
+Binary files a/bin and b/bin differ
+";
+        let files = parse_git_diff(input.as_bytes()).unwrap();
+        assert!(files[0].binary);
+        assert!(files[0].hunks.is_none());
+    }
+
+    #[test]
+    fn parses_multiple_files() {
+        let input = "\
+diff --git a/a.txt b/a.txt
+--- a/a.txt
++++ b/a.txt
+@@ -1 +1 @@
+-a
++A
+diff --git a/b.txt b/b.txt
+--- a/b.txt
++++ b/b.txt
+@@ -1 +1 @@
+-b
++B
+";
+        let files = parse_git_diff(input.as_bytes()).unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].path, "a.txt");
+        assert_eq!(files[1].path, "b.txt");
+    }
+
+    #[test]
+    fn line_cursors_advance_correctly_across_multiple_hunks() {
+        let input = "\
+diff --git a/x b/x
+--- a/x
++++ b/x
+@@ -10,3 +10,3 @@
+ a
+-b
++B
+ c
+@@ -100,2 +100,2 @@
+-d
++D
+ e
+";
+        let parsed = lines(input);
+        // First hunk: context a (b=10,t=10), removed b (b=11), added B (t=11), context c (b=12,t=12).
+        assert_eq!(parsed[0].1, Some(10)); // base
+        assert_eq!(parsed[0].2, Some(10)); // tip
+        assert_eq!(parsed[1].1, Some(11));
+        assert_eq!(parsed[1].2, None);
+        assert_eq!(parsed[2].1, None);
+        assert_eq!(parsed[2].2, Some(11));
+        assert_eq!(parsed[3].1, Some(12));
+        assert_eq!(parsed[3].2, Some(12));
+        // Second hunk: removed d (b=100), added D (t=100), context e (b=101,t=101).
+        assert_eq!(parsed[4].1, Some(100));
+        assert_eq!(parsed[4].2, None);
+        assert_eq!(parsed[5].1, None);
+        assert_eq!(parsed[5].2, Some(100));
+        assert_eq!(parsed[6].1, Some(101));
+        assert_eq!(parsed[6].2, Some(101));
+    }
+
+    #[test]
+    fn handles_no_newline_marker() {
+        let input = "\
+diff --git a/f b/f
+--- a/f
++++ b/f
+@@ -1 +1 @@
+-old
+\\ No newline at end of file
++new
+";
+        let files = parse_git_diff(input.as_bytes()).unwrap();
+        let h = &files[0].hunks.as_ref().unwrap()[0];
+        assert_eq!(h.lines.len(), 2);
+        assert_eq!(h.lines[0].origin, LineOrigin::Removed);
+        assert_eq!(h.lines[1].origin, LineOrigin::Added);
+    }
+}
