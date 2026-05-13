@@ -38,8 +38,11 @@ struct Args {
     #[arg(long, env = "KATA_WEB_DIR")]
     web_dir: Option<PathBuf>,
 
-    /// Identity used for MCP writes (agents). Defaults to the same value
-    /// as `--author`; override to give the agent a distinct identity.
+    /// Fallback identity used for MCP writes when a request doesn't pass
+    /// `?as=<name>` on the URL. Defaults to `--author`. Per-request
+    /// overrides via the query param let multiple agents (e.g. Claude
+    /// vs. the human user) write distinct attribution — this is a
+    /// stopgap until there's a real auth story.
     #[arg(long, env = "KATA_MCP_AUTHOR")]
     mcp_author: Option<String>,
 
@@ -89,6 +92,23 @@ fn derive_name(path: &Path) -> Option<String> {
 
 fn is_slug_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '-' || c == '_'
+}
+
+async fn mcp_handler(
+    axum::extract::State(dispatcher): axum::extract::State<kata_mcp::McpDispatcher>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    req: axum::extract::Request,
+) -> axum::response::Response {
+    let author = params
+        .get(kata_mcp::AUTHOR_QUERY_PARAM)
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| dispatcher.default_author().to_string());
+    dispatcher
+        .for_author(&author)
+        .handle(req)
+        .await
+        .map(axum::body::Body::new)
 }
 
 #[tokio::main]
@@ -162,20 +182,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let mcp_author = Author::new(
+    let default_mcp_author = Author::new(
         args.mcp_author
             .clone()
             .unwrap_or_else(|| cfg.author.to_string()),
     );
     tracing::info!(
-        author = %mcp_author,
+        default_author = %default_mcp_author,
         repos = repo_count,
         "mounting MCP at /mcp",
     );
-    let mcp = kata_mcp::mcp_service(service.clone(), mcp_author.clone());
-    if args.mcp_cors_origins.is_empty() {
-        app = app.nest_service("/mcp", mcp);
-    } else {
+    let dispatcher = kata_mcp::McpDispatcher::new(service.clone(), default_mcp_author);
+    let mut mcp_router = axum::Router::new()
+        .route("/", axum::routing::any(mcp_handler))
+        .with_state(dispatcher);
+    if !args.mcp_cors_origins.is_empty() {
         let origins = args
             .mcp_cors_origins
             .iter()
@@ -203,9 +224,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // the initialize response; the browser only exposes it to JS
             // if we list it here.
             .expose_headers([axum::http::HeaderName::from_static("mcp-session-id")]);
-        let layered = tower::ServiceBuilder::new().layer(cors).service(mcp);
-        app = app.nest_service("/mcp", layered);
+        mcp_router = mcp_router.layer(cors);
     }
+    app = app.nest("/mcp", mcp_router);
 
     let listener = tokio::net::TcpListener::bind(cfg.bind_addr).await?;
     tracing::info!(addr = %cfg.bind_addr, "kata listening");
