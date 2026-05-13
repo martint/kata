@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { copyText } from '../lib/clipboard';
   import { renderMarkdown } from '../lib/markdown';
   import { resolutionFor } from '../lib/resolution';
   import type {
@@ -65,12 +66,7 @@
   }
 
   async function copyToClipboard(text: string) {
-    try {
-      await navigator.clipboard.writeText(text);
-    } catch {
-      // Surface as a UI hint? For now, fail silently — most browsers grant
-      // clipboard write to same-origin pages.
-    }
+    await copyText(text);
   }
 
   async function submitReply(input: DraftResponseInput) {
