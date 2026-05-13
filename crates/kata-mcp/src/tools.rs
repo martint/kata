@@ -386,7 +386,8 @@ impl ServerHandler for ReviewMcp {
                  and `get_review` to inspect changes; `draft_line_comment` / \
                  `draft_file_comment` / `draft_review_comment` to leave feedback (starts a \
                  draft session on first use); `respond` to reply or change resolution; \
-                 `publish_session` once the round is complete."
+                 `publish_session` once the round is complete. Before doing review work, \
+                 read the resource `skill://kata/review` for the full workflow."
                     .into(),
             ),
         }
