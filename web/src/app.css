@@ -2,6 +2,12 @@
   font-family: ui-sans-serif, system-ui, sans-serif;
   font-size: 14px;
   line-height: 1.45;
+  /* Without this, mobile Safari / Chrome auto-inflate text whenever
+   * they decide a block is "primary content" — which lands at random
+   * spots inside the diff (some lines, not others) and makes the
+   * sizes look inconsistent. Pinning to 100% disables the heuristic. */
+  text-size-adjust: 100%;
+  -webkit-text-size-adjust: 100%;
   --app-header-h: 48px;
 
   /* Light palette (GitHub-ish) */
@@ -151,6 +157,67 @@ header.app .comment-nav .position {
   font-variant-numeric: tabular-nums;
   min-width: 3.5em;
   text-align: center;
+}
+
+/* Hamburger / drawer toggle. Phone-only — see media query below. */
+header.app .tree-button {
+  display: none;
+  font-size: 18px;
+  line-height: 1;
+  padding: 2px 10px;
+}
+
+/* --- Phone layout (≤640px) ------------------------------------------ */
+@media (max-width: 640px) {
+  :root {
+    --app-header-h: 44px;
+    font-size: 13px;
+  }
+
+  main {
+    padding: 12px;
+  }
+
+  main.wide {
+    padding: 8px 12px;
+  }
+
+  header.app {
+    padding: 0 8px;
+    gap: 6px;
+    /* Allow the bar to wrap if it can't fit on one line — the wrapped
+     * row sits below the title and is fully visible without scrolling. */
+    flex-wrap: wrap;
+    height: auto;
+    min-height: var(--app-header-h);
+  }
+
+  header.app h1 {
+    font-size: 15px;
+  }
+
+  header.app .tree-button {
+    display: inline-block;
+  }
+
+  header.app .author {
+    display: none;
+  }
+
+  /* `.lbl` is the human-readable label inside buttons that we shrink to
+   * an icon on phones. Hiding the label keeps the icon-only affordance
+   * while the desktop view still reads naturally. */
+  header.app .lbl {
+    display: none;
+  }
+
+  header.app button {
+    padding: 4px 8px;
+  }
+
+  header.app .comment-nav .position {
+    min-width: 2.8em;
+  }
 }
 
 .spinner {

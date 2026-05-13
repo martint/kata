@@ -43,6 +43,9 @@
       prev: () => void;
       next: () => void;
     };
+    /** File-tree visibility. The top bar surfaces this so phones can
+     *  toggle the drawer-style tree without scrolling. */
+    tree: { collapsed: boolean; toggle: () => void };
   }
 
   interface Props {
@@ -217,6 +220,10 @@
         prev: navPrev,
         next: navNext,
       },
+      tree: {
+        collapsed: treeCollapsed,
+        toggle: () => (treeCollapsed = !treeCollapsed),
+      },
     });
   });
 
@@ -265,14 +272,30 @@
     return Number.isFinite(n) ? n : fallback;
   }
 
+  /** On phones the tree is a drawer that overlays the diff, so it has
+   *  to start closed — otherwise the page loads with the diff dimmed
+   *  behind a backdrop. Persisted desktop preference still applies on
+   *  desktop. */
+  function isPhoneViewport(): boolean {
+    return (
+      typeof window !== 'undefined' &&
+      window.matchMedia('(max-width: 640px)').matches
+    );
+  }
+
   let treeCollapsed = $state(
-    typeof localStorage !== 'undefined' &&
-      localStorage.getItem(TREE_COLLAPSED_KEY) === 'true',
+    isPhoneViewport() ||
+      (typeof localStorage !== 'undefined' &&
+        localStorage.getItem(TREE_COLLAPSED_KEY) === 'true'),
   );
   let treeWidth = $state(readNumber(TREE_WIDTH_KEY, DEFAULT_TREE_WIDTH));
 
   $effect(() => {
     if (typeof localStorage === 'undefined') return;
+    // Don't persist phone toggles — the drawer is transient there, so a
+    // user opening it during navigation shouldn't pin the desktop view
+    // open on their next visit.
+    if (isPhoneViewport()) return;
     localStorage.setItem(TREE_COLLAPSED_KEY, String(treeCollapsed));
   });
   $effect(() => {
@@ -500,6 +523,14 @@
     if (el) {
       el.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
+    // On phones the tree is an overlay drawer — close it after the user
+    // picks a file so they actually see the diff they jumped to.
+    if (
+      typeof window !== 'undefined' &&
+      window.matchMedia('(max-width: 640px)').matches
+    ) {
+      treeCollapsed = true;
+    }
   }
 
   async function discard() {
@@ -565,6 +596,17 @@
   <!-- The tree pane stays mounted and is toggled via CSS. Unmounting it
        (the old `{#if}` shape) rebuilt the full FileTree on every expand,
        which for a 100-file review tipped past a second of mount work. -->
+  <!-- Backdrop is only visible on phones (see CSS); on desktop the tree
+       is in-flow and this element collapses to nothing. Implemented as
+       a button so keyboard + screen-reader users can dismiss it too. -->
+  {#if !treeCollapsed}
+    <button
+      type="button"
+      class="tree-backdrop"
+      aria-label="Close file tree"
+      onclick={() => (treeCollapsed = true)}
+    ></button>
+  {/if}
   <aside
     class="tree-pane"
     class:hidden={treeCollapsed}
@@ -717,6 +759,67 @@
    * children don't have to rebuild on re-open) but pulled out of layout. */
   .tree-pane.hidden {
     display: none;
+  }
+
+  /* The backdrop is invisible / non-blocking on desktop — the tree is
+   * in-flow there. On phones (see media query below) it becomes a
+   * dimming layer over the page that closes the drawer on tap. */
+  .tree-backdrop {
+    display: none;
+  }
+
+  /* --- Phone layout ------------------------------------------------- */
+  @media (max-width: 640px) {
+    .review-layout {
+      display: block;
+    }
+
+    /* Tree turns into a slide-in drawer over the diff. width: 80vw with
+     * a cap so it doesn't get absurd on slightly-wider phones in
+     * landscape orientation. The inline `style:width` from the desktop
+     * resizer is overridden here. */
+    .tree-pane {
+      position: fixed;
+      top: var(--app-header-h);
+      left: 0;
+      bottom: 0;
+      margin: 0;
+      width: 80vw !important;
+      max-width: 320px;
+      border-radius: 0;
+      border-left: none;
+      border-top: none;
+      border-bottom: none;
+      box-shadow: 0 0 24px rgba(0, 0, 0, 0.25);
+      z-index: 25;
+    }
+
+    .tree-pane.hidden {
+      /* Slide off-screen instead of display:none so a future open
+       * animates and so the FileTree's state stays alive. */
+      display: flex;
+      transform: translateX(-100%);
+    }
+
+    .tree-backdrop {
+      display: block;
+      position: fixed;
+      inset: var(--app-header-h) 0 0 0;
+      background: rgba(0, 0, 0, 0.35);
+      border: none;
+      padding: 0;
+      cursor: pointer;
+      z-index: 24;
+    }
+
+    .tree-resizer,
+    .tree-reopen {
+      display: none;
+    }
+
+    .main-pane {
+      margin-left: 0;
+    }
   }
 
   /* The collapse toggle gets passed into FileTree's header via a snippet,

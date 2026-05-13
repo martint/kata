@@ -179,9 +179,19 @@
 </script>
 
 <header class="app">
+  {#if toolbar}
+    <!-- Phone-only file-tree toggle. Hidden on desktop via CSS. -->
+    <button
+      class="tree-button"
+      type="button"
+      onclick={toolbar.tree.toggle}
+      aria-label="Toggle file list"
+      aria-expanded={!toolbar.tree.collapsed}
+    >☰</button>
+  {/if}
   <h1>Kata</h1>
   {#if screen.kind === 'review'}
-    <button onclick={back}>← Back</button>
+    <button onclick={back} aria-label="Back to review list">← <span class="lbl">Back</span></button>
   {/if}
   {#if loading}
     <span class="spinner" aria-label="loading"></span>
@@ -214,7 +224,7 @@
     {#if toolbar.drafts}
       {@const drafts = toolbar.drafts}
       <span class="draft-count">
-        <strong>{drafts.count}</strong> draft{drafts.count === 1 ? '' : 's'}
+        <strong>{drafts.count}</strong> <span class="lbl">draft{drafts.count === 1 ? '' : 's'}</span>
       </span>
       <button onclick={drafts.discard} disabled={drafts.saving}>Discard</button>
       <button class="primary" onclick={drafts.publish} disabled={drafts.saving}>

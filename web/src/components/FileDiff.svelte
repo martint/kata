@@ -194,11 +194,24 @@
     return fileAnchorIds;
   });
 
-  /** Side-by-side for modifications + renames; unified for pure add/delete
-   *  (matches the user's preference — unified is easier to read when there's
-   *  only one side of content). */
+  /** Reactive narrow-viewport flag. Updated via the media-query listener
+   *  in the effect below; used to fall back to unified diff on phones
+   *  (side-by-side is unreadable at <640px). */
+  let narrowViewport = $state(false);
+  $effect(() => {
+    if (typeof window === 'undefined') return;
+    const mq = window.matchMedia('(max-width: 640px)');
+    narrowViewport = mq.matches;
+    const update = (e: MediaQueryListEvent) => (narrowViewport = e.matches);
+    mq.addEventListener('change', update);
+    return () => mq.removeEventListener('change', update);
+  });
+
+  /** Side-by-side for modifications + renames on a wide enough screen;
+   *  unified everywhere else. Unified is also easier to read when only
+   *  one side of content exists (pure add/delete). */
   const sideBySide = $derived(
-    file.status === 'modified' || file.status === 'renamed',
+    !narrowViewport && (file.status === 'modified' || file.status === 'renamed'),
   );
 
   /** Files where it makes sense to expand context — both sides exist. */
@@ -408,11 +421,18 @@
       {collapsed ? '▸' : '▾'}
     </button>
     <span class="status status-{file.status}">{file.status[0].toUpperCase()}</span>
-    {#if file.status === 'renamed' && file.old_path}
-      <span class="path"><span class="muted">{file.old_path} →</span> {file.path}</span>
-    {:else}
-      <span class="path">{file.path}</span>
-    {/if}
+    <!-- The path wrapper is direction:rtl so `text-overflow: ellipsis`
+         falls on the left ("…/short/tail.rs") instead of cutting off the
+         filename. <bdi> keeps the path itself rendered LTR. -->
+    <span class="path">
+      <bdi>
+        {#if file.status === 'renamed' && file.old_path}
+          <span class="muted">{file.old_path} →</span> {file.path}
+        {:else}
+          {file.path}
+        {/if}
+      </bdi>
+    </span>
     <span class="meta">
       {#if file.binary}
         binary
@@ -423,10 +443,13 @@
     <button
       type="button"
       class="file-comment"
-      title="Comment on the whole file"
+      aria-label="Comment on this file"
+      title="Comment on this file"
       onclick={() => onstartcompose({ kind: 'file', file: file.path })}
     >
-      Comment on file
+      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="currentColor">
+        <path d="M1 2.75A2.75 2.75 0 0 1 3.75 0h8.5A2.75 2.75 0 0 1 15 2.75v6.5A2.75 2.75 0 0 1 12.25 12H8.06l-2.573 2.573A1.457 1.457 0 0 1 3 13.543V12h-.25A1.75 1.75 0 0 1 1 10.25v-7.5z"/>
+      </svg>
     </button>
   </header>
 
@@ -594,17 +617,48 @@
   }
 
   .file-header .path {
-    flex: 1;
+    flex: 1 1 auto;
+    /* Without min-width:0 the path's intrinsic width pins the header
+     * open, which on a phone overflows the viewport and squeezes the
+     * diff into a horizontal-scroll slice. direction:rtl moves the
+     * ellipsis to the *left* so we keep the filename visible when the
+     * path is too long; text-align:left undoes the right-alignment
+     * that direction:rtl otherwise imposes on short paths. */
+    min-width: 0;
+    direction: rtl;
+    text-align: left;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .file-header .meta {
     color: var(--text-muted);
     font-size: 12px;
+    /* `meta` is the lowest-priority cell in the header: when the path
+     * eats all the available width, the hunk count disappears before
+     * the filename does. */
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    flex-shrink: 100;
+  }
+
+  /* Keep status badge + the icon button at full size — both are too
+   * small to shrink usefully. */
+  .file-header .status,
+  .file-comment {
+    flex-shrink: 0;
   }
 
   .file-comment {
-    font-size: 12px;
-    padding: 2px 8px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 22px;
+    padding: 0;
     background: var(--bg);
     border: 1px solid var(--border);
     border-radius: 4px;
