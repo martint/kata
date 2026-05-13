@@ -195,6 +195,11 @@
   </h1>
   {#if screen.kind === 'review'}
     <button onclick={back} aria-label="Back to review list">← <span class="lbl">Back</span></button>
+    <button
+      onclick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+      title="Scroll to the top of the review"
+      aria-label="Scroll to top"
+    >↑ <span class="lbl">Top</span></button>
   {/if}
   {#if loading}
     <span class="spinner" aria-label="loading"></span>
