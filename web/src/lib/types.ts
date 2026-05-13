@@ -34,6 +34,8 @@ export interface CommitInfo {
   description_first_line: string;
   /** Full commit description; may contain newlines or be empty. */
   description: string;
+  /** Files this commit modified, added, deleted, or renamed (parent..@). */
+  changed_files: string[];
 }
 
 export interface LineRange {

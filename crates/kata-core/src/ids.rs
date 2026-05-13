@@ -90,6 +90,9 @@ pub struct CommitInfo {
     pub description_first_line: String,
     /// Full commit description (may be empty, may contain newlines).
     pub description: String,
+    /// Files this commit modified, added, deleted, or renamed (parent..@).
+    /// Used by the UI to bucket comments per commit.
+    pub changed_files: Vec<String>,
 }
 
 /// A jj revset expression. We keep this as a string and let jj parse it;

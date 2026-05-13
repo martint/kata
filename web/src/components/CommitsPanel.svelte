@@ -1,17 +1,36 @@
 <script lang="ts">
-  import type { CommitInfo } from '../lib/types';
+  import type { CommentView, CommitInfo } from '../lib/types';
   import { renderMarkdown } from '../lib/markdown';
 
   interface Props {
     commits: CommitInfo[];
+    /** All comments on the review (published + drafts). Used to count
+     *  per-commit by intersecting `comment.file` with `commit.changed_files`. */
+    comments: CommentView[];
     selectedChangeId: string | null;
     onselect: (changeId: string | null) => void;
   }
-  const { commits, selectedChangeId, onselect }: Props = $props();
+  const { commits, comments, selectedChangeId, onselect }: Props = $props();
 
   let collapsed = $state(false);
   /** Commit-ids whose body is expanded. Body = lines after the first. */
   let expanded: Set<string> = $state(new Set());
+
+  /** commit_id → number of comments on a file this commit touched.
+   *  Review-wide comments (no file) aren't counted here — they're shown
+   *  elsewhere in the UI. */
+  const countByCommit = $derived.by(() => {
+    const counts = new Map<string, number>();
+    for (const c of commits) {
+      const files = new Set(c.changed_files);
+      let n = 0;
+      for (const cm of comments) {
+        if (cm.file && files.has(cm.file)) n++;
+      }
+      counts.set(c.commit_id, n);
+    }
+    return counts;
+  });
 
   function short(id: string): string {
     return id.length > 12 ? id.slice(0, 12) : id;
@@ -66,6 +85,7 @@
         {#each commits as c (c.commit_id)}
           {@const body = bodyAfterFirstLine(c.description)}
           {@const isExpanded = expanded.has(c.commit_id)}
+          {@const count = countByCommit.get(c.commit_id) ?? 0}
           <li class="commit {selectedChangeId === c.change_id ? 'selected' : ''}">
             <div class="row">
               {#if body}
@@ -86,6 +106,14 @@
                   <code class="change">{short(c.change_id)}</code>
                   <code class="commit">{short(c.commit_id)}</code>
                   <span class="desc">{c.description_first_line || '(no description)'}</span>
+                  {#if count > 0}
+                    <span
+                      class="comment-count"
+                      title="{count} comment{count === 1 ? '' : 's'} on files this commit touched"
+                    >
+                      {count} comment{count === 1 ? '' : 's'}
+                    </span>
+                  {/if}
                 </div>
                 <div class="row2">
                   <span class="meta">{c.author_email}</span>
@@ -211,6 +239,23 @@
 
   .row1 .desc {
     font-weight: 500;
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .comment-count {
+    flex: 0 0 auto;
+    margin-left: auto;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--link);
+    background: var(--link-bg);
+    padding: 1px 7px;
+    border-radius: 9999px;
+    line-height: 1.4;
   }
 
   .row2 {

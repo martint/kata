@@ -464,6 +464,7 @@
   <div class="main-pane">
     <CommitsPanel
       commits={current.commits}
+      comments={allComments}
       selectedChangeId={scopedChangeId}
       onselect={selectCommit}
     />

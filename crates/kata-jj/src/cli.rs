@@ -91,8 +91,10 @@ const DIFF_ENTRY_TPL: &str =
     r#"status ++ "\t" ++ path ++ "\t" ++ source.path() ++ "\n""#;
 // Record terminator is `\0`: descriptions can contain `\t` and `\n`, so we
 // can't split on either. Description is emitted last; everything before the
-// 5th tab is structured, and what follows is the verbatim body.
-const COMMIT_INFO_TPL: &str = r#"change_id ++ "\t" ++ commit_id ++ "\t" ++ author.email() ++ "\t" ++ author.timestamp().format("%+") ++ "\t" ++ description ++ "\0""#;
+// 6th tab is structured, and what follows is the verbatim body. Files
+// within the 5th field are joined by `\x1f` (ASCII unit separator) so the
+// list stays parseable when paths contain unusual characters.
+const COMMIT_INFO_TPL: &str = r#"change_id ++ "\t" ++ commit_id ++ "\t" ++ author.email() ++ "\t" ++ author.timestamp().format("%+") ++ "\t" ++ diff.files().map(|f| f.path()).join("\x1f") ++ "\t" ++ description ++ "\0""#;
 
 #[async_trait]
 impl JjBackend for JjCli {
@@ -254,7 +256,7 @@ impl JjBackend for JjCli {
             if record.is_empty() {
                 continue;
             }
-            let mut parts = record.splitn(5, '\t');
+            let mut parts = record.splitn(6, '\t');
             let change = parts
                 .next()
                 .ok_or_else(|| Error::Parse(format!("commit missing change: {record:?}")))?;
@@ -269,6 +271,14 @@ impl JjBackend for JjCli {
                 .next()
                 .ok_or_else(|| Error::Parse(format!("commit missing timestamp: {record:?}")))?
                 .to_string();
+            let files = parts
+                .next()
+                .ok_or_else(|| Error::Parse(format!("commit missing files: {record:?}")))?;
+            let changed_files = if files.is_empty() {
+                Vec::new()
+            } else {
+                files.split('\u{1f}').map(str::to_string).collect()
+            };
             let description = parts.next().unwrap_or("").to_string();
             let first_line = description.lines().next().unwrap_or("").to_string();
             commits.push(CommitInfo {
@@ -278,6 +288,7 @@ impl JjBackend for JjCli {
                 author_timestamp: ts,
                 description_first_line: first_line,
                 description,
+                changed_files,
             });
         }
         tracing::debug!(count = commits.len(), revset = %revset, "list_commits");
