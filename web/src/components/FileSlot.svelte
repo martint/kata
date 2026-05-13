@@ -35,6 +35,9 @@
      *  currently hosting an open composer doesn't get virtualized away
      *  out from under the user. */
     forceRender: boolean;
+    /** Render the file with its hunks hidden — only comments and the
+     *  file header remain. */
+    compact: boolean;
     onstartcompose: (target: ComposerTarget) => void;
     oncancelcompose: () => void;
     onsubmit: (input: import('../lib/types').DraftCommentInput) => Promise<void>;
@@ -51,6 +54,7 @@
     composing,
     saving,
     forceRender,
+    compact,
     onstartcompose,
     oncancelcompose,
     onsubmit,
@@ -79,7 +83,10 @@
     return () => io.disconnect();
   });
 
-  const shouldRender = $derived(inViewport || forceRender);
+  /** In compact mode the page is tiny (each file collapses to a header
+   *  plus a few comments), so virtualization buys nothing — always
+   *  render. Otherwise mount only when the slot is near the viewport. */
+  const shouldRender = $derived(compact || inViewport || forceRender);
 
   /** Cache the actual rendered height so the placeholder reproduces it
    *  exactly when the file scrolls away — otherwise total document
@@ -123,6 +130,7 @@
         {responses}
         {composing}
         {saving}
+        {compact}
         {onstartcompose}
         {oncancelcompose}
         {onsubmit}

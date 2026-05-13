@@ -9,7 +9,7 @@
     WhoAmI,
   } from './lib/types';
   import ReviewList from './components/ReviewList.svelte';
-  import ReviewViewer, { type DraftBarState } from './components/ReviewViewer.svelte';
+  import ReviewViewer, { type ReviewToolbarState } from './components/ReviewViewer.svelte';
 
 
   type Screen =
@@ -41,10 +41,11 @@
   let whoami: WhoAmI | null = $state(null);
   let error: string | null = $state(null);
   let loading: boolean = $state(false);
-  /** Mirrored from ReviewViewer so the publish / discard buttons live in
-   *  the sticky top bar (always reachable while scrolling) instead of in
-   *  a banner inside the scrolling document. */
-  let draftBar: DraftBarState | null = $state.raw(null);
+  /** Mirrored from ReviewViewer so its review-level controls (publish /
+   *  discard, diff-collapse toggle, etc.) can live in the sticky top bar —
+   *  always reachable while scrolling, instead of in a banner inside the
+   *  scrolling document. */
+  let toolbar: ReviewToolbarState | null = $state.raw(null);
 
   function pathForReview(repo: string, id: string, patchset?: number): string {
     const base = `/r/${encodeURIComponent(repo)}/${encodeURIComponent(id)}`;
@@ -186,14 +187,23 @@
     <span class="spinner" aria-label="loading"></span>
   {/if}
   <span style="flex: 1"></span>
-  {#if draftBar}
-    <span class="draft-count">
-      <strong>{draftBar.count}</strong> draft{draftBar.count === 1 ? '' : 's'}
-    </span>
-    <button onclick={draftBar.discard} disabled={draftBar.saving}>Discard</button>
-    <button class="primary" onclick={draftBar.publish} disabled={draftBar.saving}>
-      {draftBar.saving ? 'Publishing…' : 'Publish'}
+  {#if toolbar}
+    <button
+      onclick={toolbar.toggleDiffs}
+      title={toolbar.diffsCollapsed ? 'Show file diffs' : 'Hide file diffs, leave only comments'}
+    >
+      {toolbar.diffsCollapsed ? 'Show diffs' : 'Comments only'}
     </button>
+    {#if toolbar.drafts}
+      {@const drafts = toolbar.drafts}
+      <span class="draft-count">
+        <strong>{drafts.count}</strong> draft{drafts.count === 1 ? '' : 's'}
+      </span>
+      <button onclick={drafts.discard} disabled={drafts.saving}>Discard</button>
+      <button class="primary" onclick={drafts.publish} disabled={drafts.saving}>
+        {drafts.saving ? 'Publishing…' : 'Publish'}
+      </button>
+    {/if}
   {/if}
   {#if whoami}
     <span class="author">signed in as {whoami.author}</span>
@@ -226,7 +236,7 @@
       view={screen.view}
       initialPatchset={screen.initialPatchset}
       onpatchsetchange={onPatchsetChange}
-      ondraftbarchange={(b) => (draftBar = b)}
+      ontoolbarchange={(t) => (toolbar = t)}
     />
   {/if}
 </main>

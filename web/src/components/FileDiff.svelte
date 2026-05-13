@@ -33,6 +33,9 @@
     responses: ResponseView[];
     composing: ComposerTarget | null;
     saving: boolean;
+    /** Hide the diff hunks and show line-level comments as a flat list.
+     *  Used by the top-bar "Comments only" toggle. */
+    compact?: boolean;
     onstartcompose: (target: ComposerTarget) => void;
     oncancelcompose: () => void;
     onsubmit: (input: DraftCommentInput) => Promise<void>;
@@ -48,6 +51,7 @@
     responses,
     composing,
     saving,
+    compact = false,
     onstartcompose,
     oncancelcompose,
     onsubmit,
@@ -157,6 +161,20 @@
   /** Whole-file comments — those targeting this file with no line range. */
   const fileLevelComments = $derived(
     fileComments.filter((c) => c.lines == null),
+  );
+  /** Line-level comments on this file, sorted by line for compact-mode
+   *  rendering. Each entry is one thread root; the inline hunk view
+   *  groups these into row overlays instead. */
+  const lineCommentsSorted = $derived(
+    fileComments
+      .filter((c) => c.lines != null)
+      .slice()
+      .sort((a, b) => {
+        const al = a.lines?.start ?? 0;
+        const bl = b.lines?.start ?? 0;
+        if (al !== bl) return al - bl;
+        return a.created_at.localeCompare(b.created_at);
+      }),
   );
 
   /** Anchor a file-level comment to the tip side of the viewed patchset. */
@@ -437,7 +455,30 @@
     </div>
   {/if}
 
-  {#if !collapsed}
+  {#if compact}
+    {#if lineCommentsSorted.length > 0}
+      <ul class="compact-line-list">
+        {#each lineCommentsSorted as c (c.comment_id)}
+          <li>
+            <div class="compact-line-marker">
+              <code>L{c.lines?.start}{c.lines && c.lines.end !== c.lines.start ? `–${c.lines.end}` : ''}</code>
+              <span class="muted">{c.side ?? ''}</span>
+            </div>
+            <CommentThread
+              comments={[c]}
+              {responses}
+              {saving}
+              {onreply}
+              {onstatus}
+              {ondelete}
+            />
+          </li>
+        {/each}
+      </ul>
+    {:else if fileLevelComments.length === 0}
+      <p class="placeholder muted">No comments on this file.</p>
+    {/if}
+  {:else if !collapsed}
     {#if file.binary}
       <p class="placeholder">Binary file — diff is not shown.</p>
     {:else if !file.hunks}
@@ -580,6 +621,37 @@
     padding: 8px 12px;
     background: var(--bg-panel);
     border-bottom: 1px solid var(--border);
+  }
+
+  .compact-line-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .compact-line-list > li {
+    padding: 8px 12px;
+    border-top: 1px solid var(--border-muted);
+  }
+
+  .compact-line-list > li:first-child {
+    border-top: none;
+  }
+
+  .compact-line-marker {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin-bottom: 4px;
+    font-size: 12px;
+  }
+
+  .compact-line-marker code {
+    background: var(--bg-elevated);
+    color: var(--text-muted);
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 11px;
   }
 
   .hunks-wrapper {

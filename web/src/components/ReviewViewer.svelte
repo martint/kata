@@ -19,14 +19,21 @@
   import FileSlot from './FileSlot.svelte';
   import FileTree from './FileTree.svelte';
 
-  /** State + action callbacks for the global publish/discard toolbar that
-   *  App.svelte renders in the app header. Re-emitted whenever drafts or
-   *  `saving` change; null when there's nothing to publish. */
-  export interface DraftBarState {
-    count: number;
-    saving: boolean;
-    publish: () => Promise<void>;
-    discard: () => Promise<void>;
+  /** State + action callbacks for the controls that App.svelte renders in
+   *  the sticky top bar. Re-emitted whenever any of the underlying fields
+   *  change; null only when the review viewer is unmounted. */
+  export interface ReviewToolbarState {
+    /** Draft session controls. Null when the user has no open drafts. */
+    drafts: {
+      count: number;
+      saving: boolean;
+      publish: () => Promise<void>;
+      discard: () => Promise<void>;
+    } | null;
+    /** True when the user has asked to hide all file diffs and see only
+     *  the comments. */
+    diffsCollapsed: boolean;
+    toggleDiffs: () => void;
   }
 
   interface Props {
@@ -38,17 +45,17 @@
      *  Does not fire when the viewer auto-follows a newly-appended patchset
      *  (so the URL stays clean if the user wasn't pinning a specific PS). */
     onpatchsetchange?: (n: number) => void;
-    /** Reports draft toolbar state up to the app shell so the publish /
-     *  discard controls can live in the always-visible top bar instead of
-     *  scrolling away with the page. */
-    ondraftbarchange?: (bar: DraftBarState | null) => void;
+    /** Reports toolbar state up to the app shell so the publish / discard
+     *  controls and the diff-collapse toggle can live in the always-visible
+     *  top bar instead of scrolling away with the page. */
+    ontoolbarchange?: (bar: ReviewToolbarState | null) => void;
   }
   let {
     repo,
     view,
     initialPatchset,
     onpatchsetchange,
-    ondraftbarchange,
+    ontoolbarchange,
   }: Props = $props();
 
   // We seed local state from the prop and then manage refreshes ourselves.
@@ -64,14 +71,22 @@
   let saving = $state(false);
   let error: string | null = $state(null);
 
-  /** Mirror draft state up to the app shell whenever it changes. The shell
-   *  renders the publish / discard buttons in the sticky top bar; keeping
-   *  the state authoritative here means the actual API calls stay local. */
+  /** When true the file diffs collapse to comments-only mode. State lives
+   *  here so the top-bar toggle stays in sync with the viewport. */
+  let diffsCollapsed = $state(false);
+  function toggleDiffs() {
+    diffsCollapsed = !diffsCollapsed;
+  }
+
+  /** Mirror toolbar state up to the app shell whenever it changes. The
+   *  shell renders the publish / discard buttons and the diff-collapse
+   *  toggle in the sticky top bar; keeping the state authoritative here
+   *  means the actual logic and API calls stay local. */
   $effect(() => {
     const hasDrafts =
       !!current.drafts.session && current.drafts.comments.length > 0;
-    ondraftbarchange?.(
-      hasDrafts
+    ontoolbarchange?.({
+      drafts: hasDrafts
         ? {
             count: current.drafts.comments.length,
             saving,
@@ -79,12 +94,14 @@
             discard,
           }
         : null,
-    );
+      diffsCollapsed,
+      toggleDiffs,
+    });
   });
 
   /** Make sure the toolbar clears when the viewer unmounts (e.g. user
    *  navigates back to the review list). */
-  onMount(() => () => ondraftbarchange?.(null));
+  onMount(() => () => ontoolbarchange?.(null));
 
   /** Pause tokenization while a composer is open so the user can type
    *  without input lag — `codeToTokensBase` is synchronous (~200-500ms
@@ -534,6 +551,7 @@
           forceRender={!!(composing &&
             'file' in composing &&
             composing.file === f.path)}
+          compact={diffsCollapsed}
           {saving}
           onstartcompose={startCompose}
           oncancelcompose={cancelCompose}
