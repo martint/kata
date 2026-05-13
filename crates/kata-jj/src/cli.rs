@@ -246,8 +246,11 @@ impl JjBackend for JjCli {
     }
 
     async fn list_commits(&self, revset: &RevSet) -> Result<Vec<CommitInfo>> {
+        // `--reversed` so the oldest commit in the revset comes first; the
+        // UI renders the list top-down and stacks read most naturally that
+        // way.
         let out = self
-            .run(&["log", "--no-graph", "-r", revset.as_str(), "-T", COMMIT_INFO_TPL])
+            .run(&["log", "--no-graph", "--reversed", "-r", revset.as_str(), "-T", COMMIT_INFO_TPL])
             .await?;
         let text = String::from_utf8(out)
             .map_err(|e| Error::Parse(format!("commit log not utf-8: {e}")))?;
