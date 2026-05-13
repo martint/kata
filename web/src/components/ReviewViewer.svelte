@@ -368,6 +368,24 @@
     return id.length > 12 ? id.slice(0, 12) : id;
   }
 
+  /** Re-resolve the manifest's revset against the underlying jj repo,
+   *  appending a new patchset if the branch has moved. The server's
+   *  SSE event flow will also push the update to other viewers. */
+  let refreshing = $state(false);
+  async function manualRefresh() {
+    if (refreshing) return;
+    refreshing = true;
+    error = null;
+    try {
+      await api.refreshReview(repo, current.manifest.review_id);
+      await refresh();
+    } catch (e) {
+      error = (e as Error).message;
+    } finally {
+      refreshing = false;
+    }
+  }
+
   async function refresh() {
     const wasOnLatest = selectedPatchset === current.manifest.current_patchset;
     const next = await api.openReview(
@@ -585,6 +603,17 @@
     {/if}
     base <code>{short(viewing.base_change)}</code> → tip
     <code>{short(viewing.tip_change)}</code>
+    {#if current.is_stale || refreshing}
+      <button
+        type="button"
+        class="refresh-btn"
+        onclick={manualRefresh}
+        disabled={refreshing}
+        title="The branch has moved since the latest patchset was recorded — refresh to capture it"
+      >
+        {refreshing ? 'Refreshing…' : '↻ Refresh'}
+      </button>
+    {/if}
   </p>
 </section>
 
@@ -731,6 +760,29 @@
 <style>
   .header {
     margin-bottom: 16px;
+  }
+
+  /* Small inline button sitting at the end of the patchset row. Padded
+   * smaller than the default button so it sits next to the inline
+   * `<code>` tags without dominating the row. */
+  .refresh-btn {
+    margin-left: 12px;
+    padding: 2px 10px;
+    font-size: 12px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--link);
+    cursor: pointer;
+  }
+
+  .refresh-btn:hover {
+    background: var(--link-bg);
+  }
+
+  .refresh-btn:disabled {
+    opacity: 0.6;
+    cursor: default;
   }
 
   .review-layout {

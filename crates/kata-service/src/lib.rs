@@ -219,16 +219,25 @@ impl ReviewService {
             .clone();
 
         let t = std::time::Instant::now();
-        let (diff, commits) = tokio::try_join!(
+        // `live_range` lets us tell the UI whether re-resolving the revset
+        // would advance the latest patchset (the "is_stale" flag below).
+        // We resolve here, in parallel with the diff/commit work, to avoid
+        // paying for a separate round-trip.
+        let (diff, commits, live_range) = tokio::try_join!(
             build_diff(&**jj, &selected.base_commit, &selected.tip_commit),
             jj.list_commits(&manifest.revset),
+            jj.resolve_range(&manifest.revset),
         )?;
         tracing::debug!(
             elapsed_ms = t.elapsed().as_millis() as u64,
             files = diff.files.len(),
             commits = commits.len(),
-            "open_review: diff + commits",
+            "open_review: diff + commits + live_range",
         );
+
+        let latest = manifest.current();
+        let is_stale = live_range.tip.commit_id != latest.tip_commit
+            || live_range.base.commit_id != latest.base_commit;
 
         let t = std::time::Instant::now();
         let (published, responses, drafts) = tokio::try_join!(
@@ -292,6 +301,7 @@ impl ReviewService {
                 comments: draft_comments,
                 responses: draft_response_views,
             },
+            is_stale,
         })
     }
 
@@ -601,6 +611,11 @@ pub struct ReviewView {
     pub comments: Vec<CommentView>,
     pub responses: Vec<ResponseView>,
     pub drafts: DraftsView,
+    /// True when re-resolving the manifest's revset would advance the
+    /// current patchset — i.e., the live tip or base of the branch has
+    /// moved since the latest patchset was recorded. The UI uses this
+    /// to decide whether the "Refresh" affordance is even worth showing.
+    pub is_stale: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]

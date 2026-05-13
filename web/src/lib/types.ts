@@ -180,6 +180,9 @@ export interface ReviewView {
   comments: CommentView[];
   responses: ResponseView[];
   drafts: DraftsView;
+  /** True when re-resolving the manifest's revset would advance the
+   *  current patchset. Used to gate the "Refresh" button. */
+  is_stale: boolean;
 }
 
 export interface CreateReviewParams {
