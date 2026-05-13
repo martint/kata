@@ -670,7 +670,16 @@
     background: var(--link-bg);
   }
 
-  .file-thread,
+  .file-thread {
+    /* Same accent as inline line-threads (see HunkLines.svelte) — keeps
+     * the "this is commentary, not code" cue consistent across file-
+     * level and line-level anchors. */
+    padding: 8px 12px 8px 14px;
+    background: var(--link-bg);
+    border-bottom: 1px solid var(--border);
+    border-left: 3px solid var(--link);
+  }
+
   .file-composer {
     padding: 8px 12px;
     background: var(--bg-panel);

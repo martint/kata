@@ -458,14 +458,17 @@
     background: transparent;
   }
 
+  /* Blue tint + left stripe so inline threads visually separate from
+   * surrounding diff rows. See HunkLines.svelte for rationale. */
   .thread-sticky {
     position: sticky;
     left: 0;
     width: var(--content-vp-width, 100%);
-    background: var(--bg-panel);
-    padding: 8px 12px;
+    background: var(--link-bg);
+    padding: 8px 12px 8px 14px;
     border-top: 1px solid var(--border-muted);
     border-bottom: 1px solid var(--border-muted);
+    border-left: 3px solid var(--link);
     box-sizing: border-box;
   }
 </style>

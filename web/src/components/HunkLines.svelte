@@ -385,15 +385,20 @@
 
   /* The sticky wrapper lets the thread stay at the visible viewport while
    * the underlying table scrolls horizontally. Width comes from the file's
-   * .hunks ResizeObserver (see FileDiff). */
+   * .hunks ResizeObserver (see FileDiff).
+   *
+   * The blue tint + left stripe makes inline comment threads pop against
+   * the surrounding diff rows; with the previous --bg-panel background
+   * they blended into context lines and were easy to miss. */
   .thread-sticky {
     position: sticky;
     left: 0;
     width: var(--content-vp-width, 100%);
-    background: var(--bg-panel);
-    padding: 8px 12px;
+    background: var(--link-bg);
+    padding: 8px 12px 8px 14px;
     border-top: 1px solid var(--border-muted);
     border-bottom: 1px solid var(--border-muted);
+    border-left: 3px solid var(--link);
     box-sizing: border-box;
   }
 </style>
