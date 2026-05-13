@@ -433,13 +433,9 @@
         {/if}
       </bdi>
     </span>
-    <span class="meta">
-      {#if file.binary}
-        binary
-      {:else if file.hunks}
-        {file.hunks.length} hunk{file.hunks.length === 1 ? '' : 's'}
-      {/if}
-    </span>
+    {#if file.binary}
+      <span class="meta">binary</span>
+    {/if}
     <button
       type="button"
       class="file-comment"
