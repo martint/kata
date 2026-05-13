@@ -277,6 +277,16 @@
     line-height: 1.6;
   }
 
+  /* Keep code aligned to the top of its row even when the sibling .ln
+   * cell grows tall via the `.composing-target` padding-bottom hack
+   * (FileDiff applies it when an inline composer opens). Without this,
+   * the default `baseline` vertical-align centers the code line in
+   * the now-tall row, which looks like the line "shifts down" and
+   * leaves the composer overlay sitting on top of it. */
+  .hunk td {
+    vertical-align: top;
+  }
+
   /* `.row` itself needs no rules — line-height inherits from the table's
    * default, matching the side-by-side renderer. An explicit value here
    * previously made unified rows 2.5px taller and read as inconsistent

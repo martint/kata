@@ -364,6 +364,13 @@
     line-height: 1.6;
   }
 
+  /* See HunkLines.svelte for the rationale — keep cells top-aligned so
+   * the inline-composer's padding-bottom on `.ln` doesn't drop the
+   * code line into the composer overlay. */
+  .hunk-half td {
+    vertical-align: top;
+  }
+
   .col-ln {
     width: 48px;
   }
