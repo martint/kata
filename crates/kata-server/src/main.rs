@@ -42,6 +42,12 @@ struct Args {
     /// as `--author`; override to give the agent a distinct identity.
     #[arg(long, env = "KATA_MCP_AUTHOR")]
     mcp_author: Option<String>,
+
+    /// How often (in seconds) to poll each repo for branch movement so
+    /// the UI can surface a "Refresh" affordance without the user
+    /// reloading. Set to 0 to disable the background watcher entirely.
+    #[arg(long, env = "KATA_BRANCH_POLL_SECS", default_value = "10")]
+    branch_poll_secs: u64,
 }
 
 struct WorkspaceSpec {
@@ -124,6 +130,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let service = Arc::new(builder.build());
+
+    if args.branch_poll_secs > 0 {
+        let interval = std::time::Duration::from_secs(args.branch_poll_secs);
+        tracing::info!(?interval, "starting branch watcher");
+        service.clone().spawn_branch_watcher(interval);
+    } else {
+        tracing::info!("branch watcher disabled (--branch-poll-secs=0)");
+    }
     let state = AppState {
         service: service.clone(),
         default_author: cfg.author.clone(),

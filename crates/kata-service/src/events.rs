@@ -20,6 +20,13 @@ pub enum Event {
         repo: String,
         review_id: ReviewId,
     },
+    /// The underlying branch moved relative to the review's latest
+    /// patchset — refreshing the review would advance it. Emitted by
+    /// the background watcher (see [`crate::ReviewService::spawn_branch_watcher`]).
+    ReviewBranchMoved {
+        repo: String,
+        review_id: ReviewId,
+    },
     SessionPublished {
         repo: String,
         review_id: ReviewId,

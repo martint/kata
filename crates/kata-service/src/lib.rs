@@ -109,6 +109,89 @@ impl ReviewService {
         let _ = self.events.send(event);
     }
 
+    /// Spawn a background task that polls each registered repo on a
+    /// timer, comparing every review's recorded patchset endpoints to
+    /// the live revset resolution. When the live tip / base differ from
+    /// the latest patchset — and the live state has changed since the
+    /// last tick — we emit [`Event::ReviewBranchMoved`] so subscribers
+    /// (the web UI, mostly) can surface the "Refresh" affordance
+    /// without the user reloading the page.
+    ///
+    /// Cost per tick: one `jj log` per review per repo. For tiny review
+    /// counts that's negligible; the IDEAS.md notes call out
+    /// concurrency / subscription-scoping if we ever grow past it.
+    pub fn spawn_branch_watcher(
+        self: Arc<Self>,
+        interval: std::time::Duration,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut state: HashMap<(RepoId, ReviewId), (CommitId, CommitId)> =
+                HashMap::new();
+            let mut ticker = tokio::time::interval(interval);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            // `tokio::time::interval` fires immediately on the first
+            // tick — swallow it so we don't flood the bus the instant
+            // the server starts. The first real check happens after
+            // `interval`.
+            ticker.tick().await;
+            loop {
+                ticker.tick().await;
+                self.branch_watcher_tick(&mut state).await;
+            }
+        })
+    }
+
+    async fn branch_watcher_tick(
+        &self,
+        state: &mut HashMap<(RepoId, ReviewId), (CommitId, CommitId)>,
+    ) {
+        let repos: Vec<(String, RepoId)> = self.by_name.as_ref().clone();
+        for (repo_name, repo_id) in repos {
+            let summaries = match self.storage.list_reviews(&repo_id).await {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::debug!(repo = %repo_name, error = %e, "branch watcher: list_reviews failed");
+                    continue;
+                }
+            };
+            let jj = match self.jj_for(&repo_id) {
+                Ok(j) => j.clone(),
+                Err(_) => continue,
+            };
+            for summary in summaries {
+                let review_id = summary.manifest.review_id.clone();
+                let range = match jj.resolve_range(&summary.manifest.revset).await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        tracing::debug!(
+                            repo = %repo_name,
+                            review = %review_id,
+                            error = %e,
+                            "branch watcher: resolve_range failed",
+                        );
+                        continue;
+                    }
+                };
+                let cur = summary.manifest.current();
+                let live = (range.tip.commit_id, range.base.commit_id);
+                let stale = live.0 != cur.tip_commit || live.1 != cur.base_commit;
+                let key = (repo_id.clone(), review_id.clone());
+                let prev = state.insert(key, live.clone());
+                // Emit when the review is stale AND the live endpoints
+                // moved since the last tick we saw. That covers:
+                //   - first time we see this review and it's already stale;
+                //   - amend → amend → amend (each new tip re-pings the UI);
+                //   - skip when nothing actually changed since last poll.
+                if stale && prev.as_ref() != Some(&live) {
+                    let _ = self.events.send(Event::ReviewBranchMoved {
+                        repo: repo_name.clone(),
+                        review_id,
+                    });
+                }
+            }
+        }
+    }
+
     /// All registered repos, in registration order.
     pub fn list_repos(&self) -> Vec<RepoSummary> {
         self.by_name

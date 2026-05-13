@@ -427,17 +427,26 @@
 
   /** Auto-refresh on any public state change for this review so the user
    *  sees other authors' published comments / status flips without a
-   *  manual reload. Drafts are local-only so they don't trigger events. */
+   *  manual reload. Drafts are local-only so they don't trigger events.
+   *  `review-branch-moved` flips the local stale flag in place — it
+   *  doesn't re-fetch, because nothing the user can see has actually
+   *  changed; we just want the Refresh affordance to surface. */
   onMount(() =>
     subscribeEvents((event) => {
       if (
-        event.repo === repo &&
-        (event.kind === 'session-published' ||
-          event.kind === 'session-discarded' ||
-          event.kind === 'review-updated') &&
-        event.review_id === current.manifest.review_id
+        event.repo !== repo ||
+        event.review_id !== current.manifest.review_id
+      ) {
+        return;
+      }
+      if (
+        event.kind === 'session-published' ||
+        event.kind === 'session-discarded' ||
+        event.kind === 'review-updated'
       ) {
         void refresh();
+      } else if (event.kind === 'review-branch-moved') {
+        current = { ...current, is_stale: true };
       }
     }),
   );
