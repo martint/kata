@@ -48,6 +48,14 @@ struct Args {
     /// reloading. Set to 0 to disable the background watcher entirely.
     #[arg(long, env = "KATA_BRANCH_POLL_SECS", default_value = "10")]
     branch_poll_secs: u64,
+
+    /// Origin to allow on `/mcp` for browser-based MCP clients (e.g. the
+    /// MCP inspector). Pass multiple times to allow several origins.
+    /// Without this flag, `/mcp` returns no CORS headers and browsers
+    /// refuse the cross-origin request — which is the safe default since
+    /// the MCP endpoint is unauthenticated.
+    #[arg(long = "mcp-cors-origin", env = "KATA_MCP_CORS_ORIGIN")]
+    mcp_cors_origins: Vec<String>,
 }
 
 struct WorkspaceSpec {
@@ -164,10 +172,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         repos = repo_count,
         "mounting MCP at /mcp",
     );
-    app = app.nest_service(
-        "/mcp",
-        kata_mcp::mcp_service(service.clone(), mcp_author.clone()),
-    );
+    let mcp = kata_mcp::mcp_service(service.clone(), mcp_author.clone());
+    if args.mcp_cors_origins.is_empty() {
+        app = app.nest_service("/mcp", mcp);
+    } else {
+        let origins = args
+            .mcp_cors_origins
+            .iter()
+            .map(|o| {
+                axum::http::HeaderValue::from_str(o)
+                    .map_err(|e| format!("invalid --mcp-cors-origin {o:?}: {e}"))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        tracing::info!(origins = ?args.mcp_cors_origins, "enabling CORS on /mcp");
+        let cors = tower_http::cors::CorsLayer::new()
+            .allow_origin(tower_http::cors::AllowOrigin::list(origins))
+            .allow_methods([
+                axum::http::Method::GET,
+                axum::http::Method::POST,
+                axum::http::Method::DELETE,
+                axum::http::Method::OPTIONS,
+            ])
+            .allow_headers([
+                axum::http::header::CONTENT_TYPE,
+                axum::http::header::ACCEPT,
+                axum::http::HeaderName::from_static("mcp-session-id"),
+                axum::http::HeaderName::from_static("mcp-protocol-version"),
+            ])
+            // Streamable HTTP threads a session id back to the client in
+            // the initialize response; the browser only exposes it to JS
+            // if we list it here.
+            .expose_headers([axum::http::HeaderName::from_static("mcp-session-id")]);
+        let layered = tower::ServiceBuilder::new().layer(cors).service(mcp);
+        app = app.nest_service("/mcp", layered);
+    }
 
     let listener = tokio::net::TcpListener::bind(cfg.bind_addr).await?;
     tracing::info!(addr = %cfg.bind_addr, "kata listening");
