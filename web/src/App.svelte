@@ -264,6 +264,7 @@
     <ReviewViewer
       repo={screen.repo}
       view={screen.view}
+      viewer={whoami?.author ?? ''}
       initialPatchset={screen.initialPatchset}
       onpatchsetchange={onPatchsetChange}
       ontoolbarchange={(t) => (toolbar = t)}

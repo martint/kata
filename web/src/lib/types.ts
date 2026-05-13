@@ -109,6 +109,9 @@ export interface ReviewManifest {
   created_at: string;
   created_by: Author;
   bookmark?: string;
+  /** Author-written markdown summary. Only the `created_by` author can
+   *  set or update it. Absent on manifests that predate the feature. */
+  summary?: string;
   patchsets: Patchset[];
   current_patchset: number;
 }
@@ -190,6 +193,8 @@ export interface CreateReviewParams {
   revset: RevSet;
   bookmark?: string;
   created_by: Author;
+  /** Optional markdown summary shown at the top of the review. */
+  summary?: string;
 }
 
 export interface DraftCommentInput {

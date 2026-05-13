@@ -56,6 +56,10 @@ fn api_routes() -> Router<AppState> {
             post(reviews::refresh_review),
         )
         .route(
+            "/api/repos/{repo_name}/reviews/{review_id}/summary",
+            axum::routing::put(reviews::update_summary),
+        )
+        .route(
             "/api/repos/{repo_name}/reviews/{review_id}/commits/{change_id}/diff",
             get(reviews::commit_diff),
         )

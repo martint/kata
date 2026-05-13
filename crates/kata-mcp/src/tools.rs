@@ -102,6 +102,7 @@ impl ReviewMcp {
             review_id,
             revset,
             bookmark,
+            summary,
         } = args;
         let repo = self.resolve(&repo)?;
         let revset = revset.unwrap_or_else(|| {
@@ -117,6 +118,7 @@ impl ReviewMcp {
                     revset,
                     bookmark,
                     created_by: self.author.clone(),
+                    summary,
                 },
             )
             .await
@@ -125,7 +127,7 @@ impl ReviewMcp {
     }
 
     #[tool(
-        description = "Re-resolve the review's revset against the underlying jj repo. If the tip or base has moved since the last patchset was recorded, append a new patchset and make it current. Call after pushing additional commits or rewriting the branch so reviewers see the new round."
+        description = "Re-resolve the review's revset against the underlying jj repo. If the tip or base has moved since the last patchset was recorded, append a new patchset and make it current. Call after pushing additional commits or rewriting the branch so reviewers see the new round. Optionally pass `summary` to also update the review summary in the same call — only the review's creator may do that."
     )]
     async fn refresh_review(
         &self,
@@ -134,7 +136,23 @@ impl ReviewMcp {
         let repo = self.resolve(&args.repo)?;
         let manifest = self
             .service
-            .refresh_review(&repo, &args.review_id)
+            .refresh_review(&repo, &args.review_id, &self.author, args.summary)
+            .await
+            .map_err(into_mcp)?;
+        Ok(text_json(&manifest))
+    }
+
+    #[tool(
+        description = "Replace the free-text summary on a review. Only the review's creator may call this. Pass `summary: null` (or an empty string) to clear it."
+    )]
+    async fn update_review_summary(
+        &self,
+        Parameters(args): Parameters<UpdateSummaryArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let repo = self.resolve(&args.repo)?;
+        let manifest = self
+            .service
+            .update_review_summary(&repo, &args.review_id, &self.author, args.summary)
             .await
             .map_err(into_mcp)?;
         Ok(text_json(&manifest))
@@ -417,8 +435,10 @@ impl ServerHandler for ReviewMcp {
                  `draft_file_comment` / `draft_review_comment` to leave feedback (starts a \
                  draft session on first use); `update_draft_comment` to revise a draft \
                  before publishing; `respond` to reply or change resolution; \
-                 `publish_session` once the round is complete. Before doing review work, \
-                 read the resource `skill://kata/review` for the full workflow."
+                 `publish_session` once the round is complete. Review creators may set \
+                 a summary at `create_review` time and replace it later via \
+                 `update_review_summary` (or alongside `refresh_review`). Before doing \
+                 review work, read the resource `skill://kata/review` for the full workflow."
                     .into(),
             ),
         }
@@ -509,12 +529,29 @@ pub struct CreateReviewArgs {
     pub revset: Option<RevSet>,
     #[serde(default)]
     pub bookmark: Option<String>,
+    /// Optional markdown summary shown at the top of the review.
+    #[serde(default)]
+    pub summary: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct RefreshReviewArgs {
     pub repo: String,
     pub review_id: ReviewId,
+    /// When set, also replaces the review's summary. Only the creator
+    /// may do this; non-creators get a BadRequest. Omit to refresh
+    /// without touching the summary.
+    #[serde(default)]
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct UpdateSummaryArgs {
+    pub repo: String,
+    pub review_id: ReviewId,
+    /// New summary. `null` (or omitting) clears the existing one.
+    #[serde(default)]
+    pub summary: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]

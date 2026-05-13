@@ -68,12 +68,50 @@ pub async fn open_review(
     ))
 }
 
+#[derive(Debug, Default, Deserialize)]
+pub struct RefreshReviewBody {
+    /// Optional summary update. When present, the actor must be the
+    /// review's creator. Omit (or send an empty object) to refresh
+    /// without touching the summary.
+    #[serde(default)]
+    pub summary: Option<String>,
+}
+
 pub async fn refresh_review(
     State(state): State<AppState>,
+    ViewerAuthor(actor): ViewerAuthor,
     Path((repo_name, review_id)): Path<(String, ReviewId)>,
+    body: Option<Json<RefreshReviewBody>>,
 ) -> AppResult<Json<ReviewManifest>> {
     let repo = state.service.resolve_repo(&repo_name)?;
-    Ok(Json(state.service.refresh_review(&repo, &review_id).await?))
+    let new_summary = body.and_then(|Json(b)| b.summary);
+    Ok(Json(
+        state
+            .service
+            .refresh_review(&repo, &review_id, &actor, new_summary)
+            .await?,
+    ))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateSummaryBody {
+    /// New summary. `null` or `""` clears it.
+    pub summary: Option<String>,
+}
+
+pub async fn update_summary(
+    State(state): State<AppState>,
+    ViewerAuthor(actor): ViewerAuthor,
+    Path((repo_name, review_id)): Path<(String, ReviewId)>,
+    Json(body): Json<UpdateSummaryBody>,
+) -> AppResult<Json<ReviewManifest>> {
+    let repo = state.service.resolve_repo(&repo_name)?;
+    Ok(Json(
+        state
+            .service
+            .update_review_summary(&repo, &review_id, &actor, body.summary)
+            .await?,
+    ))
 }
 
 pub async fn commit_diff(

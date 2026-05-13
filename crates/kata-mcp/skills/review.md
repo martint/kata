@@ -55,6 +55,11 @@ current. Comments stay anchored to their original patchset (they
 re-anchor against the current view), so refreshing is safe and
 non-destructive.
 
+If you're the review's creator, pass `summary` to `refresh_review` (or
+call `update_review_summary` separately) to set or replace the
+free-text description shown at the top of the review. Non-creators
+that try to update the summary are rejected.
+
 ## Tips
 
 - Read the entire diff before writing any comments. Comments stamped on

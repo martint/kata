@@ -18,6 +18,7 @@
   import CommitsPanel from './CommitsPanel.svelte';
   import FileSlot from './FileSlot.svelte';
   import FileTree from './FileTree.svelte';
+  import ReviewSummary from './ReviewSummary.svelte';
 
   /** State + action callbacks for the controls that App.svelte renders in
    *  the sticky top bar. Re-emitted whenever any of the underlying fields
@@ -51,6 +52,10 @@
   interface Props {
     repo: string;
     view: ReviewView;
+    /** Currently signed-in viewer's author identity. Used to gate
+     *  "Edit summary" affordances to the review's creator only. Empty
+     *  string before whoami has resolved (treated as not-creator). */
+    viewer: string;
     /** Patchset to start on. Undefined means "the latest". */
     initialPatchset?: number;
     /** Fires when the user picks a different patchset from the dropdown.
@@ -65,6 +70,7 @@
   let {
     repo,
     view,
+    viewer,
     initialPatchset,
     onpatchsetchange,
     ontoolbarchange,
@@ -515,6 +521,24 @@
     }
   }
 
+  async function saveSummary(next: string | null) {
+    saving = true;
+    error = null;
+    try {
+      const updated = await api.updateSummary(
+        repo,
+        current.manifest.review_id,
+        next,
+      );
+      // Merge in place so we don't lose patchset / diff / comment state.
+      current = { ...current, manifest: updated };
+    } catch (e) {
+      error = (e as Error).message;
+    } finally {
+      saving = false;
+    }
+  }
+
   function startEdit(comment: CommentView) {
     // Re-open the composer at the existing comment's anchor with the
     // body/flag pre-filled. The submit handler picks the PUT path when
@@ -639,6 +663,7 @@
   <p class="muted">
     {#if current.manifest.bookmark}bookmark: <strong>{current.manifest.bookmark}</strong> ·{/if}
     revset: <code>{current.manifest.revset}</code>
+    · by <strong>{current.manifest.created_by}</strong>
   </p>
   <p class="muted patchset-row">
     {#if current.manifest.patchsets.length > 1}
@@ -677,6 +702,13 @@
     {/if}
   </p>
 </section>
+
+<ReviewSummary
+  summary={current.manifest.summary}
+  editable={!!viewer && viewer === current.manifest.created_by}
+  {saving}
+  onsave={saveSummary}
+/>
 
 {#if error}
   <p class="error">{error}</p>

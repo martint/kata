@@ -146,6 +146,11 @@ pub struct ReviewManifest {
     pub created_by: Author,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bookmark: Option<String>,
+    /// Author-written description of the change. Markdown. Only the
+    /// `created_by` author may set or update it. Optional — older
+    /// manifests on disk predate this field and deserialize with `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
     pub patchsets: Vec<Patchset>,
     pub current_patchset: u32,
 }

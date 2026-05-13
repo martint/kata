@@ -41,6 +41,7 @@ fn review_manifest(review: &ReviewId, author: &Author) -> ReviewManifest {
             parent_patchset: None,
         }],
         current_patchset: 1,
+        summary: None,
     }
 }
 

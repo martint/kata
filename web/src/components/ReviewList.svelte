@@ -27,6 +27,7 @@
   let selected: string = $state('');
   let revset: string = $state('');
   let revsetEdited: boolean = $state(false);
+  let summary: string = $state('');
   let creating: boolean = $state(false);
   let createError: string | null = $state(null);
 
@@ -109,13 +110,16 @@
     creating = true;
     createError = null;
     try {
+      const trimmedSummary = summary.trim();
       await api.createReview(repo, {
         review_id: selected,
         revset: revset.trim(),
         bookmark: selected,
         created_by: createdBy,
+        summary: trimmedSummary.length > 0 ? trimmedSummary : undefined,
       });
       revsetEdited = false;
+      summary = '';
       onopen(selected);
     } catch (e) {
       createError = (e as Error).message;
@@ -140,6 +144,25 @@
   .revset-field input {
     margin-left: 8px;
     min-width: 220px;
+  }
+
+  .summary-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    width: 100%;
+    flex-basis: 100%;
+    font-size: 13px;
+  }
+
+  .summary-field textarea {
+    font: inherit;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    padding: 6px 8px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    resize: vertical;
+    min-height: 60px;
   }
 
   .hint {
@@ -301,6 +324,14 @@
           oninput={() => (revsetEdited = true)}
           placeholder="e.g. trunk()..feature, @-..@"
         />
+      </label>
+      <label class="summary-field">
+        Summary <span class="muted">(optional, markdown)</span>
+        <textarea
+          bind:value={summary}
+          rows="3"
+          placeholder="A short description of the change. Shown at the top of the review."
+        ></textarea>
       </label>
       <button type="submit" class="primary" disabled={creating || !selected || !revset.trim()}>
         {creating ? 'Creating…' : 'Create review'}

@@ -247,6 +247,7 @@ impl ReviewService {
             revset,
             bookmark,
             created_by,
+            summary,
         } = params;
         let range = jj.resolve_range(&revset).await?;
         let now = Utc::now();
@@ -257,6 +258,7 @@ impl ReviewService {
             created_at: now,
             created_by,
             bookmark,
+            summary: summary.filter(|s| !s.is_empty()),
             patchsets: vec![Patchset {
                 n: 1,
                 base_change: range.base.change_id,
@@ -469,40 +471,80 @@ impl ReviewService {
 
     /// Re-resolve the revset. If the tip has moved since the current
     /// patchset was recorded, append a new patchset and make it current.
-    /// Otherwise leave the manifest untouched.
+    /// Optionally also replace the summary in the same call — only the
+    /// review's `created_by` author may do so; non-creators passing a
+    /// summary are rejected.
     pub async fn refresh_review(
         &self,
         repo: &RepoId,
         review: &ReviewId,
+        actor: &Author,
+        new_summary: Option<String>,
     ) -> ServiceResult<ReviewManifest> {
         let jj = self.jj_for(repo)?;
         let mut manifest = self.storage.open_review(repo, review).await?;
+        if new_summary.is_some() && actor != &manifest.created_by {
+            return Err(ServiceError::BadRequest(
+                "only the review's creator can update its summary".into(),
+            ));
+        }
         let range = jj.resolve_range(&manifest.revset).await?;
         let current = manifest.current().clone();
-        if range.tip.commit_id == current.tip_commit
-            && range.base.commit_id == current.base_commit
-        {
+        let tip_moved = range.tip.commit_id != current.tip_commit
+            || range.base.commit_id != current.base_commit;
+        if !tip_moved && new_summary.is_none() {
             return Ok(manifest);
         }
-        let parent_patchset = if jj
-            .is_ancestor(&current.tip_commit, &range.tip.commit_id)
-            .await?
-        {
-            Some(current.n)
-        } else {
-            None
-        };
-        let next_n = manifest.patchsets.iter().map(|p| p.n).max().unwrap_or(0) + 1;
-        manifest.patchsets.push(Patchset {
-            n: next_n,
-            base_change: range.base.change_id,
-            base_commit: range.base.commit_id,
-            tip_change: range.tip.change_id,
-            tip_commit: range.tip.commit_id,
-            recorded_at: Utc::now(),
-            parent_patchset,
+        if tip_moved {
+            let parent_patchset = if jj
+                .is_ancestor(&current.tip_commit, &range.tip.commit_id)
+                .await?
+            {
+                Some(current.n)
+            } else {
+                None
+            };
+            let next_n = manifest.patchsets.iter().map(|p| p.n).max().unwrap_or(0) + 1;
+            manifest.patchsets.push(Patchset {
+                n: next_n,
+                base_change: range.base.change_id,
+                base_commit: range.base.commit_id,
+                tip_change: range.tip.change_id,
+                tip_commit: range.tip.commit_id,
+                recorded_at: Utc::now(),
+                parent_patchset,
+            });
+            manifest.current_patchset = next_n;
+        }
+        if let Some(s) = new_summary {
+            manifest.summary = Some(s).filter(|s| !s.is_empty());
+        }
+        self.storage.update_review(repo, &manifest).await?;
+        let repo_name = self.repo_name(repo).unwrap_or_default();
+        self.emit(Event::ReviewUpdated {
+            repo: repo_name,
+            review_id: manifest.review_id.clone(),
         });
-        manifest.current_patchset = next_n;
+        Ok(manifest)
+    }
+
+    /// Replace the review's free-text summary. Only the `created_by`
+    /// author may call this. Passing `None` (or an empty string) clears
+    /// the summary.
+    pub async fn update_review_summary(
+        &self,
+        repo: &RepoId,
+        review: &ReviewId,
+        actor: &Author,
+        summary: Option<String>,
+    ) -> ServiceResult<ReviewManifest> {
+        let mut manifest = self.storage.open_review(repo, review).await?;
+        if actor != &manifest.created_by {
+            return Err(ServiceError::BadRequest(
+                "only the review's creator can update its summary".into(),
+            ));
+        }
+        manifest.summary = summary.filter(|s| !s.is_empty());
         self.storage.update_review(repo, &manifest).await?;
         let repo_name = self.repo_name(repo).unwrap_or_default();
         self.emit(Event::ReviewUpdated {
@@ -694,6 +736,10 @@ pub struct CreateReviewParams {
     #[serde(default)]
     pub bookmark: Option<String>,
     pub created_by: Author,
+    /// Optional author-written summary (markdown). Stored verbatim on
+    /// the manifest and displayed at the top of the review.
+    #[serde(default)]
+    pub summary: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

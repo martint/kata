@@ -88,8 +88,18 @@ export const api = {
     const qs = patchset !== undefined ? `?patchset=${patchset}` : '';
     return request<ReviewView>('GET', `${repoBase(repo)}/reviews/${enc(id)}${qs}`);
   },
-  refreshReview: (repo: string, id: string) =>
-    request<ReviewManifest>('POST', `${repoBase(repo)}/reviews/${enc(id)}/refresh`),
+  refreshReview: (repo: string, id: string, summary?: string) =>
+    request<ReviewManifest>(
+      'POST',
+      `${repoBase(repo)}/reviews/${enc(id)}/refresh`,
+      summary !== undefined ? { summary } : {},
+    ),
+  updateSummary: (repo: string, id: string, summary: string | null) =>
+    request<ReviewManifest>(
+      'PUT',
+      `${repoBase(repo)}/reviews/${enc(id)}/summary`,
+      { summary },
+    ),
   commitDiff: (repo: string, reviewId: string, changeId: string) =>
     request<Diff>(
       'GET',
