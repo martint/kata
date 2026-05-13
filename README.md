@@ -23,7 +23,7 @@ The Svelte frontend lives in `web/`.
 ## Build
 
 ```sh
-# Requires Rust 1.95+, jj on PATH, and pnpm for the bundled web build.
+# Requires Rust 1.95+, jj on PATH, and bun for the bundled web build.
 cargo build --release
 
 # To skip the web build (e.g. CI for crates other than kata-server):
@@ -31,7 +31,7 @@ KATA_SKIP_WEB_BUILD=1 cargo build
 ```
 
 The release binary embeds `web/dist`; pass `--web-dir <path>` at runtime to
-serve a different bundle (useful during UI development with `pnpm run dev`).
+serve a different bundle (useful during UI development with `bun run dev`).
 
 ## Run
 

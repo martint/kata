@@ -11,7 +11,6 @@
     "test": "bun --bun vitest run",
     "test:watch": "bun --bun vitest"
   },
-  "packageManager": "pnpm@11.1.0",
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^5.0.3",
     "@tsconfig/svelte": "^5.0.4",

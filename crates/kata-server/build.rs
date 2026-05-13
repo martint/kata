@@ -1,8 +1,8 @@
 //! Build the Svelte bundle so the resulting binary can embed it.
 //!
 //! - Skips if `KATA_SKIP_WEB_BUILD=1` (use `--web-dir` at runtime instead).
-//! - Otherwise requires `pnpm` on `PATH`. Failing loudly here avoids the
-//!   previous silent-skip footgun where a missing pnpm shipped a stale
+//! - Otherwise requires `bun` on `PATH`. Failing loudly here avoids the
+//!   previous silent-skip footgun where a missing toolchain shipped a stale
 //!   `web/dist` without telling you.
 
 use std::path::{Path, PathBuf};
@@ -25,22 +25,22 @@ fn main() {
         return;
     }
 
-    if which("pnpm").is_none() {
+    if which("bun").is_none() {
         panic!(
             "\n\n\
-             pnpm not found on PATH; refusing to ship a stale web bundle.\n\
+             bun not found on PATH; refusing to ship a stale web bundle.\n\
              Either:\n\
-               1. Install pnpm (https://pnpm.io/installation) and make sure\n\
-                  `pnpm --version` works in the same shell that runs cargo.\n\
+               1. Install bun (https://bun.sh) and make sure\n\
+                  `bun --version` works in the same shell that runs cargo.\n\
                2. Set KATA_SKIP_WEB_BUILD=1 to skip the web build and pass\n\
                   `--web-dir web/dist` (or a prebuilt dir) at runtime.\n\n",
         );
     }
 
     if !web_dir.join("node_modules").exists() {
-        run(&web_dir, "pnpm", &["install"]);
+        run(&web_dir, "bun", &["install"]);
     }
-    run(&web_dir, "pnpm", &["run", "build"]);
+    run(&web_dir, "bun", &["run", "build"]);
     ensure_placeholder(&dist_dir); // belt-and-braces: dist must always exist for rust-embed
 }
 
@@ -69,7 +69,7 @@ fn ensure_placeholder(dist_dir: &Path) {
         std::fs::write(
             &index,
             "<!doctype html><meta charset=utf-8><title>review</title>\
-             <p>Web bundle was not built. Build it with <code>pnpm --dir web run build</code> \
+             <p>Web bundle was not built. Build it with <code>bun --cwd web run build</code> \
              or pass <code>--web-dir</code>.",
         )
         .expect("write placeholder");
