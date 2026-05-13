@@ -511,12 +511,12 @@
   }
 
   async function ensureSession(): Promise<string> {
-    let sid = current.drafts.session?.session_id;
-    if (!sid) {
-      const session = await api.startSession(repo, current.manifest.review_id);
-      sid = session.session_id;
-    }
-    return sid;
+    if (current.drafts.session) return current.drafts.session.session_id;
+    const session = await api.startSession(repo, current.manifest.review_id);
+    // Persist locally so the optimistic-update paths below don't have to
+    // refetch the review just to learn the new session_id.
+    current = { ...current, drafts: { ...current.drafts, session } };
+    return session.session_id;
   }
 
   async function submitComment(input: DraftCommentInput) {
@@ -525,18 +525,38 @@
     try {
       const sid = await ensureSession();
       const editingId = composing?.editing?.commentId;
-      if (editingId) {
-        await api.updateComment(
-          repo,
-          current.manifest.review_id,
-          sid,
-          editingId,
-          input,
-        );
-      } else {
-        await api.createComment(repo, current.manifest.review_id, sid, input);
-      }
-      await refresh();
+      const saved = editingId
+        ? await api.updateComment(
+            repo,
+            current.manifest.review_id,
+            sid,
+            editingId,
+            input,
+          )
+        : await api.createComment(repo, current.manifest.review_id, sid, input);
+      // Splice into local drafts instead of refetching the whole review.
+      // `openReview` re-runs `jj diff` and resolves every comment's
+      // anchor, which on large diffs takes seconds; the local view
+      // already has everything except the new draft.
+      //
+      // The new draft was just authored against the patchset we're
+      // viewing, so `anchor: { kind: 'valid' }` is trivially correct
+      // until the server-side anchor resolution kicks back in (next
+      // SSE event or manual refresh).
+      const view: CommentView = {
+        ...saved,
+        anchor: { kind: 'valid' },
+        draft: true,
+      };
+      const next = editingId
+        ? current.drafts.comments.map((c) =>
+            c.comment_id === editingId ? view : c,
+          )
+        : [...current.drafts.comments, view];
+      current = {
+        ...current,
+        drafts: { ...current.drafts, comments: next },
+      };
       composing = null;
     } catch (e) {
       error = (e as Error).message;
@@ -593,8 +613,20 @@
     error = null;
     try {
       const sid = await ensureSession();
-      await api.createResponse(repo, current.manifest.review_id, sid, input);
-      await refresh();
+      const saved = await api.createResponse(
+        repo,
+        current.manifest.review_id,
+        sid,
+        input,
+      );
+      const view: ResponseView = { ...saved, draft: true };
+      current = {
+        ...current,
+        drafts: {
+          ...current.drafts,
+          responses: [...current.drafts.responses, view],
+        },
+      };
     } catch (e) {
       error = (e as Error).message;
     } finally {
@@ -617,7 +649,15 @@
         comment.session_id,
         comment.comment_id,
       );
-      await refresh();
+      current = {
+        ...current,
+        drafts: {
+          ...current.drafts,
+          comments: current.drafts.comments.filter(
+            (c) => c.comment_id !== comment.comment_id,
+          ),
+        },
+      };
     } catch (e) {
       error = (e as Error).message;
     } finally {
