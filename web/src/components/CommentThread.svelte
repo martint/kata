@@ -69,6 +69,15 @@
     await copyText(text);
   }
 
+  /** Build a same-origin permalink that includes the review's current
+   *  pathname/search (so the patchset stays the same) and a `#c-<id>`
+   *  hash that ReviewViewer scrolls to on load and on `hashchange`. */
+  function permalinkFor(commentId: string): string {
+    const u = new URL(window.location.href);
+    u.hash = `c-${encodeURIComponent(commentId)}`;
+    return u.toString();
+  }
+
   async function submitReply(input: DraftResponseInput) {
     await onreply(input);
     replyingTo = null;
@@ -95,6 +104,12 @@
           <span class="badge resolution-{state}">{state}</span>
         {/if}
         <span class="time">{new Date(c.created_at).toLocaleString()}</span>
+        <button
+          type="button"
+          class="copy-button"
+          title="Copy permalink"
+          onclick={() => copyToClipboard(permalinkFor(c.comment_id))}>🔗</button
+        >
         {#if c.body.trim().length > 0}
           <button
             type="button"

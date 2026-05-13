@@ -473,6 +473,30 @@
     }),
   );
 
+  /** Comment-permalink hash. URLs like `…/r/<repo>/<rid>#c-<commentId>`
+   *  scroll to that comment on load; we also listen for `hashchange`
+   *  so clicking a permalink from elsewhere in the app jumps without a
+   *  reload. The file is looked up so `scrollToComment` knows which
+   *  FileSlot to mount when the comment is currently virtualized away. */
+  function jumpToHash() {
+    const hash = window.location.hash;
+    if (!hash.startsWith('#c-')) return;
+    const commentId = decodeURIComponent(hash.slice(3));
+    const comment = [
+      ...current.comments,
+      ...current.drafts.comments,
+    ].find((c) => c.comment_id === commentId);
+    if (!comment) return;
+    void scrollToComment(comment.comment_id, comment.file ?? null);
+  }
+  onMount(() => {
+    // Wait one frame for FileSlots to register; scrollToComment also
+    // retries internally, so this is belt-and-braces.
+    requestAnimationFrame(jumpToHash);
+    window.addEventListener('hashchange', jumpToHash);
+    return () => window.removeEventListener('hashchange', jumpToHash);
+  });
+
   const reviewAnchorIds = $derived({
     change: viewing.tip_change,
     commit: viewing.tip_commit,
