@@ -285,19 +285,6 @@
       </div>
     {/if}
     <form class="create-form" onsubmit={submit}>
-      {#if repos.length > 1}
-        <label>
-          Repository
-          <select
-            value={repo}
-            onchange={(e) => onchangerepo((e.currentTarget as HTMLSelectElement).value)}
-          >
-            {#each repos as r (r.name)}
-              <option value={r.name}>{r.name}</option>
-            {/each}
-          </select>
-        </label>
-      {/if}
       <label>
         Bookmark
         <select bind:value={selected}>
