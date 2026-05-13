@@ -125,6 +125,22 @@ impl ReviewMcp {
     }
 
     #[tool(
+        description = "Re-resolve the review's revset against the underlying jj repo. If the tip or base has moved since the last patchset was recorded, append a new patchset and make it current. Call after pushing additional commits or rewriting the branch so reviewers see the new round."
+    )]
+    async fn refresh_review(
+        &self,
+        Parameters(args): Parameters<RefreshReviewArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let repo = self.resolve(&args.repo)?;
+        let manifest = self
+            .service
+            .refresh_review(&repo, &args.review_id)
+            .await
+            .map_err(into_mcp)?;
+        Ok(text_json(&manifest))
+    }
+
+    #[tool(
         description = "Start or reuse the agent's open draft session for a review. Idempotent — same session is returned until it's published or discarded."
     )]
     async fn start_session(
@@ -461,6 +477,12 @@ pub struct CreateReviewArgs {
     pub revset: Option<RevSet>,
     #[serde(default)]
     pub bookmark: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct RefreshReviewArgs {
+    pub repo: String,
+    pub review_id: ReviewId,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]

@@ -44,6 +44,15 @@ MCP server can front multiple repositories; every tool call takes a
    `drafts.session` makes the whole batch visible to the author. Use
    `discard_session` to throw the batch away instead.
 
+## Recording a new round
+
+When the author pushes new commits or rewrites the branch under
+review, call `refresh_review`. It re-resolves the manifest's revset
+and, if the tip or base has moved, appends a new patchset and makes it
+current. Comments stay anchored to their original patchset (they
+re-anchor against the current view), so refreshing is safe and
+non-destructive.
+
 ## Tips
 
 - Read the entire diff before writing any comments. Comments stamped on
