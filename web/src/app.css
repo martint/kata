@@ -118,6 +118,17 @@ header.app h1 {
   margin: 0;
   font-size: 16px;
   font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+header.app h1 .app-icon {
+  /* Slightly larger than the cap-height of the title so the icon
+   * reads as the primary mark and "Kata" as its wordmark companion. */
+  width: 22px;
+  height: 22px;
+  display: block;
 }
 
 header.app .author {

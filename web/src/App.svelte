@@ -189,7 +189,10 @@
       aria-expanded={!toolbar.tree.collapsed}
     >☰</button>
   {/if}
-  <h1>Kata</h1>
+  <h1>
+    <img class="app-icon" src="/favicon.svg" alt="" width="22" height="22" />
+    Kata
+  </h1>
   {#if screen.kind === 'review'}
     <button onclick={back} aria-label="Back to review list">← <span class="lbl">Back</span></button>
   {/if}

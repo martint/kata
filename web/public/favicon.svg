@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <!-- Two opposing curves — author / reviewer (or human / agent) facing
+       each other across the kata. The central dot is the meeting point. -->
+  <path d="M 18 14 Q 28 32 18 50"
+        stroke="#0969da" stroke-width="6" stroke-linecap="round"/>
+  <path d="M 46 14 Q 36 32 46 50"
+        stroke="#1a7f37" stroke-width="6" stroke-linecap="round"/>
+  <circle cx="32" cy="32" r="3" fill="#57606a"/>
+</svg>
