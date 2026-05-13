@@ -280,6 +280,36 @@ impl ReviewMcp {
         Ok(text_json(&comment))
     }
 
+    #[tool(
+        description = "Edit the body and flag of an existing draft comment authored by the current MCP user. The anchor (file / lines / side) and review-id are kept; pass the new `body` and `flag`. Fails if the comment is already published or doesn't belong to the caller's open session."
+    )]
+    async fn update_draft_comment(
+        &self,
+        Parameters(args): Parameters<UpdateDraftCommentArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let UpdateDraftCommentArgs {
+            repo,
+            review_id,
+            comment_id,
+            flag,
+            body,
+        } = args;
+        let repo = self.resolve(&repo)?;
+        let comment = self
+            .service
+            .update_draft_comment(
+                &repo,
+                &review_id,
+                &self.author,
+                &comment_id,
+                body.unwrap_or_default(),
+                flag,
+            )
+            .await
+            .map_err(into_mcp)?;
+        Ok(text_json(&comment))
+    }
+
     #[tool(description = "Draft a whole-review comment. Auto-starts a session.")]
     async fn draft_review_comment(
         &self,
@@ -385,7 +415,8 @@ impl ServerHandler for ReviewMcp {
                  (a workspace slug from `list_repos`) on every tool call. Use `list_reviews` \
                  and `get_review` to inspect changes; `draft_line_comment` / \
                  `draft_file_comment` / `draft_review_comment` to leave feedback (starts a \
-                 draft session on first use); `respond` to reply or change resolution; \
+                 draft session on first use); `update_draft_comment` to revise a draft \
+                 before publishing; `respond` to reply or change resolution; \
                  `publish_session` once the round is complete. Before doing review work, \
                  read the resource `skill://kata/review` for the full workflow."
                     .into(),
@@ -531,6 +562,16 @@ pub struct DraftReviewCommentArgs {
     pub review_id: ReviewId,
     pub anchor_change_id: ChangeId,
     pub anchor_commit_id: CommitId,
+    pub flag: Flag,
+    #[serde(default)]
+    pub body: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct UpdateDraftCommentArgs {
+    pub repo: String,
+    pub review_id: ReviewId,
+    pub comment_id: CommentId,
     pub flag: Flag,
     #[serde(default)]
     pub body: Option<String>,

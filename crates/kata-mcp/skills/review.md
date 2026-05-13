@@ -34,7 +34,9 @@ MCP server can front multiple repositories; every tool call takes a
    `flag` classifies severity: `must-do` (blocks merge), `suggestion`
    (worth considering), or `other` (notes / questions). The first draft
    call auto-opens a session; subsequent drafts reuse it until you
-   publish or discard.
+   publish or discard. Revise a still-unpublished draft with
+   `update_draft_comment` (pass the `comment_id` plus the new `body` and
+   `flag`); the anchor stays put.
 
 4. **Respond.** `respond` replies to an existing comment. The `action`
    field also changes resolution state: `comment` (no change),

@@ -17,9 +17,17 @@
     onreply: (input: DraftResponseInput) => Promise<void>;
     onstatus: (commentId: string, action: ResolutionAction) => Promise<void>;
     ondelete: (comment: CommentView) => Promise<void>;
+    onedit: (comment: CommentView) => void;
   }
-  const { comments, responses, saving, onreply, onstatus, ondelete }: Props =
-    $props();
+  const {
+    comments,
+    responses,
+    saving,
+    onreply,
+    onstatus,
+    ondelete,
+    onedit,
+  }: Props = $props();
 
   let replyingTo: string | null = $state(null);
 
@@ -184,6 +192,14 @@
             {/if}
           {/if}
           {#if c.draft}
+            <button
+              type="button"
+              class="action-button"
+              disabled={saving}
+              onclick={() => onedit(c)}
+            >
+              Edit
+            </button>
             <button
               type="button"
               class="action-button destructive"

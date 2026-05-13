@@ -44,6 +44,7 @@
     onreply: (input: DraftResponseInput) => Promise<void>;
     onstatus: (commentId: string, action: ResolutionAction) => Promise<void>;
     ondelete: (comment: CommentView) => Promise<void>;
+    onedit: (comment: CommentView) => void;
   }
   const {
     repo,
@@ -61,6 +62,7 @@
     onreply,
     onstatus,
     ondelete,
+    onedit,
   }: Props = $props();
 
   let slotEl: HTMLElement | undefined = $state();
@@ -137,6 +139,7 @@
         {onreply}
         {onstatus}
         {ondelete}
+        {onedit}
       />
     </div>
   {:else}

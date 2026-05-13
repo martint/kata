@@ -213,8 +213,14 @@ export interface WhoAmI {
 }
 
 /** What level of comment the composer is targeting. Line targets carry
- *  an inclusive `startLine..endLine` so multi-line selections work too. */
-export type ComposerTarget =
+ *  an inclusive `startLine..endLine` so multi-line selections work too.
+ *  When `editing` is present the composer is editing an existing draft
+ *  rather than creating a new one — submit goes via PUT and the anchor
+ *  is the existing comment's anchor (kept verbatim). */
+export type ComposerTarget = (
   | { kind: 'line'; file: string; side: Side; startLine: number; endLine: number }
   | { kind: 'file'; file: string }
-  | { kind: 'review' };
+  | { kind: 'review' }
+) & {
+  editing?: { commentId: string; body: string; flag: Flag };
+};

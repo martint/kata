@@ -11,8 +11,14 @@
   }
   const { target, anchorIds, saving, oncancel, onsubmit }: Props = $props();
 
-  let flag: Flag = $state('other');
-  let body: string = $state('');
+  // Seed from `target.editing` so the composer opens with the draft's
+  // current body/flag when re-entering. `$state` ignores its initial
+  // value after first render, so this is one-shot — subsequent edits
+  // happen in the composer's own state.
+  // svelte-ignore state_referenced_locally
+  let flag: Flag = $state(target.editing?.flag ?? 'other');
+  // svelte-ignore state_referenced_locally
+  let body: string = $state(target.editing?.body ?? '');
   let mode = $state<'edit' | 'preview'>('edit');
   let textareaEl: HTMLTextAreaElement | undefined = $state();
 
@@ -67,17 +73,20 @@
   }
 
   const heading = $derived.by(() => {
+    const verb = target.editing ? 'editing draft on' : 'commenting on';
     if (target.kind === 'line') {
       const range =
         target.startLine === target.endLine
           ? `${target.startLine}`
           : `${target.startLine}-${target.endLine}`;
-      return `commenting on ${target.file}:${range} (${target.side})`;
+      return `${verb} ${target.file}:${range} (${target.side})`;
     }
     if (target.kind === 'file') {
-      return `commenting on ${target.file}`;
+      return `${verb} ${target.file}`;
     }
-    return 'commenting on the whole review';
+    return target.editing
+      ? 'editing draft on the whole review'
+      : 'commenting on the whole review';
   });
 </script>
 
@@ -131,7 +140,11 @@
   <footer>
     <button type="button" onclick={oncancel} disabled={saving}>Cancel</button>
     <button type="submit" class="primary" disabled={saving}>
-      {saving ? 'Saving…' : 'Save draft'}
+      {saving
+        ? 'Saving…'
+        : target.editing
+          ? 'Save changes'
+          : 'Save draft'}
     </button>
   </footer>
 </form>

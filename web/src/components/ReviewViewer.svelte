@@ -494,13 +494,49 @@
     error = null;
     try {
       const sid = await ensureSession();
-      await api.createComment(repo, current.manifest.review_id, sid, input);
+      const editingId = composing?.editing?.commentId;
+      if (editingId) {
+        await api.updateComment(
+          repo,
+          current.manifest.review_id,
+          sid,
+          editingId,
+          input,
+        );
+      } else {
+        await api.createComment(repo, current.manifest.review_id, sid, input);
+      }
       await refresh();
       composing = null;
     } catch (e) {
       error = (e as Error).message;
     } finally {
       saving = false;
+    }
+  }
+
+  function startEdit(comment: CommentView) {
+    // Re-open the composer at the existing comment's anchor with the
+    // body/flag pre-filled. The submit handler picks the PUT path when
+    // `composing.editing.commentId` is set.
+    const editing = {
+      commentId: comment.comment_id,
+      body: comment.body,
+      flag: comment.flag,
+    };
+    if (comment.file && comment.lines && comment.side) {
+      composing = {
+        kind: 'line',
+        file: comment.file,
+        side: comment.side,
+        startLine: comment.lines.start,
+        endLine: comment.lines.end,
+        editing,
+      };
+    } else if (comment.file) {
+      composing = { kind: 'file', file: comment.file, editing };
+    } else {
+      composing = { kind: 'review', editing };
     }
   }
 
@@ -730,6 +766,7 @@
       onreply={submitResponse}
       onstatus={setStatus}
       ondelete={deleteComment}
+      onedit={startEdit}
     />
   {:else if !composing || composing.kind !== 'review'}
     <p class="muted">No review-wide comments yet.</p>
@@ -778,6 +815,7 @@
           onreply={submitResponse}
           onstatus={setStatus}
           ondelete={deleteComment}
+          onedit={startEdit}
         />
       {/each}
     {/if}

@@ -596,6 +596,41 @@ impl ReviewService {
         Ok(comment)
     }
 
+    /// Edit the body / flag of an existing draft comment without making
+    /// the caller re-supply the anchor. Looks up the draft in the
+    /// author's open session, rebuilds the input with the new fields,
+    /// and delegates to [`Self::upsert_draft_comment`].
+    pub async fn update_draft_comment(
+        &self,
+        repo: &RepoId,
+        review: &ReviewId,
+        author: &Author,
+        comment_id: &CommentId,
+        body: String,
+        flag: Flag,
+    ) -> ServiceResult<Comment> {
+        let drafts = self.storage.list_drafts_for(repo, review, author).await?;
+        let existing = drafts
+            .comments
+            .iter()
+            .find(|c| &c.comment_id == comment_id)
+            .ok_or_else(|| {
+                ServiceError::NotFound(format!("draft comment {comment_id} for {author}"))
+            })?;
+        let session = existing.session_id.clone();
+        let input = DraftCommentInput {
+            anchor_change_id: existing.anchor_change_id.clone(),
+            anchor_commit_id: existing.anchor_commit_id.clone(),
+            file: existing.file.clone(),
+            side: existing.side.clone(),
+            lines: existing.lines.clone(),
+            flag,
+            body,
+        };
+        self.upsert_draft_comment(repo, review, &session, author, Some(comment_id.clone()), input)
+            .await
+    }
+
     pub async fn discard_draft_comment(
         &self,
         repo: &RepoId,

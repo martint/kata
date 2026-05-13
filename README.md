@@ -69,9 +69,9 @@ and reuse it across projects.
 `list_repos`, `list_bookmarks`, `list_reviews`, `get_review`,
 `create_review`, `refresh_review`, `start_session`, `publish_session`,
 `discard_session`, `draft_line_comment`, `draft_file_comment`,
-`draft_review_comment`, `respond`. Every tool that targets a specific
-workspace takes a `repo` argument — call `list_repos` first to see the
-available slugs.
+`draft_review_comment`, `update_draft_comment`, `respond`. Every tool
+that targets a specific workspace takes a `repo` argument — call
+`list_repos` first to see the available slugs.
 
 ### Skill resource
 

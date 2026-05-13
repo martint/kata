@@ -27,6 +27,7 @@
     onreply: (input: DraftResponseInput) => Promise<void>;
     onstatus: (commentId: string, action: ResolutionAction) => Promise<void>;
     ondelete: (comment: CommentView) => Promise<void>;
+    onedit: (comment: CommentView) => void;
   }
   const {
     hunk,
@@ -41,6 +42,7 @@
     onreply,
     onstatus,
     ondelete,
+    onedit,
   }: Props = $props();
 
   const showBase = $derived(lineNumberMode !== 'tip');
@@ -246,6 +248,7 @@
                   {onreply}
                   {onstatus}
                   {ondelete}
+                  {onedit}
                 />
               </div>
             </td>

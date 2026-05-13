@@ -42,6 +42,7 @@
     onreply: (input: DraftResponseInput) => Promise<void>;
     onstatus: (commentId: string, action: ResolutionAction) => Promise<void>;
     ondelete: (comment: CommentView) => Promise<void>;
+    onedit: (comment: CommentView) => void;
   }
   const {
     repo,
@@ -58,6 +59,7 @@
     onreply,
     onstatus,
     ondelete,
+    onedit,
   }: Props = $props();
 
   let collapsed = $state(false);
@@ -458,6 +460,7 @@
         {onreply}
         {onstatus}
         {ondelete}
+        {onedit}
       />
     </div>
   {/if}
@@ -490,6 +493,7 @@
               {onreply}
               {onstatus}
               {ondelete}
+              {onedit}
             />
           </li>
         {/each}
@@ -527,6 +531,7 @@
               {onreply}
               {onstatus}
               {ondelete}
+              {onedit}
             />
           {:else}
             <HunkLines
@@ -542,6 +547,7 @@
               {onreply}
               {onstatus}
               {ondelete}
+              {onedit}
             />
           {/if}
           {#if canExpand && canExpandBelow(eh)}
