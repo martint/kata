@@ -11,7 +11,6 @@ use rmcp::{
     ErrorData as McpError, ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::*,
-    schemars,
     service::RequestContext,
     tool, tool_handler, tool_router,
     transport::streamable_http_server::{
@@ -20,38 +19,56 @@ use rmcp::{
 };
 use serde::{Deserialize, Serialize};
 
-/// MCP service. Bound to one repository at construction so agents don't
-/// need to pass a repo argument on every call.
+/// MCP service. A single instance fronts every repo registered with the
+/// underlying [`ReviewService`]; tool callers select one by passing `repo`
+/// (the workspace slug) on each call.
 #[derive(Clone)]
 pub struct ReviewMcp {
     service: Arc<ReviewService>,
-    repo: RepoId,
     author: Author,
     tool_router: ToolRouter<ReviewMcp>,
 }
 
 #[tool_router]
 impl ReviewMcp {
-    pub fn new(service: Arc<ReviewService>, repo: RepoId, author: Author) -> Self {
+    pub fn new(service: Arc<ReviewService>, author: Author) -> Self {
         Self {
             service,
-            repo,
             author,
             tool_router: Self::tool_router(),
         }
     }
 
+    fn resolve(&self, repo: &str) -> Result<RepoId, McpError> {
+        self.service.resolve_repo(repo).map_err(into_mcp)
+    }
+
     // ---- discovery -----------------------------------------------------
 
+    #[tool(
+        description = "List the repositories this MCP server can act on. Returns each repo's `name` (the slug to pass as `repo` to every other tool) and its canonical path."
+    )]
+    async fn list_repos(&self) -> Result<CallToolResult, McpError> {
+        Ok(text_json(&self.service.list_repos()))
+    }
+
     #[tool(description = "List bookmarks in the underlying jj repo.")]
-    async fn list_bookmarks(&self) -> Result<CallToolResult, McpError> {
-        let bookmarks = self.service.list_bookmarks(&self.repo).await.map_err(into_mcp)?;
+    async fn list_bookmarks(
+        &self,
+        Parameters(args): Parameters<RepoArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let repo = self.resolve(&args.repo)?;
+        let bookmarks = self.service.list_bookmarks(&repo).await.map_err(into_mcp)?;
         Ok(text_json(&bookmarks))
     }
 
     #[tool(description = "List existing reviews in this repo.")]
-    async fn list_reviews(&self) -> Result<CallToolResult, McpError> {
-        let reviews = self.service.list_reviews(&self.repo).await.map_err(into_mcp)?;
+    async fn list_reviews(
+        &self,
+        Parameters(args): Parameters<RepoArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let repo = self.resolve(&args.repo)?;
+        let reviews = self.service.list_reviews(&repo).await.map_err(into_mcp)?;
         Ok(text_json(&reviews))
     }
 
@@ -62,9 +79,10 @@ impl ReviewMcp {
         &self,
         Parameters(args): Parameters<GetReviewArgs>,
     ) -> Result<CallToolResult, McpError> {
+        let repo = self.resolve(&args.repo)?;
         let view = self
             .service
-            .open_review(&self.repo, &args.review_id, &self.author, args.patchset)
+            .open_review(&repo, &args.review_id, &self.author, args.patchset)
             .await
             .map_err(into_mcp)?;
         Ok(text_json(&view))
@@ -80,10 +98,12 @@ impl ReviewMcp {
         Parameters(args): Parameters<CreateReviewArgs>,
     ) -> Result<CallToolResult, McpError> {
         let CreateReviewArgs {
+            repo,
             review_id,
             revset,
             bookmark,
         } = args;
+        let repo = self.resolve(&repo)?;
         let revset = revset.unwrap_or_else(|| {
             let name = bookmark.as_deref().unwrap_or(review_id.as_str());
             RevSet::trunk_to(name)
@@ -91,7 +111,7 @@ impl ReviewMcp {
         let manifest = self
             .service
             .create_review(
-                &self.repo,
+                &repo,
                 CreateReviewParams {
                     review_id,
                     revset,
@@ -111,9 +131,10 @@ impl ReviewMcp {
         &self,
         Parameters(args): Parameters<StartSessionArgs>,
     ) -> Result<CallToolResult, McpError> {
+        let repo = self.resolve(&args.repo)?;
         let session = self
             .service
-            .start_session(&self.repo, &args.review_id, &self.author)
+            .start_session(&repo, &args.review_id, &self.author)
             .await
             .map_err(into_mcp)?;
         Ok(text_json(&session))
@@ -126,8 +147,9 @@ impl ReviewMcp {
         &self,
         Parameters(args): Parameters<SessionArgs>,
     ) -> Result<CallToolResult, McpError> {
+        let repo = self.resolve(&args.repo)?;
         self.service
-            .publish_session(&self.repo, &args.review_id, &args.session_id)
+            .publish_session(&repo, &args.review_id, &args.session_id)
             .await
             .map_err(into_mcp)?;
         Ok(ok_text("published"))
@@ -140,8 +162,9 @@ impl ReviewMcp {
         &self,
         Parameters(args): Parameters<SessionArgs>,
     ) -> Result<CallToolResult, McpError> {
+        let repo = self.resolve(&args.repo)?;
         self.service
-            .discard_session(&self.repo, &args.review_id, &args.session_id)
+            .discard_session(&repo, &args.review_id, &args.session_id)
             .await
             .map_err(into_mcp)?;
         Ok(ok_text("discarded"))
@@ -157,6 +180,7 @@ impl ReviewMcp {
         Parameters(args): Parameters<DraftLineCommentArgs>,
     ) -> Result<CallToolResult, McpError> {
         let DraftLineCommentArgs {
+            repo,
             review_id,
             anchor_change_id,
             anchor_commit_id,
@@ -166,9 +190,10 @@ impl ReviewMcp {
             flag,
             body,
         } = args;
+        let repo = self.resolve(&repo)?;
         let session = self
             .service
-            .start_session(&self.repo, &review_id, &self.author)
+            .start_session(&repo, &review_id, &self.author)
             .await
             .map_err(into_mcp)?;
         let input = DraftCommentInput {
@@ -183,7 +208,7 @@ impl ReviewMcp {
         let comment = self
             .service
             .upsert_draft_comment(
-                &self.repo,
+                &repo,
                 &review_id,
                 &session.session_id,
                 &self.author,
@@ -201,6 +226,7 @@ impl ReviewMcp {
         Parameters(args): Parameters<DraftFileCommentArgs>,
     ) -> Result<CallToolResult, McpError> {
         let DraftFileCommentArgs {
+            repo,
             review_id,
             anchor_change_id,
             anchor_commit_id,
@@ -208,9 +234,10 @@ impl ReviewMcp {
             flag,
             body,
         } = args;
+        let repo = self.resolve(&repo)?;
         let session = self
             .service
-            .start_session(&self.repo, &review_id, &self.author)
+            .start_session(&repo, &review_id, &self.author)
             .await
             .map_err(into_mcp)?;
         let input = DraftCommentInput {
@@ -225,7 +252,7 @@ impl ReviewMcp {
         let comment = self
             .service
             .upsert_draft_comment(
-                &self.repo,
+                &repo,
                 &review_id,
                 &session.session_id,
                 &self.author,
@@ -243,15 +270,17 @@ impl ReviewMcp {
         Parameters(args): Parameters<DraftReviewCommentArgs>,
     ) -> Result<CallToolResult, McpError> {
         let DraftReviewCommentArgs {
+            repo,
             review_id,
             anchor_change_id,
             anchor_commit_id,
             flag,
             body,
         } = args;
+        let repo = self.resolve(&repo)?;
         let session = self
             .service
-            .start_session(&self.repo, &review_id, &self.author)
+            .start_session(&repo, &review_id, &self.author)
             .await
             .map_err(into_mcp)?;
         let input = DraftCommentInput {
@@ -266,7 +295,7 @@ impl ReviewMcp {
         let comment = self
             .service
             .upsert_draft_comment(
-                &self.repo,
+                &repo,
                 &review_id,
                 &session.session_id,
                 &self.author,
@@ -286,20 +315,22 @@ impl ReviewMcp {
         Parameters(args): Parameters<RespondArgs>,
     ) -> Result<CallToolResult, McpError> {
         let RespondArgs {
+            repo,
             review_id,
             in_reply_to,
             action,
             body,
         } = args;
+        let repo = self.resolve(&repo)?;
         let session = self
             .service
-            .start_session(&self.repo, &review_id, &self.author)
+            .start_session(&repo, &review_id, &self.author)
             .await
             .map_err(into_mcp)?;
         let response = self
             .service
             .upsert_draft_response(
-                &self.repo,
+                &repo,
                 &session.session_id,
                 &self.author,
                 None,
@@ -334,10 +365,12 @@ impl ServerHandler for ReviewMcp {
                 .build(),
             server_info: Implementation::from_build_env(),
             instructions: Some(
-                "Code review tool. Use `list_reviews` and `get_review` to inspect changes; \
-                 `draft_line_comment` / `draft_file_comment` / `draft_review_comment` to leave \
-                 feedback (starts a draft session on first use); `respond` to reply or change \
-                 resolution; `publish_session` once the round is complete."
+                "Code review tool. One server can front multiple repositories; pass `repo` \
+                 (a workspace slug from `list_repos`) on every tool call. Use `list_reviews` \
+                 and `get_review` to inspect changes; `draft_line_comment` / \
+                 `draft_file_comment` / `draft_review_comment` to leave feedback (starts a \
+                 draft session on first use); `respond` to reply or change resolution; \
+                 `publish_session` once the round is complete."
                     .into(),
             ),
         }
@@ -404,8 +437,17 @@ impl ServerHandler for ReviewMcp {
 
 // ---- request schemas ---------------------------------------------------
 
+/// Tools that act on a single repo but take no other arguments use this
+/// shape. Every other Args struct embeds `repo` as its first field.
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct RepoArgs {
+    /// Workspace slug (from `list_repos`).
+    pub repo: String,
+}
+
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct GetReviewArgs {
+    pub repo: String,
     pub review_id: ReviewId,
     #[serde(default)]
     pub patchset: Option<u32>,
@@ -413,6 +455,7 @@ pub struct GetReviewArgs {
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct CreateReviewArgs {
+    pub repo: String,
     pub review_id: ReviewId,
     #[serde(default)]
     pub revset: Option<RevSet>,
@@ -422,17 +465,20 @@ pub struct CreateReviewArgs {
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct StartSessionArgs {
+    pub repo: String,
     pub review_id: ReviewId,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct SessionArgs {
+    pub repo: String,
     pub review_id: ReviewId,
     pub session_id: SessionId,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct DraftLineCommentArgs {
+    pub repo: String,
     pub review_id: ReviewId,
     pub anchor_change_id: ChangeId,
     pub anchor_commit_id: CommitId,
@@ -446,6 +492,7 @@ pub struct DraftLineCommentArgs {
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct DraftFileCommentArgs {
+    pub repo: String,
     pub review_id: ReviewId,
     pub anchor_change_id: ChangeId,
     pub anchor_commit_id: CommitId,
@@ -457,6 +504,7 @@ pub struct DraftFileCommentArgs {
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct DraftReviewCommentArgs {
+    pub repo: String,
     pub review_id: ReviewId,
     pub anchor_change_id: ChangeId,
     pub anchor_commit_id: CommitId,
@@ -467,6 +515,7 @@ pub struct DraftReviewCommentArgs {
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct RespondArgs {
+    pub repo: String,
     pub review_id: ReviewId,
     pub in_reply_to: CommentId,
     pub action: ResolutionAction,
@@ -493,14 +542,14 @@ fn into_mcp(err: ServiceError) -> McpError {
     McpError::internal_error(err.to_string(), None)
 }
 
-/// Build an axum-mountable MCP service for a single repo. Mount one per repo
-/// with `Router::new().nest_service("/mcp/<repo>", kata_mcp::mcp_service(...))`.
+/// Build an axum-mountable MCP service. A single instance fronts every
+/// repo registered with the underlying [`ReviewService`]; mount once at
+/// `/mcp` and let clients pick a repo per call.
 pub fn mcp_service(
     service: Arc<ReviewService>,
-    repo: RepoId,
     author: Author,
 ) -> StreamableHttpService<ReviewMcp, LocalSessionManager> {
-    let kata_mcp = ReviewMcp::new(service, repo, author);
+    let kata_mcp = ReviewMcp::new(service, author);
     StreamableHttpService::new(
         move || Ok(kata_mcp.clone()),
         LocalSessionManager::default().into(),

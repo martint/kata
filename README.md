@@ -59,17 +59,18 @@ controls so they stay accessible while scrolling a long diff.
 
 ## MCP
 
-Each registered workspace gets an MCP endpoint at `/mcp/<slug>`. The
+A single MCP endpoint at `/mcp` fronts every configured workspace. The
 transport is Streamable HTTP (`rmcp` 0.8). The server advertises both
-**tools** and **resources** capabilities.
+**tools** and **resources** capabilities. Register this once with Claude
+and reuse it across projects.
 
 ### Tools
 
-`list_bookmarks`, `list_reviews`, `get_review`, `create_review`,
-`start_session`, `publish_session`, `discard_session`,
+`list_repos`, `list_bookmarks`, `list_reviews`, `get_review`,
+`create_review`, `start_session`, `publish_session`, `discard_session`,
 `draft_line_comment`, `draft_file_comment`, `draft_review_comment`,
-`respond`. The server is bound to one repo per endpoint, so no `repo`
-argument is needed.
+`respond`. Every tool that targets a specific workspace takes a `repo`
+argument — call `list_repos` first to see the available slugs.
 
 ### Skill resource
 

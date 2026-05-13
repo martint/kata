@@ -105,7 +105,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let storage: Arc<dyn Storage> = Arc::new(FilesystemStorage::new(cfg.review_root.clone()));
     let mut builder = ReviewService::builder(storage.clone());
-    let mut registered: Vec<(String, kata_core::RepoId)> = Vec::new();
+    let repo_count = workspaces.len();
 
     for WorkspaceSpec { name, path } in workspaces {
         let canonical = jj_repo_canonical_path(&path)?;
@@ -120,8 +120,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             })
             .await?;
         let jj = Arc::new(JjCli::new(path));
-        builder.add_repo(name.clone(), repo_id.clone(), canonical_str, jj)?;
-        registered.push((name, repo_id));
+        builder.add_repo(name, repo_id, canonical_str, jj)?;
     }
 
     let service = Arc::new(builder.build());
@@ -146,14 +145,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .clone()
             .unwrap_or_else(|| cfg.author.to_string()),
     );
-    for (name, repo_id) in &registered {
-        let mount = format!("/mcp/{name}");
-        tracing::info!(repo = %name, mount = %mount, author = %mcp_author, "mounting MCP");
-        app = app.nest_service(
-            &mount,
-            kata_mcp::mcp_service(service.clone(), repo_id.clone(), mcp_author.clone()),
-        );
-    }
+    tracing::info!(
+        author = %mcp_author,
+        repos = repo_count,
+        "mounting MCP at /mcp",
+    );
+    app = app.nest_service(
+        "/mcp",
+        kata_mcp::mcp_service(service.clone(), mcp_author.clone()),
+    );
 
     let listener = tokio::net::TcpListener::bind(cfg.bind_addr).await?;
     tracing::info!(addr = %cfg.bind_addr, "kata listening");
