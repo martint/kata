@@ -133,6 +133,26 @@ header.app button {
   font-size: 12px;
 }
 
+header.app .comment-nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+}
+
+header.app .comment-nav button {
+  padding: 2px 8px;
+  font-size: 14px;
+  line-height: 1;
+}
+
+header.app .comment-nav .position {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  min-width: 3.5em;
+  text-align: center;
+}
+
 .spinner {
   width: 14px;
   height: 14px;

@@ -80,6 +80,7 @@
       class="comment {c.draft ? 'draft' : ''} {c.anchor.kind === 'outdated'
         ? 'outdated'
         : ''}"
+      data-comment-id={c.comment_id}
     >
       <header>
         <strong>{c.author}</strong>

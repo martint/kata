@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { api } from '../lib/api';
   import { subscribe as subscribeEvents } from '../lib/events';
   import type {
@@ -34,6 +34,15 @@
      *  the comments. */
     diffsCollapsed: boolean;
     toggleDiffs: () => void;
+    /** Prev / next comment nav. Total = 0 when there are no comments. */
+    nav: {
+      total: number;
+      /** 1-based position of the most-recently-visited comment, or 0
+       *  before any nav has happened. */
+      position: number;
+      prev: () => void;
+      next: () => void;
+    };
   }
 
   interface Props {
@@ -74,8 +83,114 @@
   /** When true the file diffs collapse to comments-only mode. State lives
    *  here so the top-bar toggle stays in sync with the viewport. */
   let diffsCollapsed = $state(false);
-  function toggleDiffs() {
+  async function toggleDiffs() {
     diffsCollapsed = !diffsCollapsed;
+    // Toggling the view re-renders the whole file list, which scrolls
+    // the page back to the top. If the user was reading a specific
+    // comment (reached via prev/next), re-anchor on it after the
+    // layout has flushed so they don't lose their place.
+    if (navCommentId) {
+      const target = orderedComments.find(
+        (c) => c.comment_id === navCommentId,
+      );
+      if (target) {
+        await tick();
+        void scrollToComment(target.comment_id, target.file ?? null);
+      }
+    }
+  }
+
+  /** Comments in document order: review-wide first (only when viewing the
+   *  full review — review-wide comments don't belong to any single
+   *  commit), then per file (in the same DFS order as the file tree),
+   *  then by line within a file. Drafts and published are merged.
+   *  Used to drive the top-bar prev / next comment buttons. */
+  const orderedComments = $derived.by(() => {
+    const all = [...current.comments, ...current.drafts.comments];
+    const scoped = scopedChangeId !== null;
+    // When scoped to a single commit, `orderedFiles` already reflects
+    // just that commit's files (it derives from `displayedDiff`), so
+    // filtering by file membership scopes the nav automatically.
+    const fileOrder = new Map(orderedFiles.map((f, i) => [f.path, i]));
+    const reviewWide = scoped
+      ? []
+      : all
+          .filter((c) => c.file == null)
+          .sort((a, b) => a.created_at.localeCompare(b.created_at));
+    const inFiles = all
+      .filter((c) => c.file != null && fileOrder.has(c.file))
+      .sort((a, b) => {
+        const ao = fileOrder.get(a.file!)!;
+        const bo = fileOrder.get(b.file!)!;
+        if (ao !== bo) return ao - bo;
+        // File-level comments (no lines) sort before line-level within the file.
+        const al = a.lines?.start ?? -1;
+        const bl = b.lines?.start ?? -1;
+        if (al !== bl) return al - bl;
+        return a.created_at.localeCompare(b.created_at);
+      });
+    return [...reviewWide, ...inFiles];
+  });
+
+  /** Comment id the user last navigated to. We track the id rather than
+   *  an index so reorderings (e.g. a draft discard) don't strand us on
+   *  the wrong comment — `navPosition` re-derives from the live list. */
+  let navCommentId: string | null = $state(null);
+  const navPosition = $derived.by(() => {
+    if (!navCommentId) return 0;
+    const i = orderedComments.findIndex((c) => c.comment_id === navCommentId);
+    return i < 0 ? 0 : i + 1;
+  });
+
+  function navTo(idx: number) {
+    if (orderedComments.length === 0) return;
+    // Wrap so prev from #1 lands on the last and next from last lands on
+    // #1 — feels less like hitting a wall during triage.
+    const n = orderedComments.length;
+    const wrapped = ((idx - 1 + n) % n) + 1;
+    const target = orderedComments[wrapped - 1];
+    navCommentId = target.comment_id;
+    void scrollToComment(target.comment_id, target.file ?? null);
+  }
+
+  /** Scroll a comment into view, mounting its file's slot if it's been
+   *  virtualized away. Direct lookup is tried first — it works in
+   *  compact mode and for files near the viewport. */
+  async function scrollToComment(commentId: string, file: string | null) {
+    let el = document.querySelector<HTMLElement>(
+      `[data-comment-id="${CSS.escape(commentId)}"]`,
+    );
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
+    if (file) {
+      const slot = document.querySelector<HTMLElement>(
+        `[data-file-path="${CSS.escape(file)}"]`,
+      );
+      if (slot) {
+        slot.scrollIntoView({ behavior: 'auto', block: 'start' });
+      }
+    }
+    // Wait up to ~500ms for the FileSlot's IntersectionObserver to mount
+    // the file, then for FileDiff to render its comment threads.
+    for (let i = 0; i < 30; i++) {
+      await new Promise((r) => requestAnimationFrame(r));
+      el = document.querySelector<HTMLElement>(
+        `[data-comment-id="${CSS.escape(commentId)}"]`,
+      );
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        return;
+      }
+    }
+  }
+
+  function navPrev() {
+    navTo(navPosition === 0 ? orderedComments.length : navPosition - 1);
+  }
+  function navNext() {
+    navTo(navPosition === 0 ? 1 : navPosition + 1);
   }
 
   /** Mirror toolbar state up to the app shell whenever it changes. The
@@ -96,6 +211,12 @@
         : null,
       diffsCollapsed,
       toggleDiffs,
+      nav: {
+        total: orderedComments.length,
+        position: navPosition,
+        prev: navPrev,
+        next: navNext,
+      },
     });
   });
 

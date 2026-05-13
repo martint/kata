@@ -188,6 +188,23 @@
   {/if}
   <span style="flex: 1"></span>
   {#if toolbar}
+    {#if toolbar.nav.total > 0}
+      <div class="comment-nav" role="group" aria-label="Comment navigation">
+        <button
+          onclick={toolbar.nav.prev}
+          title="Previous comment"
+          aria-label="Previous comment"
+        >‹</button>
+        <span class="position" aria-live="polite">
+          {toolbar.nav.position || '–'}/{toolbar.nav.total}
+        </span>
+        <button
+          onclick={toolbar.nav.next}
+          title="Next comment"
+          aria-label="Next comment"
+        >›</button>
+      </div>
+    {/if}
     <button
       onclick={toolbar.toggleDiffs}
       title={toolbar.diffsCollapsed ? 'Show file diffs' : 'Hide file diffs, leave only comments'}
