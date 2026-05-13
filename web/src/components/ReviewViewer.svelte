@@ -363,6 +363,22 @@
     allComments.filter((c) => c.file == null),
   );
 
+  /** Files actually rendered in the main panel. In comments-only mode
+   *  files with no comments are hidden so the page is a flat list of
+   *  feedback; the file being composed on stays visible so the inline
+   *  composer doesn't disappear under the user. */
+  const visibleFiles = $derived.by(() => {
+    if (!diffsCollapsed) return orderedFiles;
+    const withComments = new Set(
+      allComments.map((c) => c.file).filter((p): p is string => !!p),
+    );
+    const composingFile =
+      composing && 'file' in composing ? composing.file : null;
+    return orderedFiles.filter(
+      (f) => withComments.has(f.path) || f.path === composingFile,
+    );
+  });
+
 
   function short(id: string): string {
     return id.length > 12 ? id.slice(0, 12) : id;
@@ -731,8 +747,10 @@
 
 {#if orderedFiles.length === 0}
       <p class="muted">No files changed.</p>
+    {:else if visibleFiles.length === 0}
+      <p class="muted">No files have comments.</p>
     {:else}
-      {#each orderedFiles as f (f.path)}
+      {#each visibleFiles as f (f.path)}
         <!-- composing is narrowed to the targeted file only; other slots
              receive `null` and don't churn when the composer opens
              elsewhere. forceRender keeps the file hosting the composer
