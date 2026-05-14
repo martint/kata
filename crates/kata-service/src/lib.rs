@@ -14,12 +14,34 @@ use kata_core::{
     LineRange, Patchset, RepoId, RepoSummary, ResolutionAction, Response, ResponseId,
     ReviewId, ReviewManifest, RevSet, SCHEMA_VERSION, Session, SessionId, Side,
 };
-use kata_jj::{AnchorResolution, JjBackend, build_diff, resolve_anchor};
+use kata_jj::{AnchorResolution, FileCache, JjBackend, build_diff, resolve_anchor};
 use kata_storage::{ReviewSummary, Storage};
 use serde::{Deserialize, Serialize};
 
 pub use crate::error::{ServiceError, ServiceResult};
 pub use crate::events::{Event, EventBus};
+
+/// `(commit, path)` pairs `resolve_anchor` will need for `comment`,
+/// given the patchset currently being rendered. Empty for non-line /
+/// non-file comments (no anchoring) and for the trivial case where
+/// the comment already anchors to the active commit on its side.
+fn anchor_read_keys(comment: &Comment, viewing: &Patchset) -> Vec<(CommitId, String)> {
+    let (Some(path), Some(_), Some(side)) = (&comment.file, comment.lines, comment.side)
+    else {
+        return Vec::new();
+    };
+    let current = match side {
+        Side::Tip => viewing.tip_commit.clone(),
+        Side::Base => viewing.base_commit.clone(),
+    };
+    if current == comment.anchor_commit_id {
+        return Vec::new();
+    }
+    vec![
+        (comment.anchor_commit_id.clone(), path.clone()),
+        (current, path.clone()),
+    ]
+}
 
 /// Internal per-repo entry: friendly name + canonical path + a jj backend
 /// rooted at that workspace.
@@ -283,6 +305,9 @@ impl ReviewService {
     /// `None` means the latest. The diff is built against that patchset's
     /// endpoints, and comments are filtered to those that originated in it
     /// or an earlier patchset.
+    ///
+    /// Anchor pre-fetch runs with `ANCHOR_READ_PARALLELISM` reads in
+    /// flight — see the constant below.
     pub async fn open_review(
         &self,
         repo: &RepoId,
@@ -339,23 +364,42 @@ impl ReviewService {
         );
 
         let t = std::time::Instant::now();
+        // Many comments resolve against the same `(commit, path)` — every
+        // line/file comment on a given file needs both its anchor_commit
+        // and the current patchset endpoint. Read each pair once, in
+        // parallel, then let `resolve_anchor` hit the cache.
+        let cache = FileCache::new();
+        let prefetch_keys: std::collections::HashSet<(CommitId, String)> = published
+            .iter()
+            .filter(|c| c.patchset <= selected_n)
+            .chain(drafts.comments.iter().filter(|c| c.patchset <= selected_n))
+            .flat_map(|c| anchor_read_keys(c, &selected))
+            .collect();
+        cache.prefetch(&**jj, prefetch_keys).await?;
         let mut comments = Vec::with_capacity(published.len());
         for c in published {
             if c.patchset > selected_n {
                 continue;
             }
-            comments.push(self.build_comment_view(repo, c, &selected, false).await?);
+            comments.push(
+                self.build_comment_view(repo, &cache, c, &selected, false)
+                    .await?,
+            );
         }
         let mut draft_comments = Vec::with_capacity(drafts.comments.len());
         for c in drafts.comments {
             if c.patchset > selected_n {
                 continue;
             }
-            draft_comments.push(self.build_comment_view(repo, c, &selected, true).await?);
+            draft_comments.push(
+                self.build_comment_view(repo, &cache, c, &selected, true)
+                    .await?,
+            );
         }
         tracing::debug!(
             elapsed_ms = t.elapsed().as_millis() as u64,
             comments = comments.len() + draft_comments.len(),
+            prefetched = cache.len(),
             "open_review: comment views",
         );
 
@@ -393,6 +437,7 @@ impl ReviewService {
     async fn build_comment_view(
         &self,
         repo: &RepoId,
+        cache: &FileCache,
         comment: Comment,
         viewing: &Patchset,
         draft: bool,
@@ -406,6 +451,7 @@ impl ReviewService {
                 };
                 match resolve_anchor(
                     &**jj,
+                    cache,
                     path,
                     &comment.anchor_commit_id,
                     range,

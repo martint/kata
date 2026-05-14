@@ -14,6 +14,7 @@
 //! original lines and content preserved.
 
 use std::collections::HashMap;
+use std::sync::Mutex;
 use std::time::Instant;
 
 use kata_core::{CommitId, LineRange};
@@ -23,6 +24,95 @@ use crate::error::Result;
 
 /// Minimum similarity ratio to accept a fuzzy match. Tunable.
 const FUZZY_THRESHOLD: f32 = 0.75;
+
+/// Per-call memoisation for `read_file` results. Many comments in a
+/// single review anchor to the same `(commit, path)` — typically the
+/// patchset's tip — so without caching `resolve_anchor` re-reads the
+/// same files once per comment. Live for the duration of one
+/// `open_review`; drop with the response.
+///
+/// `std::sync::Mutex` is fine because we never hold the lock across
+/// an `await`: misses release the guard before fetching. Two
+/// simultaneous misses on the same key may both spawn a subprocess
+/// (rare at our scale, ~30 anchors per review).
+pub struct FileCache {
+    entries: Mutex<HashMap<(CommitId, String), Option<Vec<u8>>>>,
+}
+
+impl Default for FileCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FileCache {
+    pub fn new() -> Self {
+        Self {
+            entries: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Number of distinct `(commit, path)` entries currently cached.
+    /// Cheap; intended for logging.
+    pub fn len(&self) -> usize {
+        self.entries.lock().expect("FileCache poisoned").len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub async fn get<B: JjBackend + ?Sized>(
+        &self,
+        backend: &B,
+        commit: &CommitId,
+        path: &str,
+    ) -> Result<Option<Vec<u8>>> {
+        let key = (commit.clone(), path.to_string());
+        {
+            let entries = self.entries.lock().expect("FileCache poisoned");
+            if let Some(v) = entries.get(&key) {
+                return Ok(v.clone());
+            }
+        }
+        let v = backend.read_file(commit, path).await?;
+        self.entries
+            .lock()
+            .expect("FileCache poisoned")
+            .insert(key, v.clone());
+        Ok(v)
+    }
+
+    /// Bulk-warm the cache by handing every `(commit, path)` in `keys`
+    /// to [`JjBackend::read_files`] in one shot. On the `JjCli` backend
+    /// that's a single `git cat-file --batch` invocation instead of
+    /// N subprocesses, so this scales to hundreds of pairs cheaply.
+    /// After this returns, every listed key is a guaranteed cache hit.
+    pub async fn prefetch<B: JjBackend + ?Sized>(
+        &self,
+        backend: &B,
+        keys: impl IntoIterator<Item = (CommitId, String)>,
+    ) -> Result<()> {
+        // Skip keys we've already filled in (e.g. from earlier
+        // `get` calls in the same request). Keeps the batch small
+        // and avoids reading the same blob twice.
+        let want: Vec<(CommitId, String)> = {
+            let entries = self.entries.lock().expect("FileCache poisoned");
+            keys.into_iter()
+                .filter(|k| !entries.contains_key(k))
+                .collect()
+        };
+        if want.is_empty() {
+            return Ok(());
+        }
+        let blobs = backend.read_files(&want).await?;
+        let mut entries = self.entries.lock().expect("FileCache poisoned");
+        for (key, value) in want.into_iter().zip(blobs.into_iter()) {
+            entries.insert(key, value);
+        }
+        Ok(())
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum AnchorResolution {
@@ -45,6 +135,7 @@ pub enum AnchorResolution {
 /// [`AnchorResolution::Valid`] without I/O on the file contents.
 pub async fn resolve_anchor<B: JjBackend + ?Sized>(
     backend: &B,
+    cache: &FileCache,
     path: &str,
     original_commit: &CommitId,
     original_range: LineRange,
@@ -56,6 +147,7 @@ pub async fn resolve_anchor<B: JjBackend + ?Sized>(
     let outcome: &'static str;
     let result = resolve_anchor_inner(
         backend,
+        cache,
         path,
         original_commit,
         original_range,
@@ -83,6 +175,7 @@ pub async fn resolve_anchor<B: JjBackend + ?Sized>(
 
 async fn resolve_anchor_inner<B: JjBackend + ?Sized>(
     backend: &B,
+    cache: &FileCache,
     path: &str,
     original_commit: &CommitId,
     original_range: LineRange,
@@ -95,8 +188,8 @@ async fn resolve_anchor_inner<B: JjBackend + ?Sized>(
     }
 
     let t = Instant::now();
-    let original_bytes = backend.read_file(original_commit, path).await?;
-    let current_bytes = backend.read_file(current_commit, path).await?;
+    let original_bytes = cache.get(backend, original_commit, path).await?;
+    let current_bytes = cache.get(backend, current_commit, path).await?;
     *read_ms = t.elapsed().as_millis() as u64;
 
     let (Some(original_bytes), Some(current_bytes)) = (original_bytes, current_bytes) else {

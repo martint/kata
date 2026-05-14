@@ -10,7 +10,7 @@ pub mod cli;
 pub mod diff;
 pub mod error;
 
-pub use anchor::{AnchorResolution, resolve_anchor};
+pub use anchor::{AnchorResolution, FileCache, resolve_anchor};
 pub use backend::{Endpoint, JjBackend, ReviewRange};
 pub use cli::JjCli;
 pub use diff::build_diff;

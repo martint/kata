@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 
 use kata_core::{ChangeId, CommitId, FileStatus, LineRange, RevSet};
-use kata_jj::{AnchorResolution, JjBackend, JjCli, build_diff, resolve_anchor};
+use kata_jj::{AnchorResolution, FileCache, JjBackend, JjCli, build_diff, resolve_anchor};
 use tempfile::TempDir;
 
 struct Fixture {
@@ -170,7 +170,8 @@ async fn anchor_valid_when_commit_unchanged() {
 
     let cli = fx.cli();
     let (_, commit) = current_change_and_commit(&fx.root, "@");
-    let res = resolve_anchor(&cli, "f.txt", &commit, LineRange::new(1, 1), &commit).await.unwrap();
+    let cache = FileCache::default();
+    let res = resolve_anchor(&cli, &cache, "f.txt", &commit, LineRange::new(1, 1), &commit).await.unwrap();
     assert_eq!(res, AnchorResolution::Valid);
 }
 
@@ -187,7 +188,8 @@ async fn anchor_moves_when_lines_shift() {
     assert_ne!(original, current, "commit id should change after amend");
 
     let cli = fx.cli();
-    let res = resolve_anchor(&cli, "f.txt", &original, LineRange::new(2, 2), &current)
+    let cache = FileCache::default();
+    let res = resolve_anchor(&cli, &cache, "f.txt", &original, LineRange::new(2, 2), &current)
         .await.unwrap();
     match res {
         AnchorResolution::Moved { new_range } => {
@@ -208,7 +210,8 @@ async fn anchor_outdated_when_content_gone() {
     let (_, current) = current_change_and_commit(&fx.root, "@");
 
     let cli = fx.cli();
-    let res = resolve_anchor(&cli, "f.txt", &original, LineRange::new(1, 1), &current)
+    let cache = FileCache::default();
+    let res = resolve_anchor(&cli, &cache, "f.txt", &original, LineRange::new(1, 1), &current)
         .await.unwrap();
     match res {
         AnchorResolution::Outdated { original_content } => {
