@@ -43,6 +43,27 @@ pub trait JjBackend: Send + Sync {
     /// does not exist at that commit.
     async fn read_file(&self, commit: &CommitId, path: &str) -> Result<Option<Vec<u8>>>;
 
+    /// Read many `(commit, path)` blobs in one call. Implementations
+    /// can amortise process startup across the batch — the [`JjCli`]
+    /// override drives `git cat-file --batch` so 252 reads cost one
+    /// fork+exec, not 252. The default falls back to a sequential
+    /// loop of [`Self::read_file`] for backends that don't have a
+    /// faster path. Order of `pairs` is preserved in the returned
+    /// `Vec`; each slot is `None` exactly when the file doesn't
+    /// exist at that `(commit, path)`.
+    ///
+    /// [`JjCli`]: crate::cli::JjCli
+    async fn read_files(
+        &self,
+        pairs: &[(CommitId, String)],
+    ) -> Result<Vec<Option<Vec<u8>>>> {
+        let mut out = Vec::with_capacity(pairs.len());
+        for (commit, path) in pairs {
+            out.push(self.read_file(commit, path).await?);
+        }
+        Ok(out)
+    }
+
     /// Metadata for every file that differs between `base` and `tip`. The
     /// returned [`FileChange`]s have `hunks: None` — the diff module fills
     /// them in by reading both sides.

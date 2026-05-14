@@ -4,6 +4,7 @@ use std::process::Stdio;
 
 use async_trait::async_trait;
 use kata_core::{Bookmark, ChangeId, CommitId, CommitInfo, FileChange, FileStatus, RevSet};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
 use crate::backend::{Endpoint, JjBackend, ReviewRange};
@@ -13,15 +14,25 @@ use crate::error::{Error, Result};
 pub struct JjCli {
     repo: PathBuf,
     jj_binary: OsString,
+    /// Path to a git directory if we found one alongside the jj working
+    /// copy. Lets [`Self::read_files`] read every blob in a review with a
+    /// single `git cat-file --batch` instead of one `jj file show` per
+    /// (commit, path). `None` falls back to the sequential per-file
+    /// `jj file show` path — slower but correct for non-colocated
+    /// repos we don't have the git store handy for.
+    git_dir: Option<PathBuf>,
 }
 
 impl JjCli {
     /// `repo` is the path to a directory inside a jj working copy (anywhere
     /// works — jj walks up to find `.jj/`).
     pub fn new(repo: impl Into<PathBuf>) -> Self {
+        let repo = repo.into();
+        let git_dir = detect_git_dir(&repo);
         Self {
-            repo: repo.into(),
+            repo,
             jj_binary: OsString::from("jj"),
+            git_dir,
         }
     }
 
@@ -197,6 +208,26 @@ impl JjBackend for JjCli {
             .await
     }
 
+    async fn read_files(
+        &self,
+        pairs: &[(CommitId, String)],
+    ) -> Result<Vec<Option<Vec<u8>>>> {
+        if pairs.is_empty() {
+            return Ok(Vec::new());
+        }
+        if let Some(git_dir) = &self.git_dir {
+            return cat_file_batch(git_dir, pairs).await;
+        }
+        // No git store handy; fall back to the trait's sequential
+        // default. The work is one `jj file show` per pair — fine for
+        // correctness, slower than the batch path.
+        let mut out = Vec::with_capacity(pairs.len());
+        for (commit, path) in pairs {
+            out.push(self.read_file(commit, path).await?);
+        }
+        Ok(out)
+    }
+
     async fn changed_files(
         &self,
         base: &CommitId,
@@ -366,4 +397,122 @@ impl JjCli {
             commit_id: CommitId::new(commit),
         })
     }
+}
+
+/// Look for a git directory we can drive `git cat-file --batch`
+/// against. Two common shapes:
+///
+///   - colocated repo: `<repo>/.git` is a real git directory.
+///   - non-colocated jj: `<repo>/.jj/repo/store/git` is git-format storage.
+///
+/// `.git` may also be a *file* (pointing at the real dir, e.g. worktrees
+/// or submodules). We don't currently follow those — fall back to
+/// per-file `jj file show` in that case.
+fn detect_git_dir(repo: &Path) -> Option<PathBuf> {
+    let dot_git = repo.join(".git");
+    if dot_git.is_dir() {
+        return Some(dot_git);
+    }
+    let internal = repo.join(".jj/repo/store/git");
+    if internal.is_dir() {
+        return Some(internal);
+    }
+    None
+}
+
+/// Read every `(commit, path)` blob with a single `git cat-file --batch`
+/// invocation. One fork+exec for the whole batch instead of one per
+/// pair — on a 144-file review this turns ~5 s of subprocess startup
+/// into a few hundred ms of streaming.
+///
+/// Protocol (per `git-cat-file(1)`):
+///   - Each input line is `<rev>:<path>` (we feed `<commit_id>:<path>`).
+///   - Output for a hit: `<sha> <type> <size>\n<size bytes of content>\n`.
+///   - Output for a miss: `<original input> missing\n`, no content.
+///
+/// Order of the input drives the order of the output, so the result
+/// `Vec` lines up with `pairs` slot-for-slot.
+async fn cat_file_batch(
+    git_dir: &Path,
+    pairs: &[(CommitId, String)],
+) -> Result<Vec<Option<Vec<u8>>>> {
+    let mut cmd = Command::new("git");
+    cmd.arg("--git-dir")
+        .arg(git_dir)
+        .arg("cat-file")
+        .arg("--batch")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().map_err(Error::Io)?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| Error::Parse("git cat-file stdin missing".into()))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| Error::Parse("git cat-file stdout missing".into()))?;
+
+    let mut buf = String::with_capacity(pairs.len() * 64);
+    for (commit, path) in pairs {
+        buf.push_str(commit.as_str());
+        buf.push(':');
+        buf.push_str(path);
+        buf.push('\n');
+    }
+    stdin.write_all(buf.as_bytes()).await.map_err(Error::Io)?;
+    stdin.shutdown().await.map_err(Error::Io)?;
+    drop(stdin);
+
+    let mut reader = BufReader::new(stdout);
+    let mut header = String::new();
+    let mut out = Vec::with_capacity(pairs.len());
+    for _ in 0..pairs.len() {
+        header.clear();
+        let n = reader.read_line(&mut header).await.map_err(Error::Io)?;
+        if n == 0 {
+            return Err(Error::Parse(
+                "git cat-file ended before all batch lines were answered".into(),
+            ));
+        }
+        let line = header.trim_end_matches('\n');
+        if line.ends_with(" missing") {
+            out.push(None);
+            continue;
+        }
+        // "<sha> <type> <size>" — the size field is the last
+        // space-separated token; the others we don't need.
+        let size: usize = line
+            .rsplit(' ')
+            .next()
+            .and_then(|s| s.parse().ok())
+            .ok_or_else(|| {
+                Error::Parse(format!("git cat-file header not parseable: {line:?}"))
+            })?;
+        let mut content = vec![0u8; size];
+        reader
+            .read_exact(&mut content)
+            .await
+            .map_err(Error::Io)?;
+        // Each blob is followed by a trailing LF that's NOT part of the
+        // content — consume it.
+        let mut lf = [0u8; 1];
+        reader.read_exact(&mut lf).await.map_err(Error::Io)?;
+        out.push(Some(content));
+    }
+
+    let status = child.wait().await.map_err(Error::Io)?;
+    if !status.success() {
+        let mut stderr = String::new();
+        if let Some(mut err) = child.stderr.take() {
+            let _ = err.read_to_string(&mut stderr).await;
+        }
+        return Err(Error::JjFailed {
+            status: status.code().unwrap_or(-1),
+            stderr: format!("git cat-file --batch: {stderr}"),
+        });
+    }
+    Ok(out)
 }

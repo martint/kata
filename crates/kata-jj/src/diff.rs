@@ -36,23 +36,73 @@ pub async fn build_diff<B: JjBackend + ?Sized>(
     let mut files = backend.changed_files(base, tip).await?;
     let t_changed = t.elapsed();
 
-    let mut totals = AttachTotals::default();
-    for f in &mut files {
-        let stats = attach_hunks(backend, base, tip, f).await?;
-        totals.merge(&f.path, &stats);
+    // Collect every `(commit, path)` we'll need across all files into
+    // one batch — at most 2 per file (modified files read both sides;
+    // added / deleted read one; renamed reads the old name on base
+    // and the new on tip). `pair_indices` records where each file's
+    // base / tip blob landed in `blobs` so we can stitch results
+    // back up after the bulk read.
+    let mut pairs: Vec<(CommitId, String)> = Vec::with_capacity(files.len() * 2);
+    let mut pair_indices: Vec<(Option<usize>, Option<usize>)> =
+        Vec::with_capacity(files.len());
+    for f in &files {
+        let (base_path, tip_path) = match &f.status {
+            FileStatus::Added => (None, Some(f.path.as_str())),
+            FileStatus::Deleted => (Some(f.path.as_str()), None),
+            FileStatus::Modified => (Some(f.path.as_str()), Some(f.path.as_str())),
+            FileStatus::Renamed { old_path } => {
+                (Some(old_path.as_str()), Some(f.path.as_str()))
+            }
+        };
+        let bi = base_path.map(|p| {
+            pairs.push((base.clone(), p.to_string()));
+            pairs.len() - 1
+        });
+        let ti = tip_path.map(|p| {
+            pairs.push((tip.clone(), p.to_string()));
+            pairs.len() - 1
+        });
+        pair_indices.push((bi, ti));
+    }
+
+    let t = Instant::now();
+    let blobs = backend.read_files(&pairs).await?;
+    let read_ms = t.elapsed();
+
+    let mut diff_total = Duration::ZERO;
+    let mut slowest_diff = (Duration::ZERO, String::new());
+    for (f, (bi, ti)) in files.iter_mut().zip(pair_indices.into_iter()) {
+        let base_bytes: &[u8] = bi
+            .and_then(|i| blobs[i].as_deref())
+            .unwrap_or(&[]);
+        let tip_bytes: &[u8] = ti
+            .and_then(|i| blobs[i].as_deref())
+            .unwrap_or(&[]);
+        if looks_binary(base_bytes) || looks_binary(tip_bytes) {
+            f.binary = true;
+            f.hunks = None;
+            continue;
+        }
+        let base_text = String::from_utf8_lossy(base_bytes);
+        let tip_text = String::from_utf8_lossy(tip_bytes);
+        let t = Instant::now();
+        f.hunks = Some(histogram_hunks(&base_text, &tip_text, &f.path)?);
+        let elapsed = t.elapsed();
+        diff_total += elapsed;
+        if elapsed > slowest_diff.0 {
+            slowest_diff = (elapsed, f.path.clone());
+        }
     }
 
     tracing::info!(
         elapsed_ms = t_all.elapsed().as_millis() as u64,
         files = files.len(),
         changed_files_ms = t_changed.as_millis() as u64,
-        read_ms = totals.read.as_millis() as u64,
-        reads = totals.read_calls,
-        diff_ms = totals.diff.as_millis() as u64,
-        slowest_read_ms = totals.slowest_read.0.as_millis() as u64,
-        slowest_read = %totals.slowest_read.1,
-        slowest_diff_ms = totals.slowest_diff.0.as_millis() as u64,
-        slowest_diff = %totals.slowest_diff.1,
+        reads = pairs.len(),
+        read_ms = read_ms.as_millis() as u64,
+        diff_ms = diff_total.as_millis() as u64,
+        slowest_diff_ms = slowest_diff.0.as_millis() as u64,
+        slowest_diff = %slowest_diff.1,
         "build_diff",
     );
 
@@ -61,95 +111,6 @@ pub async fn build_diff<B: JjBackend + ?Sized>(
         tip: tip.clone(),
         files,
     })
-}
-
-/// Per-call timing returned by [`attach_hunks`]. Wall-clock split is
-/// approximate (reads happen sequentially today; once we parallelise
-/// this `read` will represent CPU-attached time rather than elapsed).
-#[derive(Default, Debug)]
-struct AttachStats {
-    read: Duration,
-    /// Number of `read_file` subprocesses dispatched (0, 1, or 2).
-    read_calls: u32,
-    diff: Duration,
-}
-
-/// Sums across every file in a single `build_diff` call. Tracks the
-/// slowest individual read and diff so a single huge file is visible
-/// in the aggregate log line.
-#[derive(Default)]
-struct AttachTotals {
-    read: Duration,
-    read_calls: u32,
-    diff: Duration,
-    slowest_read: (Duration, String),
-    slowest_diff: (Duration, String),
-}
-
-impl AttachTotals {
-    fn merge(&mut self, path: &str, s: &AttachStats) {
-        self.read += s.read;
-        self.read_calls += s.read_calls;
-        self.diff += s.diff;
-        if s.read > self.slowest_read.0 {
-            self.slowest_read = (s.read, path.to_string());
-        }
-        if s.diff > self.slowest_diff.0 {
-            self.slowest_diff = (s.diff, path.to_string());
-        }
-    }
-}
-
-/// Populate `file.hunks` (and `file.binary`) for one entry. Reads each
-/// side once via the backend; treats missing sides as empty so added
-/// and deleted files fall through the same code path. Returns
-/// per-stage timings so the caller can aggregate them into one log
-/// line per `build_diff`.
-async fn attach_hunks<B: JjBackend + ?Sized>(
-    backend: &B,
-    base: &CommitId,
-    tip: &CommitId,
-    file: &mut FileChange,
-) -> Result<AttachStats> {
-    let mut stats = AttachStats::default();
-    let (base_path, tip_path) = match &file.status {
-        FileStatus::Added => (None, Some(file.path.as_str())),
-        FileStatus::Deleted => (Some(file.path.as_str()), None),
-        FileStatus::Modified => (Some(file.path.as_str()), Some(file.path.as_str())),
-        FileStatus::Renamed { old_path } => {
-            (Some(old_path.as_str()), Some(file.path.as_str()))
-        }
-    };
-    let t = Instant::now();
-    let base_bytes = match base_path {
-        Some(p) => {
-            stats.read_calls += 1;
-            backend.read_file(base, p).await?.unwrap_or_default()
-        }
-        None => Vec::new(),
-    };
-    let tip_bytes = match tip_path {
-        Some(p) => {
-            stats.read_calls += 1;
-            backend.read_file(tip, p).await?.unwrap_or_default()
-        }
-        None => Vec::new(),
-    };
-    stats.read = t.elapsed();
-    if looks_binary(&base_bytes) || looks_binary(&tip_bytes) {
-        file.binary = true;
-        file.hunks = None;
-        return Ok(stats);
-    }
-    // `from_utf8_lossy` keeps us going on files with stray invalid
-    // bytes (rare, but better than panicking) — they'll render as
-    // U+FFFD replacements just like the browser would.
-    let base_text = String::from_utf8_lossy(&base_bytes);
-    let tip_text = String::from_utf8_lossy(&tip_bytes);
-    let t = Instant::now();
-    file.hunks = Some(histogram_hunks(&base_text, &tip_text, &file.path)?);
-    stats.diff = t.elapsed();
-    Ok(stats)
 }
 
 /// Run histogram diff on the two sides and convert the result into our
