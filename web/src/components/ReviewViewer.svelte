@@ -1010,6 +1010,7 @@
              composer doesn't get virtualized out from under the user. -->
         <FileSlot
           {repo}
+          reviewId={current.manifest.review_id}
           file={f}
           patchset={viewingFor}
           comments={allComments}

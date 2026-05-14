@@ -14,7 +14,10 @@ use kata_core::{
     LineRange, Patchset, RepoId, RepoSummary, ResolutionAction, Response, ResponseId,
     ReviewId, ReviewManifest, RevSet, SCHEMA_VERSION, Session, SessionId, Side,
 };
-use kata_jj::{AnchorResolution, FileCache, JjBackend, build_diff, resolve_anchor};
+use kata_jj::{
+    AnchorResolution, FileCache, JjBackend, build_diff, build_diff_metadata,
+    compute_one_file_hunks, resolve_anchor,
+};
 use kata_storage::{ReviewSummary, Storage};
 use serde::{Deserialize, Serialize};
 
@@ -333,8 +336,12 @@ impl ReviewService {
         // would advance the latest patchset (the "is_stale" flag below).
         // We resolve here, in parallel with the diff/commit work, to avoid
         // paying for a separate round-trip.
+        // Metadata only — hunks ship lazily, one file at a time, via
+        // `/file-diff`. Keeps the open_review JSON tiny so the
+        // browser's `JSON.parse` stays under ~10 ms instead of the
+        // ~1 s it took when the whole diff was inlined.
         let (diff, commits, live_range) = tokio::try_join!(
-            build_diff(&**jj, &selected.base_commit, &selected.tip_commit),
+            build_diff_metadata(&**jj, &selected.base_commit, &selected.tip_commit),
             jj.list_commits(&manifest.revset),
             jj.resolve_range(&manifest.revset),
         )?;
@@ -478,6 +485,44 @@ impl ReviewService {
             _ => AnchorView::Valid,
         };
         Ok(CommentView { comment, anchor, draft })
+    }
+
+    /// Hunks for one file in a review. Used by the UI to lazy-load a
+    /// file's diff as it scrolls into view — open_review ships only
+    /// the file list, then the client requests this for each visible
+    /// `FileSlot`. `patchset` follows the same shape as `open_review`:
+    /// `None` = the manifest's current patchset.
+    pub async fn file_diff(
+        &self,
+        repo: &RepoId,
+        review: &ReviewId,
+        path: &str,
+        patchset: Option<u32>,
+    ) -> ServiceResult<kata_core::FileChange> {
+        let jj = self.jj_for(repo)?;
+        let manifest = self.storage.open_review(repo, review).await?;
+        let selected_n = patchset.unwrap_or(manifest.current_patchset);
+        let selected = manifest
+            .patchset(selected_n)
+            .ok_or_else(|| ServiceError::NotFound(format!("patchset {selected_n}")))?;
+        // Look up the file's metadata (status, rename info) — needed so
+        // we know which side(s) to read. One `jj diff -T template` call,
+        // ~50 ms; could be cached if it becomes a hot path.
+        let files = jj
+            .changed_files(&selected.base_commit, &selected.tip_commit)
+            .await?;
+        let target = files
+            .into_iter()
+            .find(|f| f.path == path)
+            .ok_or_else(|| ServiceError::NotFound(format!("file {path:?} in review")))?;
+        let updated = compute_one_file_hunks(
+            &**jj,
+            &selected.base_commit,
+            &selected.tip_commit,
+            target,
+        )
+        .await?;
+        Ok(updated)
     }
 
     /// Read a file at a specific commit as text. Returns NotFound if the

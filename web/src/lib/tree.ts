@@ -9,25 +9,14 @@ export interface TreeNode {
   removed: number;
 }
 
-function countChanges(file: FileChange): { added: number; removed: number } {
-  if (!file.hunks) return { added: 0, removed: 0 };
-  let added = 0;
-  let removed = 0;
-  for (const h of file.hunks) {
-    for (const l of h.lines) {
-      if (l.origin === 'added') added++;
-      else if (l.origin === 'removed') removed++;
-    }
-  }
-  return { added, removed };
-}
-
 function rollup(node: TreeNode): { added: number; removed: number } {
   if (node.file) {
-    const c = countChanges(node.file);
-    node.added = c.added;
-    node.removed = c.removed;
-    return c;
+    // Counts come from the server (always populated, even when hunks
+    // are still lazy-loading) so the file tree's +/- summary doesn't
+    // bottom out at 0/0 while files are off-screen.
+    node.added = node.file.added;
+    node.removed = node.file.removed;
+    return { added: node.added, removed: node.removed };
   }
   let added = 0;
   let removed = 0;

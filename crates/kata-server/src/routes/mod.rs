@@ -64,6 +64,10 @@ fn api_routes() -> Router<AppState> {
             get(reviews::commit_diff),
         )
         .route(
+            "/api/repos/{repo_name}/reviews/{review_id}/file-diff",
+            get(reviews::file_diff),
+        )
+        .route(
             "/api/repos/{repo_name}/reviews/{review_id}/sessions",
             post(sessions::start_session),
         )

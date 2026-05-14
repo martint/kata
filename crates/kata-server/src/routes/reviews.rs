@@ -123,6 +123,27 @@ pub async fn commit_diff(
 }
 
 #[derive(Debug, Deserialize)]
+pub struct FileDiffQuery {
+    pub path: String,
+    #[serde(default)]
+    pub ps: Option<u32>,
+}
+
+pub async fn file_diff(
+    State(state): State<AppState>,
+    Path((repo_name, review_id)): Path<(String, ReviewId)>,
+    Query(q): Query<FileDiffQuery>,
+) -> AppResult<Json<kata_core::FileChange>> {
+    let repo = state.service.resolve_repo(&repo_name)?;
+    Ok(Json(
+        state
+            .service
+            .file_diff(&repo, &review_id, &q.path, q.ps)
+            .await?,
+    ))
+}
+
+#[derive(Debug, Deserialize)]
 pub struct FileQuery {
     pub commit: CommitId,
     pub path: String,

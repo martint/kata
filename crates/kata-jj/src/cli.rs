@@ -284,6 +284,8 @@ impl JjBackend for JjCli {
                 status,
                 hunks: None,
                 binary: false,
+                added: 0,
+                removed: 0,
             });
         }
         Ok(entries)

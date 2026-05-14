@@ -36,6 +36,11 @@
     /** Hide the diff hunks and show line-level comments as a flat list.
      *  Used by the top-bar "Comments only" toggle. */
     compact?: boolean;
+    /** True while `FileSlot` is fetching the per-file diff. We render a
+     *  "Loading…" placeholder instead of "Diff omitted" so the user
+     *  gets feedback rather than confusing them into thinking the
+     *  diff was suppressed. */
+    loadingHunks?: boolean;
     onstartcompose: (target: ComposerTarget) => void;
     oncancelcompose: () => void;
     onsubmit: (input: DraftCommentInput) => Promise<void>;
@@ -53,6 +58,7 @@
     composing,
     saving,
     compact = false,
+    loadingHunks = false,
     onstartcompose,
     oncancelcompose,
     onsubmit,
@@ -504,6 +510,8 @@
   {:else if !collapsed}
     {#if file.binary}
       <p class="placeholder">Binary file — diff is not shown.</p>
+    {:else if loadingHunks}
+      <p class="placeholder muted">Loading diff…</p>
     {:else if !file.hunks}
       <p class="placeholder">Diff omitted (file may exceed the size limit).</p>
     {:else}

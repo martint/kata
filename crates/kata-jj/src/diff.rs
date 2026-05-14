@@ -18,6 +18,7 @@
 use std::time::{Duration, Instant};
 
 use imara_diff::intern::InternedInput;
+use imara_diff::sink::Counter;
 use imara_diff::{Algorithm, UnifiedDiffBuilder, diff};
 use kata_core::{
     CommitId, Diff, FileChange, FileStatus, Hunk, HunkLine, LineOrigin, LineRange,
@@ -25,6 +26,147 @@ use kata_core::{
 
 use crate::backend::JjBackend;
 use crate::error::{Error, Result};
+
+/// File list + per-file `added` / `removed` counts. No hunks, no
+/// per-line content. Used by `open_review` to keep the initial JSON
+/// tiny (hunks ship lazily via [`compute_one_file_hunks`] as the
+/// user scrolls each file into view) while still giving the file
+/// tree enough information to render its +/- summaries.
+///
+/// The count path runs the same blob reads and histogram as
+/// [`build_diff`], but pipes the algorithm through imara-diff's
+/// [`Counter`] sink rather than `UnifiedDiffBuilder` — so we skip
+/// materialising and parsing the unified-diff text.
+pub async fn build_diff_metadata<B: JjBackend + ?Sized>(
+    backend: &B,
+    base: &CommitId,
+    tip: &CommitId,
+) -> Result<Diff> {
+    let mut files = backend.changed_files(base, tip).await?;
+    let (pairs, indices) = collect_blob_pairs(base, tip, &files);
+    let blobs = backend.read_files(&pairs).await?;
+    for (f, (bi, ti)) in files.iter_mut().zip(indices.into_iter()) {
+        let base_bytes: &[u8] = bi.and_then(|i| blobs[i].as_deref()).unwrap_or(&[]);
+        let tip_bytes: &[u8] = ti.and_then(|i| blobs[i].as_deref()).unwrap_or(&[]);
+        if looks_binary(base_bytes) || looks_binary(tip_bytes) {
+            f.binary = true;
+            continue;
+        }
+        let base_text = String::from_utf8_lossy(base_bytes);
+        let tip_text = String::from_utf8_lossy(tip_bytes);
+        let input = InternedInput::new(base_text.as_ref(), tip_text.as_ref());
+        let counter = diff(Algorithm::Histogram, &input, Counter::default());
+        f.added = counter.insertions;
+        f.removed = counter.removals;
+    }
+    Ok(Diff {
+        base: base.clone(),
+        tip: tip.clone(),
+        files,
+    })
+}
+
+/// Build the `(commit, path)` pair list + per-file index map used by
+/// the diff loops. Shared between `build_diff_metadata` (count-only)
+/// and `build_diff` (full hunks): they make identical reads, just
+/// feed the bytes into different sinks.
+fn collect_blob_pairs(
+    base: &CommitId,
+    tip: &CommitId,
+    files: &[FileChange],
+) -> (Vec<(CommitId, String)>, Vec<(Option<usize>, Option<usize>)>) {
+    let mut pairs: Vec<(CommitId, String)> = Vec::with_capacity(files.len() * 2);
+    let mut indices: Vec<(Option<usize>, Option<usize>)> = Vec::with_capacity(files.len());
+    for f in files {
+        let (base_path, tip_path) = side_paths(f);
+        let bi = base_path.map(|p| {
+            pairs.push((base.clone(), p.to_string()));
+            pairs.len() - 1
+        });
+        let ti = tip_path.map(|p| {
+            pairs.push((tip.clone(), p.to_string()));
+            pairs.len() - 1
+        });
+        indices.push((bi, ti));
+    }
+    (pairs, indices)
+}
+
+/// Sum added/removed lines from a hunk list. Used by `parse_git_diff`
+/// to populate `FileChange::added`/`removed` from the parsed shape so
+/// every code path produces consistent counts.
+fn count_lines(hunks: &[Hunk]) -> (u32, u32) {
+    let mut added: u32 = 0;
+    let mut removed: u32 = 0;
+    for h in hunks {
+        for l in &h.lines {
+            match l.origin {
+                LineOrigin::Added => added += 1,
+                LineOrigin::Removed => removed += 1,
+                LineOrigin::Context => {}
+            }
+        }
+    }
+    (added, removed)
+}
+
+/// Compute hunks + binary flag for one file. Reads both sides via
+/// `read_files` (one git cat-file --batch call for the pair) and
+/// runs histogram. Returns the input `file` with `hunks` / `binary`
+/// filled in. Pure with respect to `file` — caller may pass an
+/// owned [`FileChange`] from `changed_files` and assume it back
+/// updated.
+pub async fn compute_one_file_hunks<B: JjBackend + ?Sized>(
+    backend: &B,
+    base: &CommitId,
+    tip: &CommitId,
+    mut file: FileChange,
+) -> Result<FileChange> {
+    let (base_path, tip_path) = side_paths(&file);
+    let mut pairs: Vec<(CommitId, String)> = Vec::with_capacity(2);
+    let base_idx = base_path.map(|p| {
+        pairs.push((base.clone(), p.to_string()));
+        pairs.len() - 1
+    });
+    let tip_idx = tip_path.map(|p| {
+        pairs.push((tip.clone(), p.to_string()));
+        pairs.len() - 1
+    });
+    let blobs = backend.read_files(&pairs).await?;
+    let base_bytes: &[u8] = base_idx
+        .and_then(|i| blobs[i].as_deref())
+        .unwrap_or(&[]);
+    let tip_bytes: &[u8] = tip_idx
+        .and_then(|i| blobs[i].as_deref())
+        .unwrap_or(&[]);
+    if looks_binary(base_bytes) || looks_binary(tip_bytes) {
+        file.binary = true;
+        file.hunks = None;
+        return Ok(file);
+    }
+    let base_text = String::from_utf8_lossy(base_bytes);
+    let tip_text = String::from_utf8_lossy(tip_bytes);
+    let hunks = histogram_hunks(&base_text, &tip_text, &file.path)?;
+    let (added, removed) = count_lines(&hunks);
+    file.hunks = Some(hunks);
+    file.added = added;
+    file.removed = removed;
+    Ok(file)
+}
+
+/// Which side(s) of a diff each file's hunk comes from. Modified
+/// files read both, added/deleted only one, renamed reads the old
+/// name on base and the new name on tip.
+fn side_paths(file: &FileChange) -> (Option<&str>, Option<&str>) {
+    match &file.status {
+        FileStatus::Added => (None, Some(file.path.as_str())),
+        FileStatus::Deleted => (Some(file.path.as_str()), None),
+        FileStatus::Modified => (Some(file.path.as_str()), Some(file.path.as_str())),
+        FileStatus::Renamed { old_path } => {
+            (Some(old_path.as_str()), Some(file.path.as_str()))
+        }
+    }
+}
 
 pub async fn build_diff<B: JjBackend + ?Sized>(
     backend: &B,
@@ -36,34 +178,7 @@ pub async fn build_diff<B: JjBackend + ?Sized>(
     let mut files = backend.changed_files(base, tip).await?;
     let t_changed = t.elapsed();
 
-    // Collect every `(commit, path)` we'll need across all files into
-    // one batch — at most 2 per file (modified files read both sides;
-    // added / deleted read one; renamed reads the old name on base
-    // and the new on tip). `pair_indices` records where each file's
-    // base / tip blob landed in `blobs` so we can stitch results
-    // back up after the bulk read.
-    let mut pairs: Vec<(CommitId, String)> = Vec::with_capacity(files.len() * 2);
-    let mut pair_indices: Vec<(Option<usize>, Option<usize>)> =
-        Vec::with_capacity(files.len());
-    for f in &files {
-        let (base_path, tip_path) = match &f.status {
-            FileStatus::Added => (None, Some(f.path.as_str())),
-            FileStatus::Deleted => (Some(f.path.as_str()), None),
-            FileStatus::Modified => (Some(f.path.as_str()), Some(f.path.as_str())),
-            FileStatus::Renamed { old_path } => {
-                (Some(old_path.as_str()), Some(f.path.as_str()))
-            }
-        };
-        let bi = base_path.map(|p| {
-            pairs.push((base.clone(), p.to_string()));
-            pairs.len() - 1
-        });
-        let ti = tip_path.map(|p| {
-            pairs.push((tip.clone(), p.to_string()));
-            pairs.len() - 1
-        });
-        pair_indices.push((bi, ti));
-    }
+    let (pairs, pair_indices) = collect_blob_pairs(base, tip, &files);
 
     let t = Instant::now();
     let blobs = backend.read_files(&pairs).await?;
@@ -86,8 +201,12 @@ pub async fn build_diff<B: JjBackend + ?Sized>(
         let base_text = String::from_utf8_lossy(base_bytes);
         let tip_text = String::from_utf8_lossy(tip_bytes);
         let t = Instant::now();
-        f.hunks = Some(histogram_hunks(&base_text, &tip_text, &f.path)?);
+        let hunks = histogram_hunks(&base_text, &tip_text, &f.path)?;
         let elapsed = t.elapsed();
+        let (added, removed) = count_lines(&hunks);
+        f.hunks = Some(hunks);
+        f.added = added;
+        f.removed = removed;
         diff_total += elapsed;
         if elapsed > slowest_diff.0 {
             slowest_diff = (elapsed, f.path.clone());
@@ -297,12 +416,21 @@ impl PartialFile {
             (path, FileStatus::Modified)
         };
 
+        // Tally +/- before we move `self.hunks` into the option. Binary
+        // files have no line concept, so their counts stay zero.
+        let (added, removed) = if self.binary {
+            (0, 0)
+        } else {
+            count_lines(&self.hunks)
+        };
         let hunks = if self.binary { None } else { Some(self.hunks) };
         Ok(FileChange {
             path,
             status,
             hunks,
             binary: self.binary,
+            added,
+            removed,
         })
     }
 }

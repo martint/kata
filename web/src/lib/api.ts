@@ -5,6 +5,7 @@ import type {
   CreateReviewParams,
   DraftCommentInput,
   DraftResponseInput,
+  FileChange,
   RepoSummary,
   Response as ReviewResponse,
   ReviewManifest,
@@ -105,6 +106,16 @@ export const api = {
       'GET',
       `${repoBase(repo)}/reviews/${enc(reviewId)}/commits/${enc(changeId)}/diff`,
     ),
+  /** Hunks for one file in a review. `openReview` ships only the
+   *  file list, then the UI calls this per FileSlot as files scroll
+   *  into view. `ps` selects the patchset; omit for "latest". */
+  fileDiff: (repo: string, reviewId: string, path: string, ps?: number) => {
+    const qs = ps !== undefined ? `&ps=${ps}` : '';
+    return request<FileChange>(
+      'GET',
+      `${repoBase(repo)}/reviews/${enc(reviewId)}/file-diff?path=${enc(path)}${qs}`,
+    );
+  },
   readFile: (repo: string, commit: string, path: string) =>
     fetchText(`${repoBase(repo)}/files?commit=${enc(commit)}&path=${enc(path)}`),
 

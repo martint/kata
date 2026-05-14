@@ -12,6 +12,7 @@
   //! Before the file has ever been rendered, an estimate based on hunk
   //! line count is used.
 
+  import { api } from '../lib/api';
   import type {
     CommentView,
     ComposerTarget,
@@ -25,6 +26,7 @@
 
   interface Props {
     repo: string;
+    reviewId: string;
     file: FileChange;
     patchset: Patchset;
     comments: CommentView[];
@@ -48,6 +50,7 @@
   }
   const {
     repo,
+    reviewId,
     file,
     patchset,
     comments,
@@ -69,6 +72,46 @@
   let wrapEl: HTMLElement | undefined = $state();
   let inViewport = $state(false);
   let lastKnownHeight = $state<number | null>(null);
+
+  /** Lazy-fetched diff body. `open_review` ships only the file list
+   *  (path, status, rename info) — hunks come in piecemeal as files
+   *  scroll near the viewport. `resolved` holds the merged
+   *  `FileChange` once the per-file fetch resolves; until then we
+   *  fall back to `file` (which has `hunks: undefined`). */
+  let resolved = $state<FileChange | null>(null);
+  let loadingHunks = $state(false);
+  let loadError = $state<string | null>(null);
+
+  /** Fires when the file is close enough to be visible. Skip if the
+   *  initial payload already had hunks (e.g. binary files; or the
+   *  client landed on a smaller endpoint that ships them eagerly).
+   *
+   *  `!= null` rather than `!== undefined` because the metadata
+   *  endpoint serialises `hunks: None` as JSON `null` (not an absent
+   *  field). Without that, every file would short-circuit here and
+   *  the diff would stay stuck on "Diff omitted". */
+  $effect(() => {
+    if (!shouldRender) return;
+    if (resolved !== null || loadingHunks) return;
+    if (file.hunks != null || file.binary) return;
+    loadingHunks = true;
+    loadError = null;
+    api
+      .fileDiff(repo, reviewId, file.path, patchset.n)
+      .then((updated) => {
+        resolved = updated;
+      })
+      .catch((e: Error) => {
+        loadError = e.message;
+      })
+      .finally(() => {
+        loadingHunks = false;
+      });
+  });
+
+  /** What we actually hand to `FileDiff`: the lazy-loaded one if the
+   *  fetch has resolved, otherwise the metadata-only original. */
+  const effectiveFile = $derived(resolved ?? file);
 
   /** Generous rootMargin so files don't churn mount/unmount during normal
    *  scrolling — we keep ~3 viewport-heights' worth of files alive at a
@@ -126,13 +169,14 @@
     <div bind:this={wrapEl}>
       <FileDiff
         {repo}
-        {file}
+        file={effectiveFile}
         {patchset}
         {comments}
         {responses}
         {composing}
         {saving}
         {compact}
+        loadingHunks={loadingHunks && resolved === null}
         {onstartcompose}
         {oncancelcompose}
         {onsubmit}
@@ -141,6 +185,9 @@
         {ondelete}
         {onedit}
       />
+      {#if loadError}
+        <p class="muted error">Could not load diff: {loadError}</p>
+      {/if}
     </div>
   {:else}
     <div

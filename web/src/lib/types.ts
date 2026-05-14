@@ -141,6 +141,12 @@ export interface FileChange {
   old_path?: string;
   hunks?: Hunk[];
   binary: boolean;
+  /** Added line count. Always populated by the server (even when hunks
+   *  are still lazy-loading) so the file tree's +/- can render before
+   *  the per-file diff fetch resolves. Zero for binary files. */
+  added: number;
+  /** Removed line count. See [[added]]. */
+  removed: number;
 }
 
 /** Result of fetching one commit's diff. Carries the endpoints' change

@@ -25,6 +25,8 @@ function file(
     status,
     hunks: adds + removes > 0 ? [hunk(adds, removes)] : [],
     binary: false,
+    added: adds,
+    removed: removes,
   };
 }
 

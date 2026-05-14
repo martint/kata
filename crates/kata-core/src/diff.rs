@@ -26,6 +26,14 @@ pub struct FileChange {
     /// `None` if either side is non-text (binary) or oversized — UI collapses.
     pub hunks: Option<Vec<Hunk>>,
     pub binary: bool,
+    /// Added line count. Always populated so the file tree's +/- summary
+    /// is accurate even before per-file hunks have been lazy-loaded.
+    /// Zero for binary files (no line concept).
+    #[serde(default)]
+    pub added: u32,
+    /// Removed line count. See [`Self::added`].
+    #[serde(default)]
+    pub removed: u32,
 }
 
 /// A contiguous region of changed + surrounding context lines.
