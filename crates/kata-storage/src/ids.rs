@@ -61,6 +61,14 @@ pub fn new_response_id() -> ResponseId {
     ResponseId::new(uuid_v7().to_string())
 }
 
+/// New opaque review identifier (UUID v7). The user-facing slug is
+/// the per-repo [`number`](kata_core::ReviewManifest::number); this id
+/// is internal — the storage primary key, the FK target on comments
+/// and sessions, the slug that the export format uses on disk.
+pub fn new_review_id() -> ReviewId {
+    ReviewId::new(uuid_v7().to_string())
+}
+
 pub(crate) fn uuid_v7() -> Uuid {
     Uuid::new_v7(Timestamp::now(NoContext))
 }

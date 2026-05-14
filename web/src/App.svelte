@@ -28,9 +28,9 @@
   // `loading`; without this the user would see the review list flash up
   // during the (async) whoami + listRepos + openReview round-trip.
   function initialScreen(): Screen {
-    const m = location.pathname.match(/^\/r\/([^/]+)\/(.+)$/);
+    const m = location.pathname.match(/^\/r\/([^/]+)\/(\d+)$/);
     if (m) {
-      return { kind: 'loading', label: decodeURIComponent(m[2]) };
+      return { kind: 'loading', label: `#${m[2]}` };
     }
     return { kind: 'list' };
   }
@@ -50,28 +50,29 @@
 
   function pathForReview(
     repo: string,
-    id: string,
+    number: number,
     patchset?: number,
     compareWith?: number | null,
   ): string {
-    const base = `/r/${encodeURIComponent(repo)}/${encodeURIComponent(id)}`;
+    const base = `/r/${encodeURIComponent(repo)}/${number}`;
     const parts: string[] = [];
     if (patchset !== undefined) parts.push(`ps=${patchset}`);
     if (compareWith != null) parts.push(`cmp=${compareWith}`);
     return parts.length > 0 ? `${base}?${parts.join('&')}` : base;
   }
 
-  /** Parse `/r/<repo>/<review_id>` (with optional `?ps=N`, `?cmp=M`).
-   *  Returns null when the URL is the review list. */
+  /** Parse `/r/<repo>/<number>` (with optional `?ps=N`, `?cmp=M`).
+   *  Returns null when the URL is the review list (or when `<number>`
+   *  isn't a positive integer — those URLs are treated as not-a-review). */
   function parseUrl():
     | {
         repo: string;
-        id: string;
+        number: number;
         patchset: number | undefined;
         compareWith: number | undefined;
       }
     | null {
-    const m = location.pathname.match(/^\/r\/([^/]+)\/(.+)$/);
+    const m = location.pathname.match(/^\/r\/([^/]+)\/(\d+)$/);
     if (!m) return null;
     const params = new URLSearchParams(location.search);
     const readNum = (key: string): number | undefined => {
@@ -82,7 +83,7 @@
     };
     return {
       repo: decodeURIComponent(m[1]),
-      id: decodeURIComponent(m[2]),
+      number: Number(m[2]),
       patchset: readNum('ps'),
       compareWith: readNum('cmp'),
     };
@@ -106,14 +107,14 @@
 
   async function showReview(
     targetRepo: string,
-    id: string,
+    number: number,
     patchset: number | undefined,
     compareWith: number | undefined,
   ) {
     loading = true;
     error = null;
     try {
-      const view = await api.openReview(targetRepo, id, patchset, compareWith);
+      const view = await api.openReview(targetRepo, number, patchset, compareWith);
       screen = {
         kind: 'review',
         repo: targetRepo,
@@ -131,12 +132,12 @@
   }
 
   /** Navigate to a review (called by user click — pushes history). */
-  async function openReview(id: string) {
-    const path = pathForReview(repo, id);
+  async function openReview(number: number) {
+    const path = pathForReview(repo, number);
     if (location.pathname + location.search !== path) {
       history.pushState({}, '', path);
     }
-    await showReview(repo, id, undefined, undefined);
+    await showReview(repo, number, undefined, undefined);
   }
 
   /** Called when the viewer changes patchset or compare target via the
@@ -146,7 +147,7 @@
     if (screen.kind !== 'review') return;
     const path = pathForReview(
       screen.repo,
-      screen.view.manifest.review_id,
+      screen.view.manifest.number,
       n,
       compare,
     );
@@ -177,7 +178,7 @@
         return;
       }
       repo = parsed.repo;
-      await showReview(parsed.repo, parsed.id, parsed.patchset, parsed.compareWith);
+      await showReview(parsed.repo, parsed.number, parsed.patchset, parsed.compareWith);
     } else {
       screen = { kind: 'list' };
       if (!repo && repos[0]) repo = repos[0].name;

@@ -10,7 +10,7 @@
     loading: boolean;
     createdBy: string;
     onchangerepo: (name: string) => void;
-    onopen: (id: string) => void;
+    onopen: (number: number) => void;
   }
   const {
     repos,
@@ -50,7 +50,11 @@
     bookmarksError = null;
     try {
       bookmarks = await api.listBookmarks(repo);
-      const existing = new Set((summaries ?? []).map((s) => s.manifest.review_id));
+      const existing = new Set(
+        (summaries ?? [])
+          .map((s) => s.manifest.bookmark)
+          .filter((b): b is string => !!b),
+      );
       const fresh = bookmarks.find((b) => !existing.has(b.name));
       if (!selected || !bookmarks.some((b) => b.name === selected)) {
         selected = (fresh ?? bookmarks[0])?.name ?? '';
@@ -79,7 +83,11 @@
    *  for "I want to start a review on this." Already sorted server-side
    *  by commit timestamp. */
   const reviewedNames = $derived(
-    new Set((summaries ?? []).map((s) => s.manifest.review_id)),
+    new Set(
+      (summaries ?? [])
+        .map((s) => s.manifest.bookmark)
+        .filter((b): b is string => !!b),
+    ),
   );
   const RECENT_LIMIT = 10;
   const recentBranches = $derived(
@@ -154,8 +162,8 @@
     createError = null;
     try {
       const trimmedSummary = summary.trim();
-      await api.createReview(repo, {
-        review_id: selected,
+      const created = await api.createReview(repo, {
+        name: selected,
         revset: revset.trim(),
         bookmark: selected,
         created_by: createdBy,
@@ -164,7 +172,7 @@
       revsetEdited = false;
       summary = '';
       summaryMode = 'edit';
-      onopen(selected);
+      onopen(created.number);
     } catch (e) {
       createError = (e as Error).message;
     } finally {
@@ -469,8 +477,9 @@
     <ul class="review-list">
       {#each summaries as s (s.manifest.review_id)}
         <li>
-          <button class="row" onclick={() => onopen(s.manifest.review_id)}>
-            <strong>{s.manifest.review_id}</strong>
+          <button class="row" onclick={() => onopen(s.manifest.number)}>
+            <span class="review-number">#{s.manifest.number}</span>
+            <strong>{s.manifest.name}</strong>
             <span class="meta">{s.manifest.revset}</span>
             <span style="flex: 1"></span>
             <span class="meta">{s.published_comment_count} comments</span>

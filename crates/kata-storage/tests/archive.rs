@@ -35,6 +35,13 @@ fn review_manifest(review: &ReviewId, author: &Author) -> ReviewManifest {
     ReviewManifest {
         schema_version: SCHEMA_VERSION,
         review_id: review.clone(),
+        // Hard-code a number so the round-trip test can compare
+        // before / after dictionaries exactly. (When the storage
+        // layer auto-assigns, the imported copy may pick a different
+        // number, which is fine in practice but trips the strict
+        // equality assertion in this suite.)
+        number: 1,
+        name: review.as_str().to_owned(),
         revset: RevSet::trunk_to(review.as_str()),
         created_at: now,
         created_by: author.clone(),

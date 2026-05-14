@@ -95,9 +95,12 @@ export const api = {
     request<ReviewSummary[]>('GET', `${repoBase(repo)}/reviews`),
   createReview: (repo: string, params: CreateReviewParams) =>
     request<ReviewManifest>('POST', `${repoBase(repo)}/reviews`, params),
+  /** Every review-scoped endpoint identifies the review by its
+   *  per-repo `number` — what the URL bar shows. The internal
+   *  `review_id` (UUID) is never exposed in API paths. */
   openReview: (
     repo: string,
-    id: string,
+    number: number,
     patchset?: number,
     compare?: number,
   ) => {
@@ -105,24 +108,24 @@ export const api = {
     if (patchset !== undefined) parts.push(`patchset=${patchset}`);
     if (compare !== undefined) parts.push(`compare=${compare}`);
     const qs = parts.length > 0 ? `?${parts.join('&')}` : '';
-    return request<ReviewView>('GET', `${repoBase(repo)}/reviews/${enc(id)}${qs}`);
+    return request<ReviewView>('GET', `${repoBase(repo)}/reviews/${number}${qs}`);
   },
-  refreshReview: (repo: string, id: string, summary?: string) =>
+  refreshReview: (repo: string, number: number, summary?: string) =>
     request<ReviewManifest>(
       'POST',
-      `${repoBase(repo)}/reviews/${enc(id)}/refresh`,
+      `${repoBase(repo)}/reviews/${number}/refresh`,
       summary !== undefined ? { summary } : {},
     ),
-  updateSummary: (repo: string, id: string, summary: string | null) =>
+  updateSummary: (repo: string, number: number, summary: string | null) =>
     request<ReviewManifest>(
       'PUT',
-      `${repoBase(repo)}/reviews/${enc(id)}/summary`,
+      `${repoBase(repo)}/reviews/${number}/summary`,
       { summary },
     ),
-  commitDiff: (repo: string, reviewId: string, changeId: string) =>
+  commitDiff: (repo: string, number: number, changeId: string) =>
     request<CommitDiffView>(
       'GET',
-      `${repoBase(repo)}/reviews/${enc(reviewId)}/commits/${enc(changeId)}/diff`,
+      `${repoBase(repo)}/reviews/${number}/commits/${enc(changeId)}/diff`,
     ),
   /** Hunks for one file in a review. `openReview` ships only the
    *  file list, then the UI calls this per FileSlot as files scroll
@@ -132,7 +135,7 @@ export const api = {
    *  (must match what the metadata response was fetched with). */
   fileDiff: (
     repo: string,
-    reviewId: string,
+    number: number,
     path: string,
     ps?: number,
     compare?: number,
@@ -142,70 +145,80 @@ export const api = {
     if (compare !== undefined) parts.push(`compare=${compare}`);
     return request<FileChange>(
       'GET',
-      `${repoBase(repo)}/reviews/${enc(reviewId)}/file-diff?${parts.join('&')}`,
+      `${repoBase(repo)}/reviews/${number}/file-diff?${parts.join('&')}`,
     );
   },
   readFile: (repo: string, commit: string, path: string) =>
     fetchText(`${repoBase(repo)}/files?commit=${enc(commit)}&path=${enc(path)}`),
 
-  startSession: (repo: string, id: string) =>
-    request<Session>('POST', `${repoBase(repo)}/reviews/${enc(id)}/sessions`),
-  publishSession: (repo: string, rid: string, sid: string) =>
+  startSession: (repo: string, number: number) =>
+    request<Session>('POST', `${repoBase(repo)}/reviews/${number}/sessions`),
+  publishSession: (repo: string, number: number, sid: string) =>
     request<void>(
       'POST',
-      `${repoBase(repo)}/reviews/${enc(rid)}/sessions/${enc(sid)}/publish`,
+      `${repoBase(repo)}/reviews/${number}/sessions/${enc(sid)}/publish`,
     ),
-  discardSession: (repo: string, rid: string, sid: string) =>
+  discardSession: (repo: string, number: number, sid: string) =>
     request<void>(
       'POST',
-      `${repoBase(repo)}/reviews/${enc(rid)}/sessions/${enc(sid)}/discard`,
+      `${repoBase(repo)}/reviews/${number}/sessions/${enc(sid)}/discard`,
     ),
 
-  createComment: (repo: string, rid: string, sid: string, input: DraftCommentInput) =>
+  createComment: (
+    repo: string,
+    number: number,
+    sid: string,
+    input: DraftCommentInput,
+  ) =>
     request<Comment>(
       'POST',
-      `${repoBase(repo)}/reviews/${enc(rid)}/sessions/${enc(sid)}/comments`,
+      `${repoBase(repo)}/reviews/${number}/sessions/${enc(sid)}/comments`,
       input,
     ),
   updateComment: (
     repo: string,
-    rid: string,
+    number: number,
     sid: string,
     cid: string,
     input: DraftCommentInput,
   ) =>
     request<Comment>(
       'PUT',
-      `${repoBase(repo)}/reviews/${enc(rid)}/sessions/${enc(sid)}/comments/${enc(cid)}`,
+      `${repoBase(repo)}/reviews/${number}/sessions/${enc(sid)}/comments/${enc(cid)}`,
       input,
     ),
-  deleteComment: (repo: string, rid: string, sid: string, cid: string) =>
+  deleteComment: (repo: string, number: number, sid: string, cid: string) =>
     request<void>(
       'DELETE',
-      `${repoBase(repo)}/reviews/${enc(rid)}/sessions/${enc(sid)}/comments/${enc(cid)}`,
+      `${repoBase(repo)}/reviews/${number}/sessions/${enc(sid)}/comments/${enc(cid)}`,
     ),
 
-  createResponse: (repo: string, rid: string, sid: string, input: DraftResponseInput) =>
+  createResponse: (
+    repo: string,
+    number: number,
+    sid: string,
+    input: DraftResponseInput,
+  ) =>
     request<ReviewResponse>(
       'POST',
-      `${repoBase(repo)}/reviews/${enc(rid)}/sessions/${enc(sid)}/responses`,
+      `${repoBase(repo)}/reviews/${number}/sessions/${enc(sid)}/responses`,
       input,
     ),
   updateResponse: (
     repo: string,
-    rid: string,
+    number: number,
     sid: string,
     respId: string,
     input: DraftResponseInput,
   ) =>
     request<ReviewResponse>(
       'PUT',
-      `${repoBase(repo)}/reviews/${enc(rid)}/sessions/${enc(sid)}/responses/${enc(respId)}`,
+      `${repoBase(repo)}/reviews/${number}/sessions/${enc(sid)}/responses/${enc(respId)}`,
       input,
     ),
-  deleteResponse: (repo: string, rid: string, sid: string, respId: string) =>
+  deleteResponse: (repo: string, number: number, sid: string, respId: string) =>
     request<void>(
       'DELETE',
-      `${repoBase(repo)}/reviews/${enc(rid)}/sessions/${enc(sid)}/responses/${enc(respId)}`,
+      `${repoBase(repo)}/reviews/${number}/sessions/${enc(sid)}/responses/${enc(respId)}`,
     ),
 };

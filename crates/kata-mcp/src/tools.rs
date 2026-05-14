@@ -99,22 +99,22 @@ impl ReviewMcp {
     ) -> Result<CallToolResult, McpError> {
         let CreateReviewArgs {
             repo,
-            review_id,
+            name,
             revset,
             bookmark,
             summary,
         } = args;
         let repo = self.resolve(&repo)?;
         let revset = revset.unwrap_or_else(|| {
-            let name = bookmark.as_deref().unwrap_or(review_id.as_str());
-            RevSet::trunk_to(name)
+            let slug = bookmark.as_deref().unwrap_or(name.as_str());
+            RevSet::trunk_to(slug)
         });
         let manifest = self
             .service
             .create_review(
                 &repo,
                 CreateReviewParams {
-                    review_id,
+                    name,
                     revset,
                     bookmark,
                     created_by: self.author.clone(),
@@ -524,7 +524,10 @@ pub struct GetReviewArgs {
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct CreateReviewArgs {
     pub repo: String,
-    pub review_id: ReviewId,
+    /// Human-readable label for the review (e.g. the bookmark slug).
+    /// The internal `review_id` is generated server-side; what the URL
+    /// shows is the per-repo `number` the storage layer assigns.
+    pub name: String,
     #[serde(default)]
     pub revset: Option<RevSet>,
     #[serde(default)]

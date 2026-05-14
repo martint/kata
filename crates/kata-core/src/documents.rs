@@ -140,7 +140,27 @@ pub struct Patchset {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ReviewManifest {
     pub schema_version: u32,
+    /// Opaque stable identifier — UUID v7 for new reviews, the
+    /// bookmark slug for pre-numbering reviews carried over from
+    /// older archives. Used internally and by storage; never shown to
+    /// the user (the URL uses [`Self::number`], the UI shows
+    /// [`Self::name`]). Comments and sessions still reference the
+    /// review by this id, so it's also the join key for everything
+    /// downstream.
     pub review_id: ReviewId,
+    /// Per-repo monotonic counter assigned at create-review time.
+    /// Drives the URL — `/r/<repo>/<number>` — and the breadcrumb
+    /// display. Unique within a repo across active *and* archived
+    /// reviews so that creating a new review on a branch that already
+    /// has one (or several) just bumps the counter.
+    #[serde(default)]
+    pub number: u32,
+    /// Human-readable label. Defaults to the bookmark name when the
+    /// review is created; editable later (planned). Pure display —
+    /// changing it never affects URLs or identity. Empty string for
+    /// reviews migrated from before this field existed.
+    #[serde(default)]
+    pub name: String,
     pub revset: RevSet,
     pub created_at: DateTime<Utc>,
     pub created_by: Author,

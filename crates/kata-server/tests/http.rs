@@ -129,9 +129,11 @@ async fn full_review_lifecycle_over_http() {
         .collect();
     assert_eq!(names, vec!["feature"]);
 
-    // Create a review against `feature`.
+    // Create a review against `feature`. The URL identifier is the
+    // server-assigned per-repo `number`; the response carries it
+    // alongside the human `name`.
     let create_body = json!({
-        "review_id": "feature",
+        "name": "feature",
         "revset": "@-..feature",
         "bookmark": "feature",
         "created_by": "alice@example.com",
@@ -140,7 +142,10 @@ async fn full_review_lifecycle_over_http() {
         .json("POST", "/api/repos/main/reviews", Some(create_body))
         .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(value["review_id"], "feature");
+    assert_eq!(value["name"], "feature");
+    let review_number = value["number"].as_u64().unwrap();
+    assert_eq!(review_number, 1);
+    let review_url = format!("/api/repos/main/reviews/{review_number}");
 
     // Listing returns it.
     let (status, value) = h.json("GET", "/api/repos/main/reviews", None).await;
@@ -148,7 +153,7 @@ async fn full_review_lifecycle_over_http() {
     assert_eq!(value.as_array().unwrap().len(), 1);
 
     // Open it — gets diff and (empty) comments.
-    let (status, view) = h.json("GET", "/api/repos/main/reviews/feature", None).await;
+    let (status, view) = h.json("GET", &review_url, None).await;
     assert_eq!(status, StatusCode::OK);
     let file_paths: Vec<&str> = view["diff"]["files"]
         .as_array()
@@ -171,7 +176,7 @@ async fn full_review_lifecycle_over_http() {
 
     // Start a session.
     let (status, session) = h
-        .json("POST", "/api/repos/main/reviews/feature/sessions", None)
+        .json("POST", &format!("{review_url}/sessions"), None)
         .await;
     assert_eq!(status, StatusCode::OK);
     let session_id = session["session_id"].as_str().unwrap().to_owned();
@@ -190,7 +195,7 @@ async fn full_review_lifecycle_over_http() {
     let (status, comment) = h
         .json(
             "POST",
-            &format!("/api/repos/main/reviews/feature/sessions/{session_id}/comments"),
+            &format!("{review_url}/sessions/{session_id}/comments"),
             Some(comment_body),
         )
         .await;
@@ -199,7 +204,7 @@ async fn full_review_lifecycle_over_http() {
     assert_eq!(comment["body"], "Please lowercase this.\n");
 
     // Drafts visible only to author until publish.
-    let (_, view) = h.json("GET", "/api/repos/main/reviews/feature", None).await;
+    let (_, view) = h.json("GET", &review_url, None).await;
     assert_eq!(view["drafts"]["comments"].as_array().unwrap().len(), 1);
     assert!(view["comments"].as_array().unwrap().is_empty());
 
@@ -207,55 +212,65 @@ async fn full_review_lifecycle_over_http() {
     let (status, _) = h
         .json(
             "POST",
-            &format!("/api/repos/main/reviews/feature/sessions/{session_id}/publish"),
+            &format!("{review_url}/sessions/{session_id}/publish"),
             None,
         )
         .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 
     // Now visible in published list, and drafts cleared.
-    let (_, view) = h.json("GET", "/api/repos/main/reviews/feature", None).await;
+    let (_, view) = h.json("GET", &review_url, None).await;
     assert_eq!(view["comments"].as_array().unwrap().len(), 1);
     assert_eq!(view["comments"][0]["comment_id"], comment_id);
     assert!(view["drafts"]["comments"].as_array().unwrap().is_empty());
 }
 
 #[tokio::test]
-async fn create_review_rejects_duplicate() {
+async fn second_review_on_same_branch_gets_next_number() {
+    // Two reviews can share a bookmark / name — each gets its own
+    // per-repo `number` and so its own URL. This is the property the
+    // number scheme exists for: a follow-up review on a branch that
+    // already has one (active or archived) doesn't collide.
     let h = Harness::new().await;
     let body = json!({
-        "review_id": "feature",
+        "name": "feature",
         "revset": "@-..feature",
         "bookmark": "feature",
         "created_by": "alice@example.com",
     });
-    let (status, _) = h.json("POST", "/api/repos/main/reviews", Some(body.clone())).await;
+    let (status, first) = h.json("POST", "/api/repos/main/reviews", Some(body.clone())).await;
     assert_eq!(status, StatusCode::OK);
-    let (status, value) = h.json("POST", "/api/repos/main/reviews", Some(body)).await;
-    assert_eq!(status, StatusCode::CONFLICT);
-    assert!(value["error"].as_str().unwrap().contains("already exists"));
+    assert_eq!(first["number"].as_u64().unwrap(), 1);
+    let (status, second) = h.json("POST", "/api/repos/main/reviews", Some(body)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(second["number"].as_u64().unwrap(), 2);
+    assert_ne!(first["review_id"], second["review_id"]);
 }
 
 #[tokio::test]
 async fn writes_after_publish_are_rejected() {
     let h = Harness::new().await;
-    let _ = h
+    let (_, created) = h
         .json(
             "POST",
             "/api/repos/main/reviews",
             Some(json!({
-                "review_id": "feature",
+                "name": "feature",
                 "revset": "@-..feature",
                 "bookmark": "feature",
                 "created_by": "alice@example.com",
             })),
         )
         .await;
+    let review_url = format!(
+        "/api/repos/main/reviews/{}",
+        created["number"].as_u64().unwrap()
+    );
     let (_, session) = h
-        .json("POST", "/api/repos/main/reviews/feature/sessions", None)
+        .json("POST", &format!("{review_url}/sessions"), None)
         .await;
     let session_id = session["session_id"].as_str().unwrap().to_owned();
-    let (_, view) = h.json("GET", "/api/repos/main/reviews/feature", None).await;
+    let (_, view) = h.json("GET", &review_url, None).await;
     let current_n = view["manifest"]["current_patchset"].as_u64().unwrap();
     let current = view["manifest"]["patchsets"]
         .as_array()
@@ -270,7 +285,7 @@ async fn writes_after_publish_are_rejected() {
     let (status, _) = h
         .json(
             "POST",
-            &format!("/api/repos/main/reviews/feature/sessions/{session_id}/comments"),
+            &format!("{review_url}/sessions/{session_id}/comments"),
             Some(json!({
                 "anchor_change_id": anchor_change,
                 "anchor_commit_id": anchor_commit,
@@ -282,7 +297,7 @@ async fn writes_after_publish_are_rejected() {
     let _ = h
         .json(
             "POST",
-            &format!("/api/repos/main/reviews/feature/sessions/{session_id}/publish"),
+            &format!("{review_url}/sessions/{session_id}/publish"),
             None,
         )
         .await;
@@ -291,7 +306,7 @@ async fn writes_after_publish_are_rejected() {
     let (status, value) = h
         .json(
             "POST",
-            &format!("/api/repos/main/reviews/feature/sessions/{session_id}/comments"),
+            &format!("{review_url}/sessions/{session_id}/comments"),
             Some(json!({
                 "anchor_change_id": anchor_change,
                 "anchor_commit_id": anchor_commit,
@@ -306,23 +321,27 @@ async fn writes_after_publish_are_rejected() {
 #[tokio::test]
 async fn x_review_author_header_overrides_default_identity() {
     let h = Harness::new().await;
-    let _ = h
+    let (_, created) = h
         .json(
             "POST",
             "/api/repos/main/reviews",
             Some(json!({
-                "review_id": "feature",
+                "name": "feature",
                 "revset": "@-..feature",
                 "bookmark": "feature",
                 "created_by": "alice@example.com",
             })),
         )
         .await;
+    let review_url = format!(
+        "/api/repos/main/reviews/{}",
+        created["number"].as_u64().unwrap()
+    );
 
     // Bob starts a session using the header.
     let req = Request::builder()
         .method("POST")
-        .uri("/api/repos/main/reviews/feature/sessions")
+        .uri(format!("{review_url}/sessions"))
         .header("x-review-author", "bob@example.com")
         .body(Body::empty())
         .unwrap();

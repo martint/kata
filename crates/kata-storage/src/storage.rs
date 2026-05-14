@@ -42,7 +42,24 @@ pub trait Storage: Send + Sync {
 
     async fn open_review(&self, repo: &RepoId, review: &ReviewId) -> Result<ReviewManifest>;
 
-    async fn create_review(&self, repo: &RepoId, manifest: &ReviewManifest) -> Result<()>;
+    /// Look up the internal `review_id` from the per-repo `number`
+    /// that the URL carries. Returns `None` when no review with that
+    /// number exists.
+    async fn resolve_review_number(
+        &self,
+        repo: &RepoId,
+        number: u32,
+    ) -> Result<Option<ReviewId>>;
+
+    /// Persist `manifest`. Returns the manifest as actually stored —
+    /// the storage layer may fill in fields the caller left to be
+    /// assigned (per-repo `number`, default `name`), so the caller
+    /// should treat the returned value as authoritative.
+    async fn create_review(
+        &self,
+        repo: &RepoId,
+        manifest: &ReviewManifest,
+    ) -> Result<ReviewManifest>;
 
     /// Replace an existing review manifest in place. Used to record an
     /// updated `last_seen_*` after the bookmark moves.

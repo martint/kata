@@ -276,6 +276,20 @@ impl ReviewService {
         Ok(self.storage.list_reviews(repo).await?)
     }
 
+    /// Resolve the per-repo `number` carried in URLs to the opaque
+    /// `ReviewId` that every other API surface uses internally. Errors
+    /// with `NotFound` when no review with that number exists.
+    pub async fn resolve_review_number(
+        &self,
+        repo: &RepoId,
+        number: u32,
+    ) -> ServiceResult<ReviewId> {
+        self.storage
+            .resolve_review_number(repo, number)
+            .await?
+            .ok_or_else(|| ServiceError::NotFound(format!("review #{number}")))
+    }
+
     // ---- review lifecycle ----------------------------------------------
 
     pub async fn create_review(
@@ -285,7 +299,7 @@ impl ReviewService {
     ) -> ServiceResult<ReviewManifest> {
         let jj = self.jj_for(repo)?;
         let CreateReviewParams {
-            review_id,
+            name,
             revset,
             bookmark,
             created_by,
@@ -293,9 +307,15 @@ impl ReviewService {
         } = params;
         let range = jj.resolve_range(&revset).await?;
         let now = Utc::now();
+        // Server-generated internal id. The user-facing identifier is
+        // the per-repo `number` that storage assigns inside the
+        // create_review transaction.
+        let review_id = kata_storage::ids::new_review_id();
         let manifest = ReviewManifest {
             schema_version: SCHEMA_VERSION,
             review_id,
+            number: 0, // storage assigns
+            name,
             revset,
             created_at: now,
             created_by,
@@ -312,7 +332,7 @@ impl ReviewService {
             }],
             current_patchset: 1,
         };
-        self.storage.create_review(repo, &manifest).await?;
+        let manifest = self.storage.create_review(repo, &manifest).await?;
         let repo_name = self.repo_name(repo).unwrap_or_default();
         self.emit(Event::ReviewCreated {
             repo: repo_name,
@@ -905,7 +925,11 @@ impl ReviewService {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct CreateReviewParams {
-    pub review_id: ReviewId,
+    /// Human-readable name. Stored on the manifest as
+    /// [`ReviewManifest::name`]; the internal id is generated
+    /// server-side as a UUID v7 so two reviews can share the same name
+    /// (e.g. a bookmark reused for a follow-up round).
+    pub name: String,
     pub revset: RevSet,
     #[serde(default)]
     pub bookmark: Option<String>,

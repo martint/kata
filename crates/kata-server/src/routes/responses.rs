@@ -1,7 +1,7 @@
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use kata_core::{Response, ResponseId, ReviewId, SessionId};
+use kata_core::{Response, ResponseId, SessionId};
 
 use crate::error::AppResult;
 use crate::routes::author::ViewerAuthor;
@@ -11,7 +11,7 @@ use crate::state::AppState;
 pub async fn create_response(
     State(state): State<AppState>,
     ViewerAuthor(author): ViewerAuthor,
-    Path((repo_name, _review_id, session_id)): Path<(String, ReviewId, SessionId)>,
+    Path((repo_name, _review_number, session_id)): Path<(String, u32, SessionId)>,
     Json(input): Json<DraftResponseInput>,
 ) -> AppResult<(StatusCode, Json<Response>)> {
     let repo = state.service.resolve_repo(&repo_name)?;
@@ -25,9 +25,9 @@ pub async fn create_response(
 pub async fn update_response(
     State(state): State<AppState>,
     ViewerAuthor(author): ViewerAuthor,
-    Path((repo_name, _review_id, session_id, response_id)): Path<(
+    Path((repo_name, _review_number, session_id, response_id)): Path<(
         String,
-        ReviewId,
+        u32,
         SessionId,
         ResponseId,
     )>,
@@ -43,14 +43,15 @@ pub async fn update_response(
 
 pub async fn delete_response(
     State(state): State<AppState>,
-    Path((repo_name, review_id, session_id, response_id)): Path<(
+    Path((repo_name, review_number, session_id, response_id)): Path<(
         String,
-        ReviewId,
+        u32,
         SessionId,
         ResponseId,
     )>,
 ) -> AppResult<StatusCode> {
     let repo = state.service.resolve_repo(&repo_name)?;
+    let review_id = state.service.resolve_review_number(&repo, review_number).await?;
     state
         .service
         .discard_draft_response(&repo, &review_id, &session_id, &response_id)

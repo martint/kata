@@ -49,51 +49,51 @@ fn api_routes() -> Router<AppState> {
             get(reviews::list_reviews).post(reviews::create_review),
         )
         .route(
-            "/api/repos/{repo_name}/reviews/{review_id}",
+            "/api/repos/{repo_name}/reviews/{review_number}",
             get(reviews::open_review),
         )
         .route(
-            "/api/repos/{repo_name}/reviews/{review_id}/refresh",
+            "/api/repos/{repo_name}/reviews/{review_number}/refresh",
             post(reviews::refresh_review),
         )
         .route(
-            "/api/repos/{repo_name}/reviews/{review_id}/summary",
+            "/api/repos/{repo_name}/reviews/{review_number}/summary",
             axum::routing::put(reviews::update_summary),
         )
         .route(
-            "/api/repos/{repo_name}/reviews/{review_id}/commits/{change_id}/diff",
+            "/api/repos/{repo_name}/reviews/{review_number}/commits/{change_id}/diff",
             get(reviews::commit_diff),
         )
         .route(
-            "/api/repos/{repo_name}/reviews/{review_id}/file-diff",
+            "/api/repos/{repo_name}/reviews/{review_number}/file-diff",
             get(reviews::file_diff),
         )
         .route(
-            "/api/repos/{repo_name}/reviews/{review_id}/sessions",
+            "/api/repos/{repo_name}/reviews/{review_number}/sessions",
             post(sessions::start_session),
         )
         .route(
-            "/api/repos/{repo_name}/reviews/{review_id}/sessions/{session_id}/publish",
+            "/api/repos/{repo_name}/reviews/{review_number}/sessions/{session_id}/publish",
             post(sessions::publish_session),
         )
         .route(
-            "/api/repos/{repo_name}/reviews/{review_id}/sessions/{session_id}/discard",
+            "/api/repos/{repo_name}/reviews/{review_number}/sessions/{session_id}/discard",
             post(sessions::discard_session),
         )
         .route(
-            "/api/repos/{repo_name}/reviews/{review_id}/sessions/{session_id}/comments",
+            "/api/repos/{repo_name}/reviews/{review_number}/sessions/{session_id}/comments",
             post(comments::create_comment),
         )
         .route(
-            "/api/repos/{repo_name}/reviews/{review_id}/sessions/{session_id}/comments/{comment_id}",
+            "/api/repos/{repo_name}/reviews/{review_number}/sessions/{session_id}/comments/{comment_id}",
             axum::routing::put(comments::update_comment).delete(comments::delete_comment),
         )
         .route(
-            "/api/repos/{repo_name}/reviews/{review_id}/sessions/{session_id}/responses",
+            "/api/repos/{repo_name}/reviews/{review_number}/sessions/{session_id}/responses",
             post(responses::create_response),
         )
         .route(
-            "/api/repos/{repo_name}/reviews/{review_id}/sessions/{session_id}/responses/{response_id}",
+            "/api/repos/{repo_name}/reviews/{review_number}/sessions/{session_id}/responses/{response_id}",
             axum::routing::put(responses::update_response).delete(responses::delete_response),
         )
 }

@@ -28,6 +28,10 @@ fn review_manifest(review: &ReviewId, author: &Author) -> ReviewManifest {
     ReviewManifest {
         schema_version: SCHEMA_VERSION,
         review_id: review.clone(),
+        // `number: 0` lets the storage layer assign a fresh per-repo
+        // number; tests that want a specific one set it explicitly.
+        number: 0,
+        name: review.as_str().to_owned(),
         revset: RevSet::trunk_to(review.as_str()),
         created_at: now,
         created_by: author.clone(),

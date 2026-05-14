@@ -421,8 +421,8 @@ impl Storage for SqliteStorage {
             // every session.toml to do this; here it's all indexed.
             let mut stmt = conn.prepare(
                 "SELECT
-                    r.review_id, r.schema_version, r.revset, r.bookmark, r.summary,
-                    r.created_by, r.created_at, r.current_patchset, r.patchsets_json,
+                    r.review_id, r.number, r.name, r.schema_version, r.revset, r.bookmark,
+                    r.summary, r.created_by, r.created_at, r.current_patchset, r.patchsets_json,
                     (SELECT COUNT(*) FROM sessions s
                      WHERE s.repo_id = r.repo_id AND s.review_id = r.review_id) AS session_count,
                     (SELECT COUNT(*) FROM comments c
@@ -431,11 +431,11 @@ impl Storage for SqliteStorage {
                        AND s.status = 'published') AS published_comment_count
                  FROM reviews r
                  WHERE r.repo_id = ?1
-                 ORDER BY r.created_at DESC",
+                 ORDER BY r.number DESC",
             )?;
             let rows = stmt.query_map(params![repo_str], |row| {
-                let session_count: i64 = row.get(9)?;
-                let comment_count: i64 = row.get(10)?;
+                let session_count: i64 = row.get(11)?;
+                let comment_count: i64 = row.get(12)?;
                 let manifest = review_manifest_from_row(row)?;
                 Ok(ReviewSummary {
                     manifest,
@@ -452,6 +452,25 @@ impl Storage for SqliteStorage {
         .await
     }
 
+    async fn resolve_review_number(
+        &self,
+        repo: &RepoId,
+        number: u32,
+    ) -> Result<Option<ReviewId>> {
+        ensure_repo_id(repo)?;
+        let repo_str = repo.as_str().to_owned();
+        self.with_conn(move |conn| {
+            conn.query_row(
+                "SELECT review_id FROM reviews WHERE repo_id = ?1 AND number = ?2",
+                params![repo_str, number],
+                |row| row.get::<_, String>(0).map(ReviewId::new),
+            )
+            .optional()
+            .map_err(Error::from)
+        })
+        .await
+    }
+
     async fn open_review(&self, repo: &RepoId, review: &ReviewId) -> Result<ReviewManifest> {
         ensure_repo_id(repo)?;
         ensure_review_id(review)?;
@@ -461,7 +480,7 @@ impl Storage for SqliteStorage {
         self.with_conn(move |conn| {
             let opt = conn
                 .query_row(
-                    "SELECT review_id, schema_version, revset, bookmark, summary,
+                    "SELECT review_id, number, name, schema_version, revset, bookmark, summary,
                             created_by, created_at, current_patchset, patchsets_json
                      FROM reviews WHERE repo_id = ?1 AND review_id = ?2",
                     params![repo_str, review_str],
@@ -478,25 +497,54 @@ impl Storage for SqliteStorage {
         .await
     }
 
-    async fn create_review(&self, repo: &RepoId, manifest: &ReviewManifest) -> Result<()> {
+    async fn create_review(
+        &self,
+        repo: &RepoId,
+        manifest: &ReviewManifest,
+    ) -> Result<ReviewManifest> {
         ensure_repo_id(repo)?;
         ensure_review_id(&manifest.review_id)?;
         let repo_str = repo.as_str().to_owned();
-        let manifest = manifest.clone();
+        let mut manifest = manifest.clone();
         self.with_conn(move |conn| {
             let patchsets_json =
                 serde_json::to_string(&manifest.patchsets).map_err(|source| Error::Json {
                     context: "patchsets".into(),
                     source,
                 })?;
-            let res = conn.execute(
+            // Assign a fresh per-repo number inside the same write
+            // transaction as the INSERT, so two concurrent creates can't
+            // pick the same number. `manifest.number > 0` means a caller
+            // (the archive importer) supplied an explicit one; honour
+            // it so round-tripping preserves URLs.
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            if manifest.number == 0 {
+                let next: u32 = tx
+                    .query_row(
+                        "SELECT COALESCE(MAX(number), 0) + 1 FROM reviews WHERE repo_id = ?1",
+                        params![repo_str],
+                        |row| row.get(0),
+                    )?;
+                manifest.number = next;
+            }
+            // Empty name → default to bookmark or review_id, in that
+            // order. Older archives may not have carried a name at all.
+            if manifest.name.is_empty() {
+                manifest.name = manifest
+                    .bookmark
+                    .clone()
+                    .unwrap_or_else(|| manifest.review_id.as_str().to_owned());
+            }
+            let res = tx.execute(
                 "INSERT INTO reviews
-                    (repo_id, review_id, schema_version, revset, bookmark, summary,
+                    (repo_id, review_id, number, name, schema_version, revset, bookmark, summary,
                      created_by, created_at, current_patchset, patchsets_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 params![
                     repo_str,
                     manifest.review_id.as_str(),
+                    manifest.number,
+                    manifest.name,
                     manifest.schema_version,
                     manifest.revset.as_str(),
                     manifest.bookmark,
@@ -508,7 +556,10 @@ impl Storage for SqliteStorage {
                 ],
             );
             match res {
-                Ok(_) => Ok(()),
+                Ok(_) => {
+                    tx.commit()?;
+                    Ok(manifest)
+                }
                 Err(rusqlite::Error::SqliteFailure(e, _))
                     if e.code == rusqlite::ErrorCode::ConstraintViolation =>
                 {
@@ -535,18 +586,20 @@ impl Storage for SqliteStorage {
                 })?;
             let affected = conn.execute(
                 "UPDATE reviews
-                    SET schema_version = ?3,
-                        revset = ?4,
-                        bookmark = ?5,
-                        summary = ?6,
-                        created_by = ?7,
-                        created_at = ?8,
-                        current_patchset = ?9,
-                        patchsets_json = ?10
+                    SET name = ?3,
+                        schema_version = ?4,
+                        revset = ?5,
+                        bookmark = ?6,
+                        summary = ?7,
+                        created_by = ?8,
+                        created_at = ?9,
+                        current_patchset = ?10,
+                        patchsets_json = ?11
                   WHERE repo_id = ?1 AND review_id = ?2",
                 params![
                     repo_str,
                     manifest.review_id.as_str(),
+                    manifest.name,
                     manifest.schema_version,
                     manifest.revset.as_str(),
                     manifest.bookmark,
@@ -940,19 +993,25 @@ impl Storage for SqliteStorage {
 // ---- shared row extractors ---------------------------------------------
 
 fn review_manifest_from_row(row: &Row<'_>) -> rusqlite::Result<ReviewManifest> {
-    let patchsets_json: String = row.get(8)?;
+    // Columns are: review_id, number, name, schema_version, revset,
+    // bookmark, summary, created_by, created_at, current_patchset,
+    // patchsets_json. The two listing/opening queries above project
+    // exactly that order; if you change one, change the other.
+    let patchsets_json: String = row.get(10)?;
     let patchsets = serde_json::from_str(&patchsets_json).map_err(|e| {
-        rusqlite::Error::FromSqlConversionFailure(8, rusqlite::types::Type::Text, Box::new(e))
+        rusqlite::Error::FromSqlConversionFailure(10, rusqlite::types::Type::Text, Box::new(e))
     })?;
     Ok(ReviewManifest {
         review_id: ReviewId::new(row.get::<_, String>(0)?),
-        schema_version: row.get(1)?,
-        revset: RevSet::new(row.get::<_, String>(2)?),
-        bookmark: row.get(3)?,
-        summary: row.get(4)?,
-        created_by: Author::new(row.get::<_, String>(5)?),
-        created_at: row.get(6)?,
-        current_patchset: row.get(7)?,
+        number: row.get(1)?,
+        name: row.get(2)?,
+        schema_version: row.get(3)?,
+        revset: RevSet::new(row.get::<_, String>(4)?),
+        bookmark: row.get(5)?,
+        summary: row.get(6)?,
+        created_by: Author::new(row.get::<_, String>(7)?),
+        created_at: row.get(8)?,
+        current_patchset: row.get(9)?,
         patchsets,
     })
 }

@@ -656,7 +656,7 @@
     loadingDiffLabel = changeId.slice(0, 12);
     error = null;
     try {
-      scopedDiff = await api.commitDiff(repo, current.manifest.review_id, changeId);
+      scopedDiff = await api.commitDiff(repo, current.manifest.number, changeId);
       scopedChangeId = changeId;
     } catch (e) {
       error = (e as Error).message;
@@ -776,7 +776,7 @@
     refreshing = true;
     error = null;
     try {
-      await api.refreshReview(repo, current.manifest.review_id);
+      await api.refreshReview(repo, current.manifest.number);
       await refresh();
     } catch (e) {
       error = (e as Error).message;
@@ -790,7 +790,7 @@
     const compare = compareWith ?? undefined;
     const next = await api.openReview(
       repo,
-      current.manifest.review_id,
+      current.manifest.number,
       selectedPatchset,
       compare,
     );
@@ -799,7 +799,7 @@
     if (wasOnLatest && next.manifest.current_patchset !== selectedPatchset) {
       current = await api.openReview(
         repo,
-        current.manifest.review_id,
+        current.manifest.number,
         next.manifest.current_patchset,
         compare,
       );
@@ -821,7 +821,7 @@
     try {
       current = await api.openReview(
         repo,
-        current.manifest.review_id,
+        current.manifest.number,
         n,
         nextCompare ?? undefined,
       );
@@ -852,7 +852,7 @@
     try {
       current = await api.openReview(
         repo,
-        current.manifest.review_id,
+        current.manifest.number,
         selectedPatchset,
         n ?? undefined,
       );
@@ -932,7 +932,7 @@
 
   async function ensureSession(): Promise<string> {
     if (current.drafts.session) return current.drafts.session.session_id;
-    const session = await api.startSession(repo, current.manifest.review_id);
+    const session = await api.startSession(repo, current.manifest.number);
     // Persist locally so the optimistic-update paths below don't have to
     // refetch the review just to learn the new session_id.
     current = { ...current, drafts: { ...current.drafts, session } };
@@ -948,12 +948,12 @@
       const saved = editingId
         ? await api.updateComment(
             repo,
-            current.manifest.review_id,
+            current.manifest.number,
             sid,
             editingId,
             input,
           )
-        : await api.createComment(repo, current.manifest.review_id, sid, input);
+        : await api.createComment(repo, current.manifest.number, sid, input);
       // Splice into local drafts instead of refetching the whole review.
       // `openReview` re-runs `jj diff` and resolves every comment's
       // anchor, which on large diffs takes seconds; the local view
@@ -991,7 +991,7 @@
     try {
       const updated = await api.updateSummary(
         repo,
-        current.manifest.review_id,
+        current.manifest.number,
         next,
       );
       // Merge in place so we don't lose patchset / diff / comment state.
@@ -1035,7 +1035,7 @@
       const sid = await ensureSession();
       const saved = await api.createResponse(
         repo,
-        current.manifest.review_id,
+        current.manifest.number,
         sid,
         input,
       );
@@ -1065,7 +1065,7 @@
     try {
       await api.deleteComment(
         repo,
-        current.manifest.review_id,
+        current.manifest.number,
         comment.session_id,
         comment.comment_id,
       );
@@ -1092,7 +1092,7 @@
     try {
       await api.publishSession(
         repo,
-        current.manifest.review_id,
+        current.manifest.number,
         current.drafts.session.session_id,
       );
       await refresh();
@@ -1182,7 +1182,7 @@
     try {
       await api.discardSession(
         repo,
-        current.manifest.review_id,
+        current.manifest.number,
         current.drafts.session.session_id,
       );
       await refresh();
@@ -1195,7 +1195,10 @@
 </script>
 
 <section class="header">
-  <h2>{current.manifest.review_id}</h2>
+  <h2>
+    <span class="review-number">#{current.manifest.number}</span>
+    {current.manifest.name}
+  </h2>
   <p class="muted">
     {#if current.manifest.bookmark}bookmark: <strong>{current.manifest.bookmark}</strong> ·{/if}
     revset: <code>{current.manifest.revset}</code>
@@ -1473,7 +1476,7 @@
              composer doesn't get virtualized out from under the user. -->
         <FileSlot
           {repo}
-          reviewId={current.manifest.review_id}
+          reviewNumber={current.manifest.number}
           file={f}
           patchset={viewingFor}
           {compareWith}
@@ -1505,6 +1508,12 @@
 <style>
   .header {
     margin-bottom: 16px;
+  }
+
+  .header .review-number {
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+    margin-right: 6px;
   }
 
   /* Small inline button sitting at the end of the patchset row. Padded

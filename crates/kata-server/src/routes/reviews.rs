@@ -1,6 +1,6 @@
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use kata_core::{Author, Bookmark, ChangeId, CommitId, RepoSummary, ReviewId, ReviewManifest};
+use kata_core::{Author, Bookmark, ChangeId, CommitId, RepoSummary, ReviewManifest};
 use kata_storage::ReviewSummary;
 use serde::{Deserialize, Serialize};
 
@@ -85,10 +85,11 @@ pub struct OpenReviewQuery {
 pub async fn open_review(
     State(state): State<AppState>,
     ViewerAuthor(viewer): ViewerAuthor,
-    Path((repo_name, review_id)): Path<(String, ReviewId)>,
+    Path((repo_name, review_number)): Path<(String, u32)>,
     Query(q): Query<OpenReviewQuery>,
 ) -> AppResult<Json<ReviewView>> {
     let repo = state.service.resolve_repo(&repo_name)?;
+    let review_id = state.service.resolve_review_number(&repo, review_number).await?;
     Ok(Json(
         state
             .service
@@ -109,10 +110,11 @@ pub struct RefreshReviewBody {
 pub async fn refresh_review(
     State(state): State<AppState>,
     ViewerAuthor(actor): ViewerAuthor,
-    Path((repo_name, review_id)): Path<(String, ReviewId)>,
+    Path((repo_name, review_number)): Path<(String, u32)>,
     body: Option<Json<RefreshReviewBody>>,
 ) -> AppResult<Json<ReviewManifest>> {
     let repo = state.service.resolve_repo(&repo_name)?;
+    let review_id = state.service.resolve_review_number(&repo, review_number).await?;
     let new_summary = body.and_then(|Json(b)| b.summary);
     Ok(Json(
         state
@@ -131,10 +133,11 @@ pub struct UpdateSummaryBody {
 pub async fn update_summary(
     State(state): State<AppState>,
     ViewerAuthor(actor): ViewerAuthor,
-    Path((repo_name, review_id)): Path<(String, ReviewId)>,
+    Path((repo_name, review_number)): Path<(String, u32)>,
     Json(body): Json<UpdateSummaryBody>,
 ) -> AppResult<Json<ReviewManifest>> {
     let repo = state.service.resolve_repo(&repo_name)?;
+    let review_id = state.service.resolve_review_number(&repo, review_number).await?;
     Ok(Json(
         state
             .service
@@ -145,7 +148,7 @@ pub async fn update_summary(
 
 pub async fn commit_diff(
     State(state): State<AppState>,
-    Path((repo_name, _review_id, change_id)): Path<(String, ReviewId, ChangeId)>,
+    Path((repo_name, _review_number, change_id)): Path<(String, u32, ChangeId)>,
 ) -> AppResult<Json<CommitDiffView>> {
     let repo = state.service.resolve_repo(&repo_name)?;
     Ok(Json(state.service.commit_diff(&repo, &change_id).await?))
@@ -165,10 +168,11 @@ pub struct FileDiffQuery {
 
 pub async fn file_diff(
     State(state): State<AppState>,
-    Path((repo_name, review_id)): Path<(String, ReviewId)>,
+    Path((repo_name, review_number)): Path<(String, u32)>,
     Query(q): Query<FileDiffQuery>,
 ) -> AppResult<Json<kata_core::FileChange>> {
     let repo = state.service.resolve_repo(&repo_name)?;
+    let review_id = state.service.resolve_review_number(&repo, review_number).await?;
     Ok(Json(
         state
             .service

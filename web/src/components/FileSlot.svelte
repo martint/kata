@@ -26,7 +26,7 @@
 
   interface Props {
     repo: string;
-    reviewId: string;
+    reviewNumber: number;
     file: FileChange;
     patchset: Patchset;
     /** When non-null, the viewer is in patchset-compare mode: per-file
@@ -54,7 +54,7 @@
   }
   const {
     repo,
-    reviewId,
+    reviewNumber,
     file,
     patchset,
     compareWith,
@@ -114,7 +114,7 @@
     loadingHunks = true;
     loadError = null;
     api
-      .fileDiff(repo, reviewId, file.path, patchset.n, compareWith ?? undefined)
+      .fileDiff(repo, reviewNumber, file.path, patchset.n, compareWith ?? undefined)
       .then((updated) => {
         resolved = updated;
       })

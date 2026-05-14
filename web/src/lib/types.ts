@@ -104,7 +104,14 @@ export interface Patchset {
 
 export interface ReviewManifest {
   schema_version: number;
+  /** Opaque internal identifier — UUID v7 for reviews created since
+   *  the per-repo `number` rollout. Never shown to the user. */
   review_id: ReviewId;
+  /** Per-repo monotonic number — what URLs and breadcrumbs use. */
+  number: number;
+  /** Human-readable name. Defaults to the bookmark slug at create
+   *  time. Editable later; never affects URLs. */
+  name: string;
   revset: RevSet;
   created_at: string;
   created_by: Author;
@@ -208,7 +215,9 @@ export interface ReviewView {
 }
 
 export interface CreateReviewParams {
-  review_id: ReviewId;
+  /** Human label; defaults to the bookmark name. Server generates
+   *  the internal `review_id` and assigns the per-repo `number`. */
+  name: string;
   revset: RevSet;
   bookmark?: string;
   created_by: Author;

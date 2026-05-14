@@ -28,11 +28,18 @@ pub struct Migration {
 
 /// All migrations known to this build, in apply order. New entries go at
 /// the end with a higher `version`.
-pub const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "init",
-    sql: include_str!("../../migrations/V001__init.sql"),
-}];
+pub const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "init",
+        sql: include_str!("../../migrations/V001__init.sql"),
+    },
+    Migration {
+        version: 2,
+        name: "review_number_and_name",
+        sql: include_str!("../../migrations/V002__review_number_and_name.sql"),
+    },
+];
 
 /// Bring `conn` up to the latest schema. Idempotent: re-running on an
 /// already-current DB is a no-op (just reads the audit table). Designed
