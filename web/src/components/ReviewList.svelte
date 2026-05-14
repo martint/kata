@@ -79,6 +79,14 @@
       .slice(0, RECENT_LIMIT),
   );
 
+  /** Show the "this revset can be empty" hint only when the user is on
+   *  the default `trunk()..<bookmark>` shape and hasn't overridden it.
+   *  An author who's already typed a custom revset doesn't need a
+   *  warning about a default they're not using. */
+  const showDefaultRevsetHint = $derived(
+    !!selected && revset.trim() === `trunk()..${selected}`,
+  );
+
   /** Compact relative-time formatting: "5m ago", "3h ago", "2d ago". */
   function relative(iso: string): string {
     if (!iso) return '';
@@ -141,33 +149,98 @@
     min-width: 200px;
   }
 
-  .revset-field input {
-    margin-left: 8px;
-    min-width: 220px;
+  /* The home screen is three distinct sections — reviews, new-review
+   * form, and branches-without-a-review — separated by clear gaps and
+   * (for the create form) a card so the form reads as its own block
+   * rather than as part of a flat list. */
+  .home-section + .home-section {
+    margin-top: 28px;
   }
 
-  .summary-field {
+  .home-section > h3 {
+    margin: 0 0 10px;
+  }
+
+  /* Create-review form: stack so the summary textarea has real width,
+   * instead of competing with the bookmark/revset selectors for inline
+   * space. Row 1 = bookmark + revset, row 2 = summary, row 3 = submit.
+   * Every input/select/textarea is forced to `width: 100%` of its label
+   * — browser defaults (cols=20 on textarea, intrinsic size on select)
+   * otherwise leave fields narrower than the card. */
+  .create-card {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    background: var(--bg-panel);
+  }
+
+  .create-form {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .create-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+  }
+
+  /* Both labels in the row grow equally — bookmark and revset get
+   * matching widths instead of bookmark hugging its content while
+   * revset hogs the rest. */
+  .create-row > label {
+    flex: 1 1 200px;
+    min-width: 0;
+  }
+
+  /* Labels everywhere in the form share the same vertical-stack shape:
+   * caption text on top, full-width control below. */
+  .create-form label {
     display: flex;
     flex-direction: column;
     gap: 4px;
-    width: 100%;
-    flex-basis: 100%;
     font-size: 13px;
   }
 
-  .summary-field textarea {
+  .create-form select,
+  .create-form input[type='text'],
+  .create-form textarea {
+    width: 100%;
+    box-sizing: border-box;
     font: inherit;
+  }
+
+  .create-form textarea {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     padding: 6px 8px;
     border: 1px solid var(--border);
     border-radius: 4px;
     resize: vertical;
-    min-height: 60px;
+    min-height: 120px;
   }
 
-  .hint {
-    margin: 6px 0 0;
+  /* Hint sits in the actions row left of the button (flex: 1 to push
+   * the button to the far right) so a narrow note doesn't take an
+   * extra line of its own. If the viewport is narrow enough that the
+   * hint wraps to several lines, `flex-wrap` makes the button drop
+   * below it instead of squashing into a 40-char column. */
+  .create-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .create-actions .hint {
+    flex: 1 1 240px;
+    margin: 0;
     font-size: 12px;
+  }
+
+  .create-actions button {
+    flex: 0 0 auto;
+    margin-left: auto;
   }
 
   .hint code {
@@ -176,15 +249,15 @@
     border-radius: 3px;
   }
 
-  .recent-section {
-    margin-bottom: 12px;
-  }
-
-  .recent-section h4 {
-    margin: 0 0 6px;
-    font-size: 13px;
+  /* Branches list: lives in its own section *below* the form. Visually
+   * quieter than the form (no card, smaller text) — the form is the
+   * primary CTA on this screen; the list is a "or pick one of these"
+   * shortcut, not its own affordance. */
+  .recent-section h3 .recent-hint {
+    font-weight: 400;
     color: var(--text-muted);
-    font-weight: 500;
+    font-size: 13px;
+    margin-left: 6px;
   }
 
   .recent-list {
@@ -252,12 +325,12 @@
   </div>
 {/if}
 
-<section>
+<section class="home-section">
   <h2>Reviews</h2>
   {#if loading && summaries === null}
     <p class="muted">Loading…</p>
   {:else if summaries && summaries.length === 0}
-    <p class="muted">No reviews yet. Pick a bookmark below.</p>
+    <p class="muted">No reviews yet. Start one below.</p>
   {:else if summaries}
     <ul class="review-list">
       {#each summaries as s (s.manifest.review_id)}
@@ -274,7 +347,7 @@
   {/if}
 </section>
 
-<section>
+<section class="home-section">
   <h3>Start a new review</h3>
   {#if bookmarksError}
     <p class="error">Couldn't load bookmarks: {bookmarksError}</p>
@@ -287,63 +360,79 @@
       <code>jj bookmark create &lt;name&gt; -r &lt;rev&gt;</code>, then refresh.
     </p>
   {:else}
-    {#if recentBranches.length > 0}
-      <div class="recent-section">
-        <h4>Recently updated branches</h4>
-        <ul class="recent-list">
-          {#each recentBranches as b (b.name)}
-            <li>
-              <button
-                type="button"
-                class={selected === b.name ? 'picked' : ''}
-                onclick={() => pickBranch(b.name)}
-                title="Click to fill the form below"
-              >
-                <span class="name">{b.name}</span>
-                <span class="when">{relative(b.commit_timestamp)}</span>
-              </button>
-            </li>
-          {/each}
-        </ul>
-      </div>
-    {/if}
-    <form class="create-form" onsubmit={submit}>
-      <label>
-        Bookmark
-        <select bind:value={selected}>
-          {#each bookmarks as b (b.name)}
-            <option value={b.name}>{b.name}</option>
-          {/each}
-        </select>
-      </label>
-      <label class="revset-field">
-        Revset
-        <input
-          type="text"
-          bind:value={revset}
-          oninput={() => (revsetEdited = true)}
-          placeholder="e.g. trunk()..feature, @-..@"
-        />
-      </label>
-      <label class="summary-field">
-        Summary <span class="muted">(optional, markdown)</span>
-        <textarea
-          bind:value={summary}
-          rows="3"
-          placeholder="A short description of the change. Shown at the top of the review."
-        ></textarea>
-      </label>
-      <button type="submit" class="primary" disabled={creating || !selected || !revset.trim()}>
-        {creating ? 'Creating…' : 'Create review'}
-      </button>
-    </form>
-    <p class="hint muted">
-      The default <code>trunk()..&lt;bookmark&gt;</code> is empty when the bookmark
-      <em>is</em> the trunk. Try <code>@-..@</code> for the latest commit, or any
-      other <a href="https://jj-vcs.github.io/jj/latest/revsets/" target="_blank" rel="noreferrer">jj revset</a>.
-    </p>
+    <div class="create-card">
+      <form class="create-form" onsubmit={submit}>
+        <div class="create-row">
+          <label class="bookmark-field">
+            Bookmark
+            <select bind:value={selected}>
+              {#each bookmarks as b (b.name)}
+                <option value={b.name}>{b.name}</option>
+              {/each}
+            </select>
+          </label>
+          <label class="revset-field">
+            Revset
+            <input
+              type="text"
+              bind:value={revset}
+              oninput={() => (revsetEdited = true)}
+              placeholder="e.g. trunk()..feature, @-..@"
+            />
+          </label>
+        </div>
+        <label class="summary-field">
+          Summary <span class="muted">(optional, markdown)</span>
+          <textarea
+            bind:value={summary}
+            rows="4"
+            placeholder="A short description of the change. Shown at the top of the review."
+          ></textarea>
+        </label>
+        <div class="create-actions">
+          {#if showDefaultRevsetHint}
+            <p class="hint muted">
+              <code>trunk()..&lt;bookmark&gt;</code> is empty when the bookmark
+              <em>is</em> the trunk. Edit the revset above — see
+              <a href="https://jj-vcs.github.io/jj/latest/revsets/" target="_blank" rel="noreferrer">jj revsets</a>
+              for the shapes you can use.
+            </p>
+          {/if}
+          <button
+            type="submit"
+            class="primary"
+            disabled={creating || !selected || !revset.trim()}
+          >
+            {creating ? 'Creating…' : 'Create review'}
+          </button>
+        </div>
+      </form>
+    </div>
   {/if}
   {#if createError}
     <p class="error">{createError}</p>
   {/if}
 </section>
+
+{#if !bookmarksError && !bookmarksLoading && recentBranches.length > 0}
+  <section class="home-section recent-section">
+    <h3>
+      Branches without a review
+      <span class="recent-hint">— click to fill the form above</span>
+    </h3>
+    <ul class="recent-list">
+      {#each recentBranches as b (b.name)}
+        <li>
+          <button
+            type="button"
+            class={selected === b.name ? 'picked' : ''}
+            onclick={() => pickBranch(b.name)}
+          >
+            <span class="name">{b.name}</span>
+            <span class="when">{relative(b.commit_timestamp)}</span>
+          </button>
+        </li>
+      {/each}
+    </ul>
+  </section>
+{/if}

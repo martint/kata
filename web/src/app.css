@@ -395,12 +395,6 @@ input[type='text'] {
   white-space: nowrap;
 }
 
-.create-form {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  margin-top: 8px;
-}
 
 .files {
   list-style: none;
