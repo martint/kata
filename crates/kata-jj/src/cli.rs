@@ -58,7 +58,7 @@ impl JjCli {
     }
 
     async fn run(&self, args: &[&str]) -> Result<Vec<u8>> {
-        tracing::debug!(repo = ?self.repo, args = ?args, "jj");
+        tracing::trace!(repo = ?self.repo, args = ?args, "jj");
         let output = self.cmd().args(args).output().await?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
