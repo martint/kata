@@ -143,6 +143,19 @@ export interface FileChange {
   binary: boolean;
 }
 
+/** Result of fetching one commit's diff. Carries the endpoints' change
+ *  ids alongside the file list so the UI can scope file reads, syntax
+ *  highlighting, and new-comment anchoring to the clicked commit (not
+ *  the whole-review patchset's tip, which can sit at completely
+ *  different line numbers when later commits touch the same file). */
+export interface CommitDiffView {
+  base_change: ChangeId;
+  base_commit: CommitId;
+  tip_change: ChangeId;
+  tip_commit: CommitId;
+  files: FileChange[];
+}
+
 export interface Diff {
   base: CommitId;
   tip: CommitId;

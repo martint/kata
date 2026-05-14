@@ -1,8 +1,8 @@
 import type {
   Bookmark,
   Comment,
+  CommitDiffView,
   CreateReviewParams,
-  Diff,
   DraftCommentInput,
   DraftResponseInput,
   RepoSummary,
@@ -101,7 +101,7 @@ export const api = {
       { summary },
     ),
   commitDiff: (repo: string, reviewId: string, changeId: string) =>
-    request<Diff>(
+    request<CommitDiffView>(
       'GET',
       `${repoBase(repo)}/reviews/${enc(reviewId)}/commits/${enc(changeId)}/diff`,
     ),

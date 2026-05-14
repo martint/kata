@@ -149,6 +149,27 @@ impl JjBackend for JjCli {
         Ok(bookmarks)
     }
 
+    async fn resolve_endpoint(&self, expr: &str) -> Result<Option<crate::backend::Endpoint>> {
+        let Some(out) = self
+            .run_or_missing(&["log", "--no-graph", "-r", expr, "-T", SINGLE_REV_TPL])
+            .await?
+        else {
+            return Ok(None);
+        };
+        let text = String::from_utf8(out)
+            .map_err(|e| Error::Parse(format!("endpoint not utf-8: {e}")))?;
+        let Some(line) = text.lines().find(|l| !l.is_empty()) else {
+            return Ok(None);
+        };
+        let (change, commit) = line
+            .split_once(' ')
+            .ok_or_else(|| Error::Parse(format!("endpoint missing space: {line:?}")))?;
+        Ok(Some(crate::backend::Endpoint {
+            change_id: ChangeId::new(change),
+            commit_id: CommitId::new(commit),
+        }))
+    }
+
     async fn change_to_commit(&self, change: &ChangeId) -> Result<Option<CommitId>> {
         let args = [
             "log",

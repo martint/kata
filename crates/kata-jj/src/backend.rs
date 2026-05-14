@@ -33,6 +33,12 @@ pub trait JjBackend: Send + Sync {
     /// abandoned and has no commit anywhere.
     async fn change_to_commit(&self, change: &ChangeId) -> Result<Option<CommitId>>;
 
+    /// Resolve an arbitrary revset expression to a single endpoint
+    /// (`change_id` + `commit_id`). `None` when the revset is empty.
+    /// Returns the first match if the revset has multiple heads — the
+    /// caller is responsible for picking a single-rev expression.
+    async fn resolve_endpoint(&self, expr: &str) -> Result<Option<Endpoint>>;
+
     /// Read a file's contents at a specific commit. `Ok(None)` if the file
     /// does not exist at that commit.
     async fn read_file(&self, commit: &CommitId, path: &str) -> Result<Option<Vec<u8>>>;

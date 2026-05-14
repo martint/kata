@@ -11,7 +11,7 @@ pub mod diff;
 pub mod error;
 
 pub use anchor::{AnchorResolution, resolve_anchor};
-pub use backend::{JjBackend, ReviewRange};
+pub use backend::{Endpoint, JjBackend, ReviewRange};
 pub use cli::JjCli;
 pub use diff::build_diff;
 pub use error::{Error, Result};

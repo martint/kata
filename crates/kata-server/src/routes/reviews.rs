@@ -1,12 +1,12 @@
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use kata_core::{Author, Bookmark, ChangeId, CommitId, Diff, RepoSummary, ReviewId, ReviewManifest};
+use kata_core::{Author, Bookmark, ChangeId, CommitId, RepoSummary, ReviewId, ReviewManifest};
 use kata_storage::ReviewSummary;
 use serde::{Deserialize, Serialize};
 
 use crate::error::AppResult;
 use crate::routes::author::ViewerAuthor;
-use crate::service::{CreateReviewParams, ReviewView};
+use crate::service::{CommitDiffView, CreateReviewParams, ReviewView};
 use crate::state::AppState;
 
 #[derive(Debug, Serialize)]
@@ -117,7 +117,7 @@ pub async fn update_summary(
 pub async fn commit_diff(
     State(state): State<AppState>,
     Path((repo_name, _review_id, change_id)): Path<(String, ReviewId, ChangeId)>,
-) -> AppResult<Json<Diff>> {
+) -> AppResult<Json<CommitDiffView>> {
     let repo = state.service.resolve_repo(&repo_name)?;
     Ok(Json(state.service.commit_diff(&repo, &change_id).await?))
 }

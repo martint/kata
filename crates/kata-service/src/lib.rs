@@ -450,23 +450,34 @@ impl ReviewService {
     }
 
     /// Build the diff for a single commit (parent-of-change..change). Used
-    /// when the UI scopes a review view down to one commit.
+    /// when the UI scopes a review view down to one commit. Returns both
+    /// change ids alongside the diff so the UI can read each side's
+    /// file content (for syntax highlighting and anchor resolution) at
+    /// the right commit — not at the whole-review patchset's tip, which
+    /// can have completely different line numbers when later commits in
+    /// the stack touch the same file.
     pub async fn commit_diff(
         &self,
         repo: &RepoId,
         change: &ChangeId,
-    ) -> ServiceResult<Diff> {
+    ) -> ServiceResult<CommitDiffView> {
         let jj = self.jj_for(repo)?;
-        let tip = jj
+        let tip_commit = jj
             .change_to_commit(change)
             .await?
             .ok_or_else(|| ServiceError::NotFound(format!("change {change}")))?;
-        let parent_expr = ChangeId::new(format!("{change}-"));
-        let base = jj
-            .change_to_commit(&parent_expr)
+        let parent = jj
+            .resolve_endpoint(&format!("{change}-"))
             .await?
             .ok_or_else(|| ServiceError::NotFound(format!("parent of change {change}")))?;
-        Ok(build_diff(&**jj, &base, &tip).await?)
+        let diff = build_diff(&**jj, &parent.commit_id, &tip_commit).await?;
+        Ok(CommitDiffView {
+            base_change: parent.change_id,
+            base_commit: parent.commit_id,
+            tip_change: change.clone(),
+            tip_commit,
+            files: diff.files,
+        })
     }
 
     /// Re-resolve the revset. If the tip has moved since the current
@@ -766,6 +777,20 @@ pub struct DraftResponseInput {
 }
 
 // ---- view shapes -------------------------------------------------------
+
+/// Result of [`ReviewService::commit_diff`]: the diff for one commit
+/// alongside both endpoints' change ids. The UI uses the change ids to
+/// synthesize a patchset that scopes file reads, syntax highlighting,
+/// and new-comment anchoring to the clicked commit instead of the
+/// whole-review patchset's tip.
+#[derive(Clone, Debug, Serialize)]
+pub struct CommitDiffView {
+    pub base_change: ChangeId,
+    pub base_commit: CommitId,
+    pub tip_change: ChangeId,
+    pub tip_commit: CommitId,
+    pub files: Vec<kata_core::FileChange>,
+}
 
 #[derive(Clone, Debug, Serialize)]
 pub struct ReviewView {

@@ -4,10 +4,11 @@
   import { subscribe as subscribeEvents } from '../lib/events';
   import type {
     CommentView,
+    CommitDiffView,
     ComposerTarget,
-    Diff,
     DraftCommentInput,
     DraftResponseInput,
+    Patchset,
     ResponseView,
     ReviewView,
   } from '../lib/types';
@@ -257,14 +258,37 @@
 
   /** When non-null, the diff is scoped to a single commit instead of the
    *  full review range. The full ReviewView (comments, drafts, etc.) is
-   *  still loaded — only the diff display changes. */
+   *  still loaded — only the diff display changes. The endpoints' change
+   *  ids ride along so we can build a per-commit "view patchset" that
+   *  scopes file-content reads + new-comment anchoring to the clicked
+   *  commit (otherwise highlights pull from the whole-review tip, whose
+   *  line numbers may differ when later commits touch the same file). */
   let scopedChangeId: string | null = $state(null);
-  let scopedDiff: Diff | null = $state(null);
+  let scopedDiff = $state<CommitDiffView | null>(null);
 
-  const displayedDiff = $derived(scopedDiff ?? current.diff);
+  const displayedFiles = $derived.by(() => {
+    const sd = scopedDiff;
+    return sd ? sd.files : current.diff.files;
+  });
   /** Files reordered to match the file tree's DFS traversal so the diff
    *  panel reads top-to-bottom the way the sidebar does. */
-  const orderedFiles = $derived(sortFilesLikeTree(displayedDiff.files));
+  const orderedFiles = $derived(sortFilesLikeTree(displayedFiles));
+
+  /** Patchset to thread through to FileSlot/FileDiff for file content,
+   *  highlights, and new-comment anchors. In scoped view this points
+   *  at the clicked commit and its parent; otherwise at the review's
+   *  current patchset. */
+  const viewingFor = $derived.by<Patchset>(() => {
+    const sd = scopedDiff;
+    if (!sd) return viewing;
+    return {
+      ...viewing,
+      base_change: sd.base_change,
+      base_commit: sd.base_commit,
+      tip_change: sd.tip_change,
+      tip_commit: sd.tip_commit,
+    };
+  });
 
   // Sidebar layout state, persisted to localStorage.
   const TREE_WIDTH_KEY = 'kata:treeWidth';
@@ -818,7 +842,7 @@
     class:hidden={treeCollapsed}
     style:width="{treeWidth}px"
   >
-    <FileTree files={displayedDiff.files} onselect={scrollToFile}>
+    <FileTree files={displayedFiles} onselect={scrollToFile}>
       {#snippet headerLeft()}
         <button
           class="tree-toggle"
@@ -912,7 +936,7 @@
         <FileSlot
           {repo}
           file={f}
-          patchset={viewing}
+          patchset={viewingFor}
           comments={allComments}
           responses={allResponses}
           composing={composing &&
