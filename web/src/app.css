@@ -136,9 +136,23 @@ header.app .author {
   font-size: 12px;
 }
 
+header.app .draft-nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+}
+
+header.app .draft-nav button {
+  padding: 2px 8px;
+  font-size: 14px;
+  line-height: 1;
+}
+
 header.app .draft-count {
   color: var(--text-muted);
   font-size: 12px;
+  font-variant-numeric: tabular-nums;
 }
 
 header.app .draft-count strong {
@@ -155,9 +169,11 @@ header.app .commit-nav {
   align-items: center;
   gap: 4px;
   font-size: 12px;
-  /* Cap the label so a long subject doesn't push the rest of the bar
-   * off-screen — overflow is handled by `.commit-label` below. */
-  max-width: 420px;
+  /* Take whatever room is available between the nav buttons and the
+   * right-side cluster (drafts, author). `flex: 1` lets the label
+   * stretch to use it, and `min-width: 0` lets the flex item shrink
+   * below its intrinsic size so the ellipsis can do its job. */
+  flex: 1 1 auto;
   min-width: 0;
 }
 
@@ -165,12 +181,17 @@ header.app .commit-nav button {
   padding: 2px 8px;
   font-size: 14px;
   line-height: 1;
+  flex: 0 0 auto;
 }
 
 header.app .commit-nav .position {
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
   text-align: center;
+  flex: 0 0 auto;
+  /* Breathing room between the `x/N` and the commit subject so the
+   * two don't run into each other when the title is short. */
+  padding: 0 6px 0 2px;
 }
 
 header.app .commit-nav .commit-label {
@@ -179,6 +200,7 @@ header.app .commit-nav .commit-label {
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
+  flex: 1 1 auto;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 13px;
 }

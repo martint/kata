@@ -31,12 +31,20 @@
    *  directly above the commits panel — they share visual context with
    *  the comments and shouldn't be split across two bars. */
   export interface ReviewToolbarState {
-    /** Draft session controls. Null when the user has no open drafts. */
+    /** Draft session controls. Null when the user has no open drafts.
+     *  `position` is 1-based among `count` drafts (in document order),
+     *  or 0 when the current nav target isn't one of the viewer's
+     *  drafts. The shell renders the prev/next around the count so the
+     *  reader can step between their own pending drafts without
+     *  scanning the comment-bar for them. */
     drafts: {
       count: number;
+      position: number;
       saving: boolean;
       publish: () => Promise<void>;
       discard: () => Promise<void>;
+      prev: () => void;
+      next: () => void;
     } | null;
     /** Prev / next commit nav. `null` when the review has zero
      *  commits in its revset (nothing to scope to). Position 0 means
@@ -229,7 +237,12 @@
     const scoped = scopedChangeId !== null;
     // When scoped to a single commit, `orderedFiles` already reflects
     // just that commit's files (it derives from `displayedDiff`), so
-    // filtering by file membership scopes the nav automatically.
+    // filtering by file membership scopes the nav automatically. In
+    // non-scoped mode we keep every file-anchored comment in the nav
+    // even if its file is missing from the diff (anchor moved out,
+    // patchset-compare hiding unchanged files, etc.) — otherwise a
+    // filter that should leave one draft visible can yield an empty
+    // nav and look like the prev/next controls broke.
     const fileOrder = new Map(orderedFiles.map((f, i) => [f.path, i]));
     const reviewWide = scoped
       ? []
@@ -237,10 +250,12 @@
           .filter((c) => c.file == null)
           .sort((a, b) => a.created_at.localeCompare(b.created_at));
     const inFiles = all
-      .filter((c) => c.file != null && fileOrder.has(c.file))
+      .filter((c) => c.file != null && (!scoped || fileOrder.has(c.file)))
       .sort((a, b) => {
-        const ao = fileOrder.get(a.file!)!;
-        const bo = fileOrder.get(b.file!)!;
+        // Missing files sort to the end via `Infinity` rather than
+        // throwing the comment out of the list.
+        const ao = fileOrder.get(a.file!) ?? Number.POSITIVE_INFINITY;
+        const bo = fileOrder.get(b.file!) ?? Number.POSITIVE_INFINITY;
         if (ao !== bo) return ao - bo;
         // File-level comments (no lines) sort before line-level within the file.
         const al = a.lines?.start ?? -1;
@@ -270,6 +285,52 @@
     const target = orderedComments[wrapped - 1];
     navCommentId = target.comment_id;
     void scrollToComment(target.comment_id, target.file ?? null);
+  }
+
+  /** Drafts in document order — same shape as `orderedComments` but
+   *  pulled from `current.drafts.comments` directly so it ignores the
+   *  comment-bar status/severity filter. The header's "N drafts"
+   *  indicator counts ALL of the viewer's drafts, so the nav next to
+   *  it should iterate ALL of them too. */
+  const orderedDraftIds = $derived.by(() => {
+    const fileOrder = new Map(orderedFiles.map((f, i) => [f.path, i]));
+    return current.drafts.comments
+      .slice()
+      .sort((a, b) => {
+        // Review-wide drafts sort before file-anchored ones, then by
+        // file order, then by line, then by created_at as a tiebreak.
+        const af = a.file == null ? -1 : (fileOrder.get(a.file) ?? Number.POSITIVE_INFINITY);
+        const bf = b.file == null ? -1 : (fileOrder.get(b.file) ?? Number.POSITIVE_INFINITY);
+        if (af !== bf) return af - bf;
+        const al = a.lines?.start ?? -1;
+        const bl = b.lines?.start ?? -1;
+        if (al !== bl) return al - bl;
+        return a.created_at.localeCompare(b.created_at);
+      })
+      .map((c) => c.comment_id);
+  });
+
+  const navDraftPosition = $derived.by(() => {
+    if (!navCommentId) return 0;
+    const i = orderedDraftIds.indexOf(navCommentId);
+    return i < 0 ? 0 : i + 1;
+  });
+
+  function navDraftAt(idx: number) {
+    if (orderedDraftIds.length === 0) return;
+    const n = orderedDraftIds.length;
+    const wrapped = ((idx - 1 + n) % n) + 1;
+    const id = orderedDraftIds[wrapped - 1];
+    const target = current.drafts.comments.find((c) => c.comment_id === id);
+    if (!target) return;
+    navCommentId = id;
+    void scrollToComment(id, target.file ?? null);
+  }
+  function navDraftPrev() {
+    navDraftAt(navDraftPosition === 0 ? orderedDraftIds.length : navDraftPosition - 1);
+  }
+  function navDraftNext() {
+    navDraftAt(navDraftPosition === 0 ? 1 : navDraftPosition + 1);
   }
 
   /** True when `el` is already fully visible in the usable area —
@@ -374,6 +435,56 @@
     navTo(navPosition === 0 ? 1 : navPosition + 1);
   }
 
+  /** Sync `navCommentId` to whatever's at the top of the visible area
+   *  as the user scrolls. This is what makes the `x/N` counter in the
+   *  comment bar feel "alive" — the reader scrolls past a comment and
+   *  the position ticks up without clicking prev/next.
+   *
+   *  Throttled via requestAnimationFrame: at most one recompute per
+   *  frame even during fling scroll. The walk over `orderedComments` is
+   *  O(N) but for the typical review size (tens of comments) that
+   *  costs single-digit microseconds, well below a frame budget. */
+  $effect(() => {
+    if (typeof window === 'undefined') return;
+    let scheduled = false;
+    function sync() {
+      scheduled = false;
+      if (orderedComments.length === 0) return;
+      const top = stickyTop();
+      // First comment whose top is at or below the sticky bars wins —
+      // that's "the next thing the reader will engage with." If they
+      // all sit above the bars (whole review scrolled past), use the
+      // last one so the counter pegs at N/N rather than blanking out.
+      let last: string | null = null;
+      for (const c of orderedComments) {
+        const el = document.querySelector<HTMLElement>(
+          `[data-comment-id="${CSS.escape(c.comment_id)}"]`,
+        );
+        if (!el) continue;
+        last = c.comment_id;
+        const rect = el.getBoundingClientRect();
+        // -2 lets a comment that's *just* touching the sticky bar
+        // edge count as "current," avoiding flicker when scrolling
+        // lands exactly on the boundary.
+        if (rect.top >= top - 2) {
+          if (navCommentId !== c.comment_id) navCommentId = c.comment_id;
+          return;
+        }
+      }
+      if (last && navCommentId !== last) navCommentId = last;
+    }
+    function onScroll() {
+      if (scheduled) return;
+      scheduled = true;
+      requestAnimationFrame(sync);
+    }
+    window.addEventListener('scroll', onScroll, { passive: true });
+    // Run once on mount so the counter starts on whatever's at the
+    // top, not stuck at 0/N.
+    queueMicrotask(sync);
+    return () => window.removeEventListener('scroll', onScroll);
+  });
+
   /** Mirror toolbar state up to the app shell whenever it changes. The
    *  shell renders publish / discard, commit nav, and the file-tree
    *  toggle. Comment filter + prev/next + comments-only toggle live in
@@ -385,9 +496,12 @@
       drafts: hasDrafts
         ? {
             count: current.drafts.comments.length,
+            position: navDraftPosition,
             saving,
             publish,
             discard,
+            prev: navDraftPrev,
+            next: navDraftNext,
           }
         : null,
       commits:

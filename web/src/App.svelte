@@ -246,14 +246,14 @@
           title="Previous commit"
           aria-label="Previous commit"
         >‹</button>
+        <span class="position">
+          {commits.position === 0 ? 'All' : commits.position}/{commits.total}
+        </span>
         <button
           onclick={commits.next}
           title="Next commit"
           aria-label="Next commit"
         >›</button>
-        <span class="position">
-          {commits.position === 0 ? 'All' : commits.position}/{commits.total}
-        </span>
         <span class="commit-label">{commits.label}</span>
       </div>
     {/if}
@@ -265,9 +265,24 @@
   {#if toolbar}
     {#if toolbar.drafts}
       {@const drafts = toolbar.drafts}
-      <span class="draft-count">
-        <strong>{drafts.count}</strong> <span class="lbl">draft{drafts.count === 1 ? '' : 's'}</span>
-      </span>
+      <div class="draft-nav" role="group" aria-label="Draft navigation">
+        <button
+          type="button"
+          onclick={drafts.prev}
+          title="Previous draft"
+          aria-label="Previous draft"
+        >‹</button>
+        <span class="draft-count" aria-live="polite">
+          {drafts.position || '–'}/<strong>{drafts.count}</strong>
+          <span class="lbl">draft{drafts.count === 1 ? '' : 's'}</span>
+        </span>
+        <button
+          type="button"
+          onclick={drafts.next}
+          title="Next draft"
+          aria-label="Next draft"
+        >›</button>
+      </div>
       <button onclick={drafts.discard} disabled={drafts.saving}>Discard</button>
       <button class="primary" onclick={drafts.publish} disabled={drafts.saving}>
         {drafts.saving ? 'Publishing…' : 'Publish'}
