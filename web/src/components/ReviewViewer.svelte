@@ -683,20 +683,40 @@
     }
   }
 
-  function scrollToFile(path: string) {
-    const el = document.querySelector(
-      `[data-file-path="${CSS.escape(path)}"]`,
-    ) as HTMLElement | null;
-    if (el) {
-      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
-    // On phones the tree is an overlay drawer — close it after the user
-    // picks a file so they actually see the diff they jumped to.
+  async function scrollToFile(path: string) {
+    const sel = `[data-file-path="${CSS.escape(path)}"]`;
+    const target = document.querySelector(sel) as HTMLElement | null;
+    if (!target) return;
+    // On phones the tree is an overlay drawer — close it before we
+    // start scrolling so the user actually sees the diff they jumped
+    // to (and the layout has already settled into one-pane mode).
     if (
       typeof window !== 'undefined' &&
       window.matchMedia('(max-width: 640px)').matches
     ) {
       treeCollapsed = true;
+    }
+    target.scrollIntoView({ behavior: 'auto', block: 'start' });
+    // Slots above the target are virtualized placeholders sized from
+    // an estimate. As they enter the viewport during the scroll, the
+    // IntersectionObserver mounts the real FileDiff and the
+    // ResizeObserver updates `lastKnownHeight` — the document layout
+    // shifts and the slot we wanted ends up off-screen. Re-aim across
+    // a handful of frames until the slot's position is stable.
+    let stableFrames = 0;
+    let lastTop = Number.NaN;
+    for (let i = 0; i < 30 && stableFrames < 3; i++) {
+      await new Promise((r) => requestAnimationFrame(r));
+      const cur = document.querySelector(sel) as HTMLElement | null;
+      if (!cur) return;
+      const top = cur.getBoundingClientRect().top;
+      if (Number.isFinite(lastTop) && Math.abs(top - lastTop) < 0.5) {
+        stableFrames++;
+      } else {
+        stableFrames = 0;
+        cur.scrollIntoView({ behavior: 'auto', block: 'start' });
+      }
+      lastTop = top;
     }
   }
 
