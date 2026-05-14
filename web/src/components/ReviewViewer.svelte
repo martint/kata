@@ -767,6 +767,34 @@
     return label;
   }
 
+  /** Whether the current viewer can archive / unarchive — gated to
+   *  the review's creator. Empty `viewer` (whoami hasn't resolved yet)
+   *  hides the affordance. */
+  const canArchive = $derived(
+    !!viewer && viewer === current.manifest.created_by,
+  );
+  /** True while the archive endpoint is in flight. Disables the button
+   *  during the round-trip so a double-click can't fire two requests. */
+  let archiving = $state(false);
+  async function toggleArchive() {
+    if (archiving) return;
+    const isArchived = !!current.manifest.archived_at;
+    const verb = isArchived ? 'Unarchive' : 'Archive';
+    if (!confirm(`${verb} this review?`)) return;
+    archiving = true;
+    error = null;
+    try {
+      const updated = isArchived
+        ? await api.unarchiveReview(repo, current.manifest.number)
+        : await api.archiveReview(repo, current.manifest.number);
+      current = { ...current, manifest: updated };
+    } catch (e) {
+      error = (e as Error).message;
+    } finally {
+      archiving = false;
+    }
+  }
+
   /** Re-resolve the manifest's revset against the underlying jj repo,
    *  appending a new patchset if the branch has moved. The server's
    *  SSE event flow will also push the update to other viewers. */
@@ -1194,15 +1222,36 @@
   }
 </script>
 
-<section class="header">
+<section class="header" class:archived={!!current.manifest.archived_at}>
   <h2>
     <span class="review-number">#{current.manifest.number}</span>
     {current.manifest.name}
+    {#if current.manifest.archived_at}
+      <span class="archived-badge" title="Archived — read-only until unarchived">
+        Archived
+      </span>
+    {/if}
   </h2>
   <p class="muted">
     {#if current.manifest.bookmark}bookmark: <strong>{current.manifest.bookmark}</strong> ·{/if}
     revset: <code>{current.manifest.revset}</code>
     · by <strong>{current.manifest.created_by}</strong>
+    {#if canArchive}
+      <button
+        type="button"
+        class="archive-btn"
+        onclick={toggleArchive}
+        disabled={archiving}
+      >
+        {#if archiving}
+          Saving…
+        {:else if current.manifest.archived_at}
+          Unarchive
+        {:else}
+          Archive
+        {/if}
+      </button>
+    {/if}
   </p>
   <p class="muted patchset-row">
     {#if current.manifest.patchsets.length > 1}
@@ -1514,6 +1563,51 @@
     color: var(--text-muted);
     font-variant-numeric: tabular-nums;
     margin-right: 6px;
+  }
+
+  /* Archived state: a subtle visual ramp so the user always knows what
+   * they're looking at. The header's title takes a strikethrough +
+   * desaturate; the banner pill in the title sits beside the name. */
+  .header.archived h2 {
+    color: var(--text-muted);
+    text-decoration: line-through;
+    text-decoration-thickness: 1px;
+  }
+
+  .archived-badge {
+    display: inline-block;
+    margin-left: 10px;
+    padding: 1px 8px;
+    border: 1px solid var(--border);
+    border-radius: 9999px;
+    background: var(--bg-panel);
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    /* Negate the h2 strikethrough so the pill text stays readable. */
+    text-decoration: none;
+  }
+
+  .archive-btn {
+    margin-left: 12px;
+    padding: 2px 10px;
+    font-size: 12px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-muted);
+    cursor: pointer;
+  }
+
+  .archive-btn:hover {
+    background: var(--bg-panel);
+  }
+
+  .archive-btn:disabled {
+    opacity: 0.6;
+    cursor: default;
   }
 
   /* Small inline button sitting at the end of the patchset row. Padded

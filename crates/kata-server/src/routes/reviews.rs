@@ -146,6 +146,36 @@ pub async fn update_summary(
     ))
 }
 
+pub async fn archive_review(
+    State(state): State<AppState>,
+    ViewerAuthor(actor): ViewerAuthor,
+    Path((repo_name, review_number)): Path<(String, u32)>,
+) -> AppResult<Json<ReviewManifest>> {
+    let repo = state.service.resolve_repo(&repo_name)?;
+    let review_id = state.service.resolve_review_number(&repo, review_number).await?;
+    Ok(Json(
+        state
+            .service
+            .set_review_archived(&repo, &review_id, &actor, true)
+            .await?,
+    ))
+}
+
+pub async fn unarchive_review(
+    State(state): State<AppState>,
+    ViewerAuthor(actor): ViewerAuthor,
+    Path((repo_name, review_number)): Path<(String, u32)>,
+) -> AppResult<Json<ReviewManifest>> {
+    let repo = state.service.resolve_repo(&repo_name)?;
+    let review_id = state.service.resolve_review_number(&repo, review_number).await?;
+    Ok(Json(
+        state
+            .service
+            .set_review_archived(&repo, &review_id, &actor, false)
+            .await?,
+    ))
+}
+
 pub async fn commit_diff(
     State(state): State<AppState>,
     Path((repo_name, _review_number, change_id)): Path<(String, u32, ChangeId)>,

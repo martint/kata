@@ -122,6 +122,13 @@ export const api = {
       `${repoBase(repo)}/reviews/${number}/summary`,
       { summary },
     ),
+  /** Mark the review archived (creator-only). The returned manifest
+   *  carries the new `archived_at`. Other tabs learn via the
+   *  `review-updated` SSE event. */
+  archiveReview: (repo: string, number: number) =>
+    request<ReviewManifest>('POST', `${repoBase(repo)}/reviews/${number}/archive`),
+  unarchiveReview: (repo: string, number: number) =>
+    request<ReviewManifest>('DELETE', `${repoBase(repo)}/reviews/${number}/archive`),
   commitDiff: (repo: string, number: number, changeId: string) =>
     request<CommitDiffView>(
       'GET',

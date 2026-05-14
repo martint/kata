@@ -121,6 +121,11 @@ export interface ReviewManifest {
   summary?: string;
   patchsets: Patchset[];
   current_patchset: number;
+  /** ISO-8601 timestamp of the most recent archive transition. Absent
+   *  on active reviews. Only the creator may toggle it. Archived
+   *  reviews are hidden from the home screen by default and reject new
+   *  draft sessions. */
+  archived_at?: string;
 }
 
 export interface ReviewSummary {

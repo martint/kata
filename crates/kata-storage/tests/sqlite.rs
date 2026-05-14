@@ -47,6 +47,7 @@ fn review_manifest(review: &ReviewId, author: &Author) -> ReviewManifest {
         }],
         current_patchset: 1,
         summary: None,
+        archived_at: None,
     }
 }
 

@@ -423,6 +423,7 @@ impl Storage for SqliteStorage {
                 "SELECT
                     r.review_id, r.number, r.name, r.schema_version, r.revset, r.bookmark,
                     r.summary, r.created_by, r.created_at, r.current_patchset, r.patchsets_json,
+                    r.archived_at,
                     (SELECT COUNT(*) FROM sessions s
                      WHERE s.repo_id = r.repo_id AND s.review_id = r.review_id) AS session_count,
                     (SELECT COUNT(*) FROM comments c
@@ -434,8 +435,8 @@ impl Storage for SqliteStorage {
                  ORDER BY r.number DESC",
             )?;
             let rows = stmt.query_map(params![repo_str], |row| {
-                let session_count: i64 = row.get(11)?;
-                let comment_count: i64 = row.get(12)?;
+                let session_count: i64 = row.get(12)?;
+                let comment_count: i64 = row.get(13)?;
                 let manifest = review_manifest_from_row(row)?;
                 Ok(ReviewSummary {
                     manifest,
@@ -481,7 +482,7 @@ impl Storage for SqliteStorage {
             let opt = conn
                 .query_row(
                     "SELECT review_id, number, name, schema_version, revset, bookmark, summary,
-                            created_by, created_at, current_patchset, patchsets_json
+                            created_by, created_at, current_patchset, patchsets_json, archived_at
                      FROM reviews WHERE repo_id = ?1 AND review_id = ?2",
                     params![repo_str, review_str],
                     review_manifest_from_row,
@@ -538,8 +539,8 @@ impl Storage for SqliteStorage {
             let res = tx.execute(
                 "INSERT INTO reviews
                     (repo_id, review_id, number, name, schema_version, revset, bookmark, summary,
-                     created_by, created_at, current_patchset, patchsets_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                     created_by, created_at, current_patchset, patchsets_json, archived_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 params![
                     repo_str,
                     manifest.review_id.as_str(),
@@ -553,6 +554,7 @@ impl Storage for SqliteStorage {
                     manifest.created_at,
                     manifest.current_patchset,
                     patchsets_json,
+                    manifest.archived_at,
                 ],
             );
             match res {
@@ -594,7 +596,8 @@ impl Storage for SqliteStorage {
                         created_by = ?8,
                         created_at = ?9,
                         current_patchset = ?10,
-                        patchsets_json = ?11
+                        patchsets_json = ?11,
+                        archived_at = ?12
                   WHERE repo_id = ?1 AND review_id = ?2",
                 params![
                     repo_str,
@@ -608,6 +611,7 @@ impl Storage for SqliteStorage {
                     manifest.created_at,
                     manifest.current_patchset,
                     patchsets_json,
+                    manifest.archived_at,
                 ],
             )?;
             if affected == 0 {
@@ -995,8 +999,9 @@ impl Storage for SqliteStorage {
 fn review_manifest_from_row(row: &Row<'_>) -> rusqlite::Result<ReviewManifest> {
     // Columns are: review_id, number, name, schema_version, revset,
     // bookmark, summary, created_by, created_at, current_patchset,
-    // patchsets_json. The two listing/opening queries above project
-    // exactly that order; if you change one, change the other.
+    // patchsets_json, archived_at. The two listing/opening queries
+    // above project exactly that order; if you change one, change the
+    // other.
     let patchsets_json: String = row.get(10)?;
     let patchsets = serde_json::from_str(&patchsets_json).map_err(|e| {
         rusqlite::Error::FromSqlConversionFailure(10, rusqlite::types::Type::Text, Box::new(e))
@@ -1013,6 +1018,7 @@ fn review_manifest_from_row(row: &Row<'_>) -> rusqlite::Result<ReviewManifest> {
         created_at: row.get(8)?,
         current_patchset: row.get(9)?,
         patchsets,
+        archived_at: row.get(11)?,
     })
 }
 

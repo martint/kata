@@ -351,3 +351,58 @@ async fn x_review_author_header_overrides_default_identity() {
     let session: Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(session["author"], "bob@example.com");
 }
+
+#[tokio::test]
+async fn archive_round_trip_and_blocks_new_sessions() {
+    // Archive flips the manifest's `archived_at`, blocks new sessions
+    // (the home-screen Archive button's contract), and unarchive
+    // restores writes. Non-creators can't archive.
+    let h = Harness::new().await;
+    let (_, created) = h
+        .json(
+            "POST",
+            "/api/repos/main/reviews",
+            Some(json!({
+                "name": "feature",
+                "revset": "@-..feature",
+                "bookmark": "feature",
+                "created_by": "alice@example.com",
+            })),
+        )
+        .await;
+    let review_url = format!(
+        "/api/repos/main/reviews/{}",
+        created["number"].as_u64().unwrap()
+    );
+
+    // Non-creator can't archive — server-side gate, not just UI.
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("{review_url}/archive"))
+        .header("x-review-author", "bob@example.com")
+        .body(Body::empty())
+        .unwrap();
+    let resp = h.router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    // Creator archives. The returned manifest carries archived_at.
+    let (status, archived) = h
+        .json("POST", &format!("{review_url}/archive"), None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(archived["archived_at"].is_string());
+
+    // New session is rejected while archived.
+    let (status, value) = h.json("POST", &format!("{review_url}/sessions"), None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(value["error"].as_str().unwrap().contains("archived"));
+
+    // Unarchive clears the timestamp and re-enables writes.
+    let (status, restored) = h
+        .json("DELETE", &format!("{review_url}/archive"), None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(restored["archived_at"].is_null());
+    let (status, _) = h.json("POST", &format!("{review_url}/sessions"), None).await;
+    assert_eq!(status, StatusCode::OK);
+}

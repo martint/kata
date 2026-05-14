@@ -331,6 +331,7 @@ impl ReviewService {
                 parent_patchset: None,
             }],
             current_patchset: 1,
+            archived_at: None,
         };
         let manifest = self.storage.create_review(repo, &manifest).await?;
         let repo_name = self.repo_name(repo).unwrap_or_default();
@@ -748,6 +749,38 @@ impl ReviewService {
         Ok(manifest)
     }
 
+    /// Flip the review's archived state. `archived = true` records the
+    /// archive timestamp; `false` clears it. Only the review's creator
+    /// may call this (the home-screen Archive button is hidden for
+    /// other viewers). The new manifest is returned and a
+    /// [`Event::ReviewUpdated`] is emitted so other tabs refresh.
+    pub async fn set_review_archived(
+        &self,
+        repo: &RepoId,
+        review: &ReviewId,
+        actor: &Author,
+        archived: bool,
+    ) -> ServiceResult<ReviewManifest> {
+        let mut manifest = self.storage.open_review(repo, review).await?;
+        if actor != &manifest.created_by {
+            return Err(ServiceError::BadRequest(
+                "only the review's creator can archive or unarchive it".into(),
+            ));
+        }
+        let already = manifest.archived_at.is_some();
+        if already == archived {
+            return Ok(manifest);
+        }
+        manifest.archived_at = if archived { Some(Utc::now()) } else { None };
+        self.storage.update_review(repo, &manifest).await?;
+        let repo_name = self.repo_name(repo).unwrap_or_default();
+        self.emit(Event::ReviewUpdated {
+            repo: repo_name,
+            review_id: manifest.review_id.clone(),
+        });
+        Ok(manifest)
+    }
+
     // ---- sessions ------------------------------------------------------
 
     pub async fn start_session(
@@ -756,6 +789,16 @@ impl ReviewService {
         review: &ReviewId,
         author: &Author,
     ) -> ServiceResult<Session> {
+        // Archived reviews are read-only — block at start_session so the
+        // downstream draft-comment / draft-response paths can't be hit.
+        // Authors with an already-open draft are unaffected; only the
+        // creator can archive, and they presumably know they shouldn't.
+        let manifest = self.storage.open_review(repo, review).await?;
+        if manifest.archived_at.is_some() {
+            return Err(ServiceError::BadRequest(
+                "review is archived; unarchive before adding new comments".into(),
+            ));
+        }
         Ok(self
             .storage
             .open_or_create_session(repo, review, author)

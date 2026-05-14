@@ -39,6 +39,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "review_number_and_name",
         sql: include_str!("../../migrations/V002__review_number_and_name.sql"),
     },
+    Migration {
+        version: 3,
+        name: "review_archived_at",
+        sql: include_str!("../../migrations/V003__review_archived_at.sql"),
+    },
 ];
 
 /// Bring `conn` up to the latest schema. Idempotent: re-running on an

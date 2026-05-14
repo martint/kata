@@ -173,6 +173,13 @@ pub struct ReviewManifest {
     pub summary: Option<String>,
     pub patchsets: Vec<Patchset>,
     pub current_patchset: u32,
+    /// When set, the review is archived: the creator marked it as no
+    /// longer warranting active attention. Archived reviews are hidden
+    /// from the home screen by default and reject session / comment /
+    /// response writes (only the creator can unarchive). Absent on
+    /// active reviews; older manifests deserialize to `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<DateTime<Utc>>,
 }
 
 impl ReviewManifest {

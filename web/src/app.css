@@ -407,6 +407,36 @@ input[type='text'] {
   white-space: nowrap;
 }
 
+.review-list .review-number {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  flex: 0 0 auto;
+}
+
+/* Archived rows render dimmed with a struck-through label so the user
+ * can tell at a glance they're looking at an inactive review. The
+ * tag pill (right of the revset) is the second cue — pure colour
+ * change isn't enough for accessibility. */
+.review-list button.row.archived {
+  opacity: 0.6;
+}
+
+.review-list button.row.archived strong {
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+
+.review-list .archived-tag {
+  flex: 0 0 auto;
+  padding: 1px 8px;
+  border-radius: 9999px;
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
 .review-list .meta {
   color: var(--text-muted);
   font-size: 12px;

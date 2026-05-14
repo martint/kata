@@ -33,6 +33,21 @@
   let creating: boolean = $state(false);
   let createError: string | null = $state(null);
 
+  /** Hide archived reviews from the main list by default — archived
+   *  is the "out of the way" state. The user can flip the toggle to
+   *  see them and they still appear (dimmed) until flipped back. */
+  let showArchived: boolean = $state(false);
+
+  /** Reviews split into "live" and "archived" buckets. The live list
+   *  is what we render by default; the archived list only appears
+   *  when [[showArchived]] is true. */
+  const liveSummaries = $derived(
+    (summaries ?? []).filter((s) => !s.manifest.archived_at),
+  );
+  const archivedSummaries = $derived(
+    (summaries ?? []).filter((s) => !!s.manifest.archived_at),
+  );
+
   /** Rendered HTML for the preview tab. Only computed when in preview
    *  mode — same idea as the in-review summary editor: don't pay the
    *  markdown-render cost on every keystroke while in Write. */
@@ -203,6 +218,30 @@
 
   .home-section > h3 {
     margin: 0 0 10px;
+  }
+
+  /* Header row of the Reviews section: title on the left, archived
+   * toggle right-aligned. The toggle only renders when there's at
+   * least one archived review (handled in the template). */
+  .review-list-header {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    margin-bottom: 10px;
+  }
+
+  .review-list-header h2 {
+    margin: 0;
+  }
+
+  .archived-toggle {
+    margin-left: auto;
+    font-size: 13px;
+    color: var(--text-muted);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
   }
 
   /* Create-review form: stack so the summary textarea has real width,
@@ -468,14 +507,24 @@
 {/if}
 
 <section class="home-section">
-  <h2>Reviews</h2>
+  <div class="review-list-header">
+    <h2>Reviews</h2>
+    {#if archivedSummaries.length > 0}
+      <label class="archived-toggle">
+        <input type="checkbox" bind:checked={showArchived} />
+        Show archived ({archivedSummaries.length})
+      </label>
+    {/if}
+  </div>
   {#if loading && summaries === null}
     <p class="muted">Loading…</p>
-  {:else if summaries && summaries.length === 0}
+  {:else if summaries && liveSummaries.length === 0 && archivedSummaries.length === 0}
     <p class="muted">No reviews yet. Start one below.</p>
+  {:else if summaries && liveSummaries.length === 0 && !showArchived}
+    <p class="muted">No active reviews. Toggle "Show archived" to see archived ones.</p>
   {:else if summaries}
     <ul class="review-list">
-      {#each summaries as s (s.manifest.review_id)}
+      {#each liveSummaries as s (s.manifest.review_id)}
         <li>
           <button class="row" onclick={() => onopen(s.manifest.number)}>
             <span class="review-number">#{s.manifest.number}</span>
@@ -486,6 +535,20 @@
           </button>
         </li>
       {/each}
+      {#if showArchived}
+        {#each archivedSummaries as s (s.manifest.review_id)}
+          <li>
+            <button class="row archived" onclick={() => onopen(s.manifest.number)}>
+              <span class="review-number">#{s.manifest.number}</span>
+              <strong>{s.manifest.name}</strong>
+              <span class="meta">{s.manifest.revset}</span>
+              <span class="archived-tag">archived</span>
+              <span style="flex: 1"></span>
+              <span class="meta">{s.published_comment_count} comments</span>
+            </button>
+          </li>
+        {/each}
+      {/if}
     </ul>
   {/if}
 </section>
