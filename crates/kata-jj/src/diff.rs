@@ -1,9 +1,24 @@
-//! Build a [`Diff`] by parsing jj's `--git`-format unified diff. One
-//! subprocess per review beats spawning `jj file show` twice per changed
-//! file, which is the difference between ~150 jj invocations and 1.
+//! Build a [`Diff`] by running each changed file's two sides through
+//! the histogram diff algorithm (via the `imara-diff` crate). jj's own
+//! `diff --git` uses a Myers variant that, for stacks with repeated
+//! short lines (`addType(...)`, closing braces, etc.), regularly
+//! mis-groups a `-X` and a `+Y` across context that "matched cheaply",
+//! which the user sees as the wrong line being marked added/removed.
+//!
+//! The flow:
+//!   1. Ask jj for the set of changed files (status + rename info) —
+//!      that's already a single subprocess call.
+//!   2. For each modified / renamed file, read both sides via
+//!      `read_file` and feed them to `imara-diff`'s histogram.
+//!   3. Round-trip through [`parse_git_diff`] so we keep one place
+//!      that knows the per-line shape of a Hunk.
+//!
+//! Added / deleted files just diff against an empty side.
 
 use std::time::Instant;
 
+use imara_diff::intern::InternedInput;
+use imara_diff::{Algorithm, UnifiedDiffBuilder, diff};
 use kata_core::{
     CommitId, Diff, FileChange, FileStatus, Hunk, HunkLine, LineOrigin, LineRange,
 };
@@ -11,28 +26,27 @@ use kata_core::{
 use crate::backend::JjBackend;
 use crate::error::{Error, Result};
 
-/// Lines of context kept on each side of every hunk.
-const CONTEXT_LINES: usize = 3;
-
 pub async fn build_diff<B: JjBackend + ?Sized>(
     backend: &B,
     base: &CommitId,
     tip: &CommitId,
 ) -> Result<Diff> {
     let t = Instant::now();
-    let bytes = backend.git_diff(base, tip, CONTEXT_LINES).await?;
-    tracing::debug!(
-        elapsed_ms = t.elapsed().as_millis() as u64,
-        bytes = bytes.len(),
-        "build_diff: jj git_diff",
-    );
-
-    let t = Instant::now();
-    let files = parse_git_diff(&bytes)?;
+    let mut files = backend.changed_files(base, tip).await?;
     tracing::debug!(
         elapsed_ms = t.elapsed().as_millis() as u64,
         files = files.len(),
-        "build_diff: parse",
+        "build_diff: changed_files",
+    );
+
+    let t = Instant::now();
+    for f in &mut files {
+        attach_hunks(backend, base, tip, f).await?;
+    }
+    tracing::debug!(
+        elapsed_ms = t.elapsed().as_millis() as u64,
+        files = files.len(),
+        "build_diff: histogram",
     );
 
     Ok(Diff {
@@ -40,6 +54,84 @@ pub async fn build_diff<B: JjBackend + ?Sized>(
         tip: tip.clone(),
         files,
     })
+}
+
+/// Populate `file.hunks` (and `file.binary`) for one entry. Reads each
+/// side once via the backend; treats missing sides as empty so added
+/// and deleted files fall through the same code path.
+async fn attach_hunks<B: JjBackend + ?Sized>(
+    backend: &B,
+    base: &CommitId,
+    tip: &CommitId,
+    file: &mut FileChange,
+) -> Result<()> {
+    let (base_path, tip_path) = match &file.status {
+        FileStatus::Added => (None, Some(file.path.as_str())),
+        FileStatus::Deleted => (Some(file.path.as_str()), None),
+        FileStatus::Modified => (Some(file.path.as_str()), Some(file.path.as_str())),
+        FileStatus::Renamed { old_path } => {
+            (Some(old_path.as_str()), Some(file.path.as_str()))
+        }
+    };
+    let base_bytes = match base_path {
+        Some(p) => backend.read_file(base, p).await?.unwrap_or_default(),
+        None => Vec::new(),
+    };
+    let tip_bytes = match tip_path {
+        Some(p) => backend.read_file(tip, p).await?.unwrap_or_default(),
+        None => Vec::new(),
+    };
+    if looks_binary(&base_bytes) || looks_binary(&tip_bytes) {
+        file.binary = true;
+        file.hunks = None;
+        return Ok(());
+    }
+    // `from_utf8_lossy` keeps us going on files with stray invalid
+    // bytes (rare, but better than panicking) — they'll render as
+    // U+FFFD replacements just like the browser would.
+    let base_text = String::from_utf8_lossy(&base_bytes);
+    let tip_text = String::from_utf8_lossy(&tip_bytes);
+    file.hunks = Some(histogram_hunks(&base_text, &tip_text, &file.path)?);
+    Ok(())
+}
+
+/// Run histogram diff on the two sides and convert the result into our
+/// [`Hunk`] shape. The round-trip via `parse_git_diff` is intentional —
+/// it keeps one parser for the per-line shape, and means anything that
+/// goes wrong here surfaces with the same diagnostics as everything
+/// else.
+fn histogram_hunks(base: &str, tip: &str, path: &str) -> Result<Vec<Hunk>> {
+    let input = InternedInput::new(base, tip);
+    let unified = diff(Algorithm::Histogram, &input, UnifiedDiffBuilder::new(&input));
+    if unified.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Wrap imara's hunks with the headers `parse_git_diff` expects.
+    // The path doesn't have to match a real on-disk path — it's only
+    // used to satisfy the parser's per-file framing; the resulting
+    // `FileChange.path` is thrown away (the caller already has it).
+    let mut synthetic = String::with_capacity(unified.len() + path.len() * 3 + 64);
+    synthetic.push_str("diff --git a/");
+    synthetic.push_str(path);
+    synthetic.push_str(" b/");
+    synthetic.push_str(path);
+    synthetic.push('\n');
+    synthetic.push_str("--- a/");
+    synthetic.push_str(path);
+    synthetic.push('\n');
+    synthetic.push_str("+++ b/");
+    synthetic.push_str(path);
+    synthetic.push('\n');
+    synthetic.push_str(&unified);
+    let parsed = parse_git_diff(synthetic.as_bytes())?;
+    Ok(parsed.into_iter().next().and_then(|f| f.hunks).unwrap_or_default())
+}
+
+/// Git's binary-detection heuristic: a NUL byte in the first 8 KB.
+/// Cheap and roughly what `git diff` does.
+fn looks_binary(bytes: &[u8]) -> bool {
+    const PROBE_LEN: usize = 8000;
+    bytes.iter().take(PROBE_LEN).any(|&b| b == 0)
 }
 
 /// State carried while parsing one file's section of the git-diff output.

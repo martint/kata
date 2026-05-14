@@ -319,25 +319,6 @@ impl JjBackend for JjCli {
         Ok(commits)
     }
 
-    async fn git_diff(
-        &self,
-        base: &CommitId,
-        tip: &CommitId,
-        context_lines: usize,
-    ) -> Result<Vec<u8>> {
-        let ctx = context_lines.to_string();
-        self.run(&[
-            "diff",
-            "--git",
-            "--context",
-            &ctx,
-            "--from",
-            base.as_str(),
-            "--to",
-            tip.as_str(),
-        ])
-        .await
-    }
 
     async fn is_ancestor(
         &self,

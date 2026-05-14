@@ -70,14 +70,4 @@ pub trait JjBackend: Send + Sync {
         descendant: &CommitId,
     ) -> Result<bool>;
 
-    /// Produce a git-style unified diff between `base` and `tip` in one
-    /// shot, including `context_lines` lines of context per hunk. The diff
-    /// covers every changed file; binary diffs are emitted as the standard
-    /// `Binary files ... differ` line and renames as `rename from/to`.
-    async fn git_diff(
-        &self,
-        base: &CommitId,
-        tip: &CommitId,
-        context_lines: usize,
-    ) -> Result<Vec<u8>>;
 }
