@@ -13,10 +13,10 @@
 //! Outdated never drops the comment — the caller surfaces it with the
 //! original lines and content preserved.
 
+use std::collections::HashMap;
 use std::time::Instant;
 
 use kata_core::{CommitId, LineRange};
-use similar::TextDiff;
 
 use crate::backend::JjBackend;
 use crate::error::Result;
@@ -128,7 +128,7 @@ async fn resolve_anchor_inner<B: JjBackend + ?Sized>(
 
     // 2. Fuzzy: sliding window of the same length, ranked by similarity.
     let t = Instant::now();
-    let fuzzy = find_fuzzy(&current_lines, &snippet_text, snippet.len());
+    let fuzzy = find_fuzzy(&current_lines, &snippet);
     *fuzzy_ms = t.elapsed().as_millis() as u64;
     if let Some((range, ratio)) = fuzzy
         && ratio >= FUZZY_THRESHOLD
@@ -172,14 +172,45 @@ fn find_exact(haystack: &[&str], needle: &[&str]) -> Option<LineRange> {
     })
 }
 
-fn find_fuzzy(haystack: &[&str], needle_text: &str, window: usize) -> Option<(LineRange, f32)> {
+/// Score each sliding window of `needle.len()` lines in `haystack` by
+/// how many of `needle`'s lines it contains (multiset overlap),
+/// returning the best-scoring window's line range and ratio.
+///
+/// Switched from character-level Myers (`TextDiff::from_chars`) — that
+/// was O(n · window · line_len²) per window and easily ate seconds per
+/// comment on large files (e.g. `JsonItems.java` with a multi-line
+/// snippet hit ~8.5 s). Line-level multiset overlap is O(window) per
+/// position, total O(n · window). Same `ratio = 2·matches / (a+b)`
+/// shape that `similar::TextDiff::ratio` produces, just measured over
+/// line tokens instead of characters.
+fn find_fuzzy(haystack: &[&str], needle: &[&str]) -> Option<(LineRange, f32)> {
+    let window = needle.len();
     if window == 0 || haystack.len() < window {
         return None;
     }
+    // Multiset of needle line → count, so a candidate with N copies of
+    // the same line only matches up to N times. Plain `HashSet`
+    // contains-counts would over-credit repeated context lines (think
+    // closing braces, blank lines).
+    let mut needle_counts: HashMap<&str, u32> = HashMap::with_capacity(window);
+    for &line in needle {
+        *needle_counts.entry(line).or_insert(0) += 1;
+    }
     let mut best: Option<(usize, f32)> = None;
+    let total = (window + window) as f32;
+    let mut remaining = HashMap::with_capacity(needle_counts.len());
     for i in 0..=haystack.len() - window {
-        let candidate_text: String = haystack[i..i + window].iter().copied().collect();
-        let ratio = TextDiff::from_chars(needle_text, &candidate_text).ratio();
+        remaining.clone_from(&needle_counts);
+        let mut overlap: u32 = 0;
+        for &line in &haystack[i..i + window] {
+            if let Some(c) = remaining.get_mut(line)
+                && *c > 0
+            {
+                *c -= 1;
+                overlap += 1;
+            }
+        }
+        let ratio = (overlap as f32 * 2.0) / total;
         match best {
             Some((_, b)) if ratio <= b => {}
             _ => best = Some((i, ratio)),
