@@ -200,7 +200,7 @@ header.app .commit-nav .commit-label {
   text-overflow: ellipsis;
   min-width: 0;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
+  font-size: 13px;
 }
 
 /* Hamburger / drawer toggle. Phone-only — see media query below. */

@@ -213,15 +213,15 @@
           title="Previous commit"
           aria-label="Previous commit"
         >‹</button>
-        <span class="position">
-          {commits.position === 0 ? 'All' : commits.position}/{commits.total}
-        </span>
-        <span class="commit-label">{commits.label}</span>
         <button
           onclick={commits.next}
           title="Next commit"
           aria-label="Next commit"
         >›</button>
+        <span class="position">
+          {commits.position === 0 ? 'All' : commits.position}/{commits.total}
+        </span>
+        <span class="commit-label">{commits.label}</span>
       </div>
     {/if}
   {/if}
