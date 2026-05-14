@@ -67,10 +67,14 @@
     viewer: string;
     /** Patchset to start on. Undefined means "the latest". */
     initialPatchset?: number;
-    /** Fires when the user picks a different patchset from the dropdown.
-     *  Does not fire when the viewer auto-follows a newly-appended patchset
-     *  (so the URL stays clean if the user wasn't pinning a specific PS). */
-    onpatchsetchange?: (n: number) => void;
+    /** Patchset-compare to start on: when set, the viewer opens in
+     *  compare mode showing the patchset[compare] → patchset[ps]
+     *  delta. Undefined for the normal base..tip view. */
+    initialCompareWith?: number;
+    /** Fires when the user picks a different patchset or compare target.
+     *  Reports both so App.svelte can keep the URL (`?ps=&cmp=`) in
+     *  sync. `compare === null` means leaving compare mode. */
+    onviewchange?: (patchset: number, compare: number | null) => void;
     /** Reports toolbar state up to the app shell so the publish / discard
      *  controls and the diff-collapse toggle can live in the always-visible
      *  top bar instead of scrolling away with the page. */
@@ -81,7 +85,8 @@
     view,
     viewer,
     initialPatchset,
-    onpatchsetchange,
+    initialCompareWith,
+    onviewchange,
     ontoolbarchange,
   }: Props = $props();
 
@@ -90,6 +95,10 @@
   let current: ReviewView = $state(view);
   // svelte-ignore state_referenced_locally
   let selectedPatchset = $state(initialPatchset ?? view.manifest.current_patchset);
+  /** When non-null, the viewer is in compare mode: the diff describes
+   *  the patchset[compareWith] → patchset[selectedPatchset] delta. */
+  // svelte-ignore state_referenced_locally
+  let compareWith: number | null = $state(initialCompareWith ?? null);
   // Use raw state so reads of composing.* don't create thousands of
   // per-property signal subscriptions across rows. We always reassign the
   // whole object (never mutate fields), so the granular reactivity isn't
@@ -291,6 +300,21 @@
     window.scrollTo({ top: Math.max(0, target), behavior: 'auto' });
   }
 
+  /** Scroll `el` so its top sits just below the sticky bars *and* the
+   *  file's own sticky `.file-header` (which would otherwise cover
+   *  the top of the comment). Review-wide comments live outside any
+   *  file-diff, so the file-header term collapses to zero and we
+   *  end up flush with the comment bar. */
+  function scrollCommentFlush(el: HTMLElement): void {
+    const fileHeader = el
+      .closest('.file-diff')
+      ?.querySelector('.file-header') as HTMLElement | null;
+    const extra = fileHeader?.offsetHeight ?? 0;
+    const target =
+      el.getBoundingClientRect().top + window.scrollY - stickyTop() - extra;
+    window.scrollTo({ top: Math.max(0, target), behavior: 'auto' });
+  }
+
   /** Where to park a navigated-to comment vertically. In normal
    *  (diff-visible) mode we keep `COMMENT_CONTEXT` pixels of diff
    *  above so the reader sees what the comment is anchored to. In
@@ -299,7 +323,7 @@
    *  with the bottom of the sticky bars. */
   function bringCommentIntoView(el: HTMLElement): void {
     if (diffsCollapsed) {
-      scrollTopOf(el);
+      scrollCommentFlush(el);
     } else {
       scrollCommentIntoView(el);
     }
@@ -623,10 +647,12 @@
 
   async function refresh() {
     const wasOnLatest = selectedPatchset === current.manifest.current_patchset;
+    const compare = compareWith ?? undefined;
     const next = await api.openReview(
       repo,
       current.manifest.review_id,
       selectedPatchset,
+      compare,
     );
     // If the user was tracking the latest patchset and a new one just landed,
     // follow it forward; otherwise stay where they are.
@@ -635,6 +661,7 @@
         repo,
         current.manifest.review_id,
         next.manifest.current_patchset,
+        compare,
       );
       selectedPatchset = current.manifest.current_patchset;
     } else {
@@ -644,15 +671,55 @@
 
   async function selectPatchset(n: number) {
     if (n === selectedPatchset) return;
+    // Stepping out of the patchset that compare was anchored at would
+    // ask the server to diff a patchset against itself; just leave
+    // compare mode in that case rather than silently swallowing the
+    // selection.
+    const nextCompare = compareWith === n ? null : compareWith;
     saving = true;
     error = null;
     try {
-      current = await api.openReview(repo, current.manifest.review_id, n);
+      current = await api.openReview(
+        repo,
+        current.manifest.review_id,
+        n,
+        nextCompare ?? undefined,
+      );
       selectedPatchset = n;
+      compareWith = nextCompare;
       // Discarding the per-commit scope: it was tied to the previous PS.
       scopedChangeId = null;
       scopedDiff = null;
-      onpatchsetchange?.(n);
+      onviewchange?.(n, nextCompare);
+    } catch (e) {
+      error = (e as Error).message;
+    } finally {
+      saving = false;
+    }
+  }
+
+  /** Switch into (or out of) patchset-compare mode. `n === null`
+   *  leaves compare mode and goes back to the normal base..tip view.
+   *  Per-commit scoping doesn't compose with patchset-compare (a
+   *  commit's diff is base..commit, which has no analogue between
+   *  two patchsets), so dropping the scope when entering compare
+   *  mode is intentional. */
+  async function selectCompareWith(n: number | null) {
+    if (n === compareWith) return;
+    if (n !== null && n === selectedPatchset) return;
+    saving = true;
+    error = null;
+    try {
+      current = await api.openReview(
+        repo,
+        current.manifest.review_id,
+        selectedPatchset,
+        n ?? undefined,
+      );
+      compareWith = n;
+      scopedChangeId = null;
+      scopedDiff = null;
+      onviewchange?.(selectedPatchset, n);
     } catch (e) {
       error = (e as Error).message;
     } finally {
@@ -1014,10 +1081,37 @@
           {/each}
         </select>
       </label>
+      <!-- "compare against" lives next to the patchset selector so the
+           pair is read as one unit: "show me patchset N against
+           [base / patchset M]". -->
+      <label>
+        compared to
+        <select
+          value={compareWith ?? ''}
+          onchange={(e) => {
+            const v = (e.currentTarget as HTMLSelectElement).value;
+            selectCompareWith(v === '' ? null : Number(v));
+          }}
+        >
+          <option value="">base</option>
+          {#each current.manifest.patchsets as p (p.n)}
+            {#if p.n !== selectedPatchset}
+              <option value={p.n}>PS{p.n}</option>
+            {/if}
+          {/each}
+        </select>
+      </label>
       ·
     {/if}
-    base <code>{short(viewing.base_change)}</code> → tip
-    <code>{short(viewing.tip_change)}</code>
+    {#if compareWith !== null}
+      <span class="compare-banner">
+        Comparing <strong>PS{compareWith}</strong> →
+        <strong>PS{selectedPatchset}</strong>
+      </span>
+    {:else}
+      base <code>{short(viewing.base_change)}</code> → tip
+      <code>{short(viewing.tip_change)}</code>
+    {/if}
     {#if current.is_stale || refreshing}
       <button
         type="button"
@@ -1175,12 +1269,19 @@
         </button>
       </div>
     </div>
-    <CommitsPanel
-      commits={current.commits}
-      comments={visibleComments}
-      selectedChangeId={scopedChangeId}
-      onselect={selectCommit}
-    />
+    <!-- Hidden in compare mode: the commits panel scopes the file diff
+         to base..commit for a single commit, which has no meaning
+         between two patchsets — and per-commit comment counts would
+         mix the from/to patchset comments confusingly. The selectors
+         above are enough to switch back to a single-patchset view. -->
+    {#if compareWith === null}
+      <CommitsPanel
+        commits={current.commits}
+        comments={visibleComments}
+        selectedChangeId={scopedChangeId}
+        onselect={selectCommit}
+      />
+    {/if}
 
     {#if loadingDiff}
       <div class="diff-loading" role="status" aria-live="polite">
@@ -1241,6 +1342,7 @@
           reviewId={current.manifest.review_id}
           file={f}
           patchset={viewingFor}
+          {compareWith}
           comments={visibleComments}
           responses={allResponses}
           composing={composing &&
@@ -1292,6 +1394,22 @@
   .refresh-btn:disabled {
     opacity: 0.6;
     cursor: default;
+  }
+
+  /* Compare-mode badge: replaces the usual "base xxx → tip yyy"
+   * text in the patchset row so the user always sees they're
+   * looking at a patchset-to-patchset delta, not the full review. */
+  .compare-banner {
+    display: inline-block;
+    padding: 1px 8px;
+    border-radius: 3px;
+    background: var(--link-bg);
+    color: var(--link);
+    font-size: 12px;
+  }
+
+  .compare-banner strong {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   }
 
   .review-layout {

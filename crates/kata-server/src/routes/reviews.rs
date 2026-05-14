@@ -51,6 +51,12 @@ pub async fn create_review(
 pub struct OpenReviewQuery {
     #[serde(default)]
     pub patchset: Option<u32>,
+    /// When set, the response's `Diff` shows the patchset[compare]
+    /// → patchset[patchset] delta instead of base..tip. Everything
+    /// else (commits, comments, anchor resolution) keeps the normal
+    /// patchset-scoped meaning.
+    #[serde(default)]
+    pub compare: Option<u32>,
 }
 
 pub async fn open_review(
@@ -63,7 +69,7 @@ pub async fn open_review(
     Ok(Json(
         state
             .service
-            .open_review(&repo, &review_id, &viewer, q.patchset)
+            .open_review(&repo, &review_id, &viewer, q.patchset, q.compare)
             .await?,
     ))
 }
@@ -127,6 +133,11 @@ pub struct FileDiffQuery {
     pub path: String,
     #[serde(default)]
     pub ps: Option<u32>,
+    /// Same semantics as [`OpenReviewQuery::compare`]. Threaded
+    /// through every lazy file-diff fetch so the per-file hunks
+    /// describe the same delta the metadata response did.
+    #[serde(default)]
+    pub compare: Option<u32>,
 }
 
 pub async fn file_diff(
@@ -138,7 +149,7 @@ pub async fn file_diff(
     Ok(Json(
         state
             .service
-            .file_diff(&repo, &review_id, &q.path, q.ps)
+            .file_diff(&repo, &review_id, &q.path, q.ps, q.compare)
             .await?,
     ))
 }

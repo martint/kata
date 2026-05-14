@@ -309,6 +309,13 @@ impl ReviewService {
     /// endpoints, and comments are filtered to those that originated in it
     /// or an earlier patchset.
     ///
+    /// `compare`, when set, swaps the diff's *base* for the named
+    /// patchset's tip — so the response shows what changed between
+    /// patchset *compare* and patchset *patchset*, instead of the
+    /// usual base..tip. Comments, anchors, and the commits list are
+    /// still scoped to the destination patchset; only the file/hunk
+    /// diff changes.
+    ///
     /// Anchor pre-fetch runs with `ANCHOR_READ_PARALLELISM` reads in
     /// flight — see the constant below.
     pub async fn open_review(
@@ -317,6 +324,7 @@ impl ReviewService {
         review: &ReviewId,
         viewer: &Author,
         patchset: Option<u32>,
+        compare: Option<u32>,
     ) -> ServiceResult<ReviewView> {
         let jj = self.jj_for(repo)?;
         let total = std::time::Instant::now();
@@ -331,6 +339,25 @@ impl ReviewService {
             .ok_or_else(|| ServiceError::NotFound(format!("patchset {selected_n}")))?
             .clone();
 
+        // The "from" side of a patchset-compare diff. `None` for the
+        // normal base..tip view; `Some` for compare mode.
+        let compare_base = match compare {
+            None => None,
+            Some(n) if n == selected_n => {
+                return Err(ServiceError::NotFound(format!(
+                    "cannot compare patchset {n} with itself"
+                )));
+            }
+            Some(n) => Some(
+                manifest
+                    .patchset(n)
+                    .ok_or_else(|| ServiceError::NotFound(format!("patchset {n}")))?
+                    .tip_commit
+                    .clone(),
+            ),
+        };
+        let diff_base = compare_base.as_ref().unwrap_or(&selected.base_commit);
+
         let t = std::time::Instant::now();
         // `live_range` lets us tell the UI whether re-resolving the revset
         // would advance the latest patchset (the "is_stale" flag below).
@@ -341,7 +368,7 @@ impl ReviewService {
         // browser's `JSON.parse` stays under ~10 ms instead of the
         // ~1 s it took when the whole diff was inlined.
         let (diff, commits, live_range) = tokio::try_join!(
-            build_diff_metadata(&**jj, &selected.base_commit, &selected.tip_commit),
+            build_diff_metadata(&**jj, diff_base, &selected.tip_commit),
             jj.list_commits(&manifest.revset),
             jj.resolve_range(&manifest.revset),
         )?;
@@ -491,13 +518,17 @@ impl ReviewService {
     /// file's diff as it scrolls into view — open_review ships only
     /// the file list, then the client requests this for each visible
     /// `FileSlot`. `patchset` follows the same shape as `open_review`:
-    /// `None` = the manifest's current patchset.
+    /// `None` = the manifest's current patchset. `compare` — same
+    /// semantics as in `open_review` — swaps the base for the named
+    /// patchset's tip so the hunks describe the patchset→patchset
+    /// delta rather than base..tip.
     pub async fn file_diff(
         &self,
         repo: &RepoId,
         review: &ReviewId,
         path: &str,
         patchset: Option<u32>,
+        compare: Option<u32>,
     ) -> ServiceResult<kata_core::FileChange> {
         let jj = self.jj_for(repo)?;
         let manifest = self.storage.open_review(repo, review).await?;
@@ -505,23 +536,32 @@ impl ReviewService {
         let selected = manifest
             .patchset(selected_n)
             .ok_or_else(|| ServiceError::NotFound(format!("patchset {selected_n}")))?;
+        let compare_base = match compare {
+            None => None,
+            Some(n) if n == selected_n => {
+                return Err(ServiceError::NotFound(format!(
+                    "cannot compare patchset {n} with itself"
+                )));
+            }
+            Some(n) => Some(
+                manifest
+                    .patchset(n)
+                    .ok_or_else(|| ServiceError::NotFound(format!("patchset {n}")))?
+                    .tip_commit
+                    .clone(),
+            ),
+        };
+        let base = compare_base.as_ref().unwrap_or(&selected.base_commit);
         // Look up the file's metadata (status, rename info) — needed so
         // we know which side(s) to read. One `jj diff -T template` call,
         // ~50 ms; could be cached if it becomes a hot path.
-        let files = jj
-            .changed_files(&selected.base_commit, &selected.tip_commit)
-            .await?;
+        let files = jj.changed_files(base, &selected.tip_commit).await?;
         let target = files
             .into_iter()
             .find(|f| f.path == path)
             .ok_or_else(|| ServiceError::NotFound(format!("file {path:?} in review")))?;
-        let updated = compute_one_file_hunks(
-            &**jj,
-            &selected.base_commit,
-            &selected.tip_commit,
-            target,
-        )
-        .await?;
+        let updated =
+            compute_one_file_hunks(&**jj, base, &selected.tip_commit, target).await?;
         Ok(updated)
     }
 

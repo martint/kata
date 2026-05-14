@@ -82,7 +82,7 @@ impl ReviewMcp {
         let repo = self.resolve(&args.repo)?;
         let view = self
             .service
-            .open_review(&repo, &args.review_id, &self.author, args.patchset)
+            .open_review(&repo, &args.review_id, &self.author, args.patchset, None)
             .await
             .map_err(into_mcp)?;
         Ok(text_json(&view))

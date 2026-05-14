@@ -85,8 +85,16 @@ export const api = {
     request<ReviewSummary[]>('GET', `${repoBase(repo)}/reviews`),
   createReview: (repo: string, params: CreateReviewParams) =>
     request<ReviewManifest>('POST', `${repoBase(repo)}/reviews`, params),
-  openReview: (repo: string, id: string, patchset?: number) => {
-    const qs = patchset !== undefined ? `?patchset=${patchset}` : '';
+  openReview: (
+    repo: string,
+    id: string,
+    patchset?: number,
+    compare?: number,
+  ) => {
+    const parts: string[] = [];
+    if (patchset !== undefined) parts.push(`patchset=${patchset}`);
+    if (compare !== undefined) parts.push(`compare=${compare}`);
+    const qs = parts.length > 0 ? `?${parts.join('&')}` : '';
     return request<ReviewView>('GET', `${repoBase(repo)}/reviews/${enc(id)}${qs}`);
   },
   refreshReview: (repo: string, id: string, summary?: string) =>
@@ -108,12 +116,23 @@ export const api = {
     ),
   /** Hunks for one file in a review. `openReview` ships only the
    *  file list, then the UI calls this per FileSlot as files scroll
-   *  into view. `ps` selects the patchset; omit for "latest". */
-  fileDiff: (repo: string, reviewId: string, path: string, ps?: number) => {
-    const qs = ps !== undefined ? `&ps=${ps}` : '';
+   *  into view. `ps` selects the patchset; omit for "latest".
+   *  `compare`, when set, makes the response describe the
+   *  patchset[compare] → patchset[ps] delta rather than base..tip
+   *  (must match what the metadata response was fetched with). */
+  fileDiff: (
+    repo: string,
+    reviewId: string,
+    path: string,
+    ps?: number,
+    compare?: number,
+  ) => {
+    const parts: string[] = [`path=${enc(path)}`];
+    if (ps !== undefined) parts.push(`ps=${ps}`);
+    if (compare !== undefined) parts.push(`compare=${compare}`);
     return request<FileChange>(
       'GET',
-      `${repoBase(repo)}/reviews/${enc(reviewId)}/file-diff?path=${enc(path)}${qs}`,
+      `${repoBase(repo)}/reviews/${enc(reviewId)}/file-diff?${parts.join('&')}`,
     );
   },
   readFile: (repo: string, commit: string, path: string) =>

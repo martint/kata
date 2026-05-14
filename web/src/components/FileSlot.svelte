@@ -29,6 +29,10 @@
     reviewId: string;
     file: FileChange;
     patchset: Patchset;
+    /** When non-null, the viewer is in patchset-compare mode: per-file
+     *  hunks must be fetched with the same `compare` query so they
+     *  match the metadata response. */
+    compareWith: number | null;
     comments: CommentView[];
     responses: ResponseView[];
     composing: ComposerTarget | null;
@@ -53,6 +57,7 @@
     reviewId,
     file,
     patchset,
+    compareWith,
     comments,
     responses,
     composing,
@@ -82,6 +87,18 @@
   let loadingHunks = $state(false);
   let loadError = $state<string | null>(null);
 
+  /** When the patchset or the compare target changes, the same path
+   *  now describes a different delta — our cached `resolved` from a
+   *  previous selection would otherwise stick around and the user
+   *  would see stale hunks. Reset so the fetch effect below re-runs
+   *  against the new endpoints. */
+  $effect(() => {
+    patchset.n;
+    compareWith;
+    resolved = null;
+    loadError = null;
+  });
+
   /** Fires when the file is close enough to be visible. Skip if the
    *  initial payload already had hunks (e.g. binary files; or the
    *  client landed on a smaller endpoint that ships them eagerly).
@@ -97,7 +114,7 @@
     loadingHunks = true;
     loadError = null;
     api
-      .fileDiff(repo, reviewId, file.path, patchset.n)
+      .fileDiff(repo, reviewId, file.path, patchset.n, compareWith ?? undefined)
       .then((updated) => {
         resolved = updated;
       })

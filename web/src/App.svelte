@@ -20,6 +20,7 @@
         repo: string;
         view: ReviewView;
         initialPatchset: number | undefined;
+        initialCompareWith: number | undefined;
       };
 
   // Synchronously decide the initial screen based on the URL, BEFORE the
@@ -47,24 +48,43 @@
    *  scrolling document. */
   let toolbar: ReviewToolbarState | null = $state.raw(null);
 
-  function pathForReview(repo: string, id: string, patchset?: number): string {
+  function pathForReview(
+    repo: string,
+    id: string,
+    patchset?: number,
+    compareWith?: number | null,
+  ): string {
     const base = `/r/${encodeURIComponent(repo)}/${encodeURIComponent(id)}`;
-    return patchset !== undefined ? `${base}?ps=${patchset}` : base;
+    const parts: string[] = [];
+    if (patchset !== undefined) parts.push(`ps=${patchset}`);
+    if (compareWith != null) parts.push(`cmp=${compareWith}`);
+    return parts.length > 0 ? `${base}?${parts.join('&')}` : base;
   }
 
-  /** Parse `/r/<repo>/<review_id>` (with optional `?ps=N`). Returns null
-   *  when the URL is the review list. */
+  /** Parse `/r/<repo>/<review_id>` (with optional `?ps=N`, `?cmp=M`).
+   *  Returns null when the URL is the review list. */
   function parseUrl():
-    | { repo: string; id: string; patchset: number | undefined }
+    | {
+        repo: string;
+        id: string;
+        patchset: number | undefined;
+        compareWith: number | undefined;
+      }
     | null {
     const m = location.pathname.match(/^\/r\/([^/]+)\/(.+)$/);
     if (!m) return null;
-    const psRaw = new URLSearchParams(location.search).get('ps');
-    const psNum = psRaw === null ? Number.NaN : Number(psRaw);
+    const params = new URLSearchParams(location.search);
+    const readNum = (key: string): number | undefined => {
+      const raw = params.get(key);
+      if (raw === null) return undefined;
+      const n = Number(raw);
+      return Number.isFinite(n) ? n : undefined;
+    };
     return {
       repo: decodeURIComponent(m[1]),
       id: decodeURIComponent(m[2]),
-      patchset: Number.isFinite(psNum) ? psNum : undefined,
+      patchset: readNum('ps'),
+      compareWith: readNum('cmp'),
     };
   }
 
@@ -88,12 +108,19 @@
     targetRepo: string,
     id: string,
     patchset: number | undefined,
+    compareWith: number | undefined,
   ) {
     loading = true;
     error = null;
     try {
-      const view = await api.openReview(targetRepo, id, patchset);
-      screen = { kind: 'review', repo: targetRepo, view, initialPatchset: patchset };
+      const view = await api.openReview(targetRepo, id, patchset, compareWith);
+      screen = {
+        kind: 'review',
+        repo: targetRepo,
+        view,
+        initialPatchset: patchset,
+        initialCompareWith: compareWith,
+      };
     } catch (e) {
       error = (e as Error).message;
       screen = { kind: 'list' };
@@ -109,14 +136,20 @@
     if (location.pathname + location.search !== path) {
       history.pushState({}, '', path);
     }
-    await showReview(repo, id, undefined);
+    await showReview(repo, id, undefined, undefined);
   }
 
-  /** Called when the viewer changes patchset via the dropdown. Sync the
-   *  URL so the link is shareable without pushing a new history entry. */
-  function onPatchsetChange(n: number) {
+  /** Called when the viewer changes patchset or compare target via the
+   *  dropdowns. Sync the URL so the link is shareable without pushing
+   *  a new history entry. */
+  function onViewChange(n: number, compare: number | null) {
     if (screen.kind !== 'review') return;
-    const path = pathForReview(screen.repo, screen.view.manifest.review_id, n);
+    const path = pathForReview(
+      screen.repo,
+      screen.view.manifest.review_id,
+      n,
+      compare,
+    );
     if (location.pathname + location.search !== path) {
       history.replaceState({}, '', path);
     }
@@ -144,7 +177,7 @@
         return;
       }
       repo = parsed.repo;
-      await showReview(parsed.repo, parsed.id, parsed.patchset);
+      await showReview(parsed.repo, parsed.id, parsed.patchset, parsed.compareWith);
     } else {
       screen = { kind: 'list' };
       if (!repo && repos[0]) repo = repos[0].name;
@@ -272,7 +305,8 @@
       view={screen.view}
       viewer={whoami?.author ?? ''}
       initialPatchset={screen.initialPatchset}
-      onpatchsetchange={onPatchsetChange}
+      initialCompareWith={screen.initialCompareWith}
+      onviewchange={onViewChange}
       ontoolbarchange={(t) => (toolbar = t)}
     />
   {/if}
