@@ -9,7 +9,7 @@ use kata_server::{
     AppState, ServerConfig, router_with_assets, router_with_embedded_assets,
 };
 use kata_service::ReviewService;
-use kata_storage::{FilesystemStorage, Storage, compute_repo_id, jj_repo_canonical_path};
+use kata_storage::{Storage, compute_repo_id, jj_repo_canonical_path};
 
 #[derive(Debug, Parser)]
 #[command(name = "kata", about = "HTTP server for the kata code-review tool")]
@@ -137,7 +137,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         bind_addr: args.bind,
     };
 
-    let storage: Arc<dyn Storage> = Arc::new(FilesystemStorage::new(cfg.review_root.clone()));
+    // `<review_root>/kata.db` keeps the SQLite file beside the per-repo
+    // export directories. WAL journal mode + a partial UNIQUE index on
+    // draft sessions make this safe with the multiple-writer pattern we
+    // run (the user, the coding agent, and reviewer agents all touching
+    // the same review). The filesystem-backed `Storage` impl is still
+    // around but only via `kata export` / `kata import` — see the
+    // storage-swap commits.
+    if !cfg.review_root.exists() {
+        std::fs::create_dir_all(&cfg.review_root)?;
+    }
+    let db_path = cfg.review_root.join("kata.db");
+    let storage: Arc<dyn Storage> =
+        Arc::new(kata_storage::sqlite::SqliteStorage::open(&db_path).await?);
     let mut builder = ReviewService::builder(storage.clone());
     let repo_count = workspaces.len();
 

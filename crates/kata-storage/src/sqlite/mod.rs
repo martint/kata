@@ -9,5 +9,8 @@
 //! `BEGIN IMMEDIATE`.
 
 mod migrate;
+mod serde_enums;
+mod storage;
 
 pub use migrate::{MIGRATIONS, Migration, run as run_migrations};
+pub use storage::SqliteStorage;
