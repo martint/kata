@@ -160,6 +160,14 @@
     );
   });
 
+  /** Reset every filter chip back to "on". Used by the "filter hides N
+   *  comments" hint when the combination of toggles leaves the page
+   *  with nothing visible. */
+  function resetFilter() {
+    filterStatus = { draft: true, open: true, resolved: true };
+    filterFlag = { 'must-do': true, suggestion: true, other: true };
+  }
+
   /** Bound to the sticky `.comment-bar` so we can measure its height
    *  and expose it as a CSS variable. The file-header is also sticky
    *  at `top: var(--app-header-h)` — without offsetting it by the
@@ -1427,6 +1435,17 @@
         >Other</button>
       </div>
       <div class="comment-bar-actions">
+        {#if allComments.length > 0 && visibleComments.length === 0}
+          <button
+            type="button"
+            class="filter-empty-hint"
+            onclick={resetFilter}
+            title="All chips off — click to restore"
+          >
+            Filter hides {allComments.length}
+            {allComments.length === 1 ? 'comment' : 'comments'} — show all
+          </button>
+        {/if}
         {#if orderedComments.length > 0}
           <div class="comment-nav" role="group" aria-label="Comment navigation">
             <button
@@ -1697,6 +1716,24 @@
     flex: 0 0 auto;
   }
 
+  /* Surfaced when every visible comment has been filtered out — the
+   * chip combination that produces this is easy to leave persisted by
+   * accident, and the empty viewer gives no cue that comments exist.
+   * One-click resets every chip to "on". */
+  .comment-bar-actions .filter-empty-hint {
+    padding: 2px 10px;
+    font-size: 11px;
+    background: var(--warn-bg);
+    color: var(--warn-text);
+    border: 1px solid var(--warn-text);
+    border-radius: 4px;
+    cursor: pointer;
+  }
+
+  .comment-bar-actions .filter-empty-hint:hover {
+    filter: brightness(0.96);
+  }
+
   .comment-bar-actions .comment-nav {
     display: flex;
     align-items: center;
@@ -1785,9 +1822,9 @@
   }
 
   .comment-bar .chip.on.flag-other {
-    background: var(--bg-elevated);
-    color: var(--text-muted);
-    border-color: var(--text-faint);
+    background: var(--other-bg);
+    color: var(--other-text);
+    border-color: var(--other-text);
   }
 
   /* On phones the header wraps to two lines so a fixed `top` offset
