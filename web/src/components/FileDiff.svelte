@@ -608,11 +608,12 @@
     border-bottom: 1px solid var(--border);
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 13px;
-    /* Pin under the app header so it stays in view while scrolling the file.
-     * The next file's header naturally takes over when its section reaches
-     * the top. */
+    /* Pin under the app header AND the (separately sticky) comment bar
+     * so the file name stays in view while scrolling without colliding
+     * with either. The `--comment-bar-h` is set by ReviewViewer's
+     * ResizeObserver; defaults to 0 outside the review viewer. */
     position: sticky;
-    top: var(--app-header-h);
+    top: calc(var(--app-header-h) + var(--comment-bar-h, 0px));
     z-index: 10;
   }
 
