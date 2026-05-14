@@ -48,6 +48,27 @@
    *  scrolling document. */
   let toolbar: ReviewToolbarState | null = $state.raw(null);
 
+  /** Bound to `<header class="app">` so we can re-publish its rendered
+   *  height as `--app-header-h`. The header is one row on the home
+   *  screen and two rows on a review page, so the offset that every
+   *  sticky file-header / tree-pane uses needs to track it
+   *  dynamically. The static fallback in app.css covers the very first
+   *  paint before the observer is wired. */
+  let headerEl: HTMLElement | undefined = $state();
+  $effect(() => {
+    if (!headerEl) return;
+    const update = () => {
+      document.documentElement.style.setProperty(
+        '--app-header-h',
+        `${headerEl!.offsetHeight}px`,
+      );
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(headerEl);
+    return () => ro.disconnect();
+  });
+
   function pathForReview(
     repo: string,
     number: number,
@@ -212,86 +233,211 @@
   });
 </script>
 
-<header class="app">
-  {#if toolbar}
-    <!-- Phone-only file-tree toggle. Hidden on desktop via CSS. -->
-    <button
-      class="tree-button"
-      type="button"
-      onclick={toolbar.tree.toggle}
-      aria-label="Toggle file list"
-      aria-expanded={!toolbar.tree.collapsed}
-    >☰</button>
-  {/if}
-  <h1>
-    <img class="app-icon" src="/favicon.svg" alt="" width="22" height="22" />
-    Kata
-  </h1>
-  {#if screen.kind === 'review'}
-    <button onclick={back} aria-label="Back to review list">← <span class="lbl">Back</span></button>
-    <button
-      onclick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
-      title="Scroll to the top of the review"
-      aria-label="Scroll to top"
-    >↑ <span class="lbl">Top</span></button>
-    {#if toolbar?.commits}
-      {@const commits = toolbar.commits}
-      <div
-        class="commit-nav"
-        role="group"
-        aria-label="Commit navigation"
-        title={commits.label}
-      >
-        <button
-          onclick={commits.prev}
-          title="Previous commit"
-          aria-label="Previous commit"
-        >‹</button>
-        <span class="position">
-          {commits.position === 0 ? 'All' : commits.position}/{commits.total}
-        </span>
-        <button
-          onclick={commits.next}
-          title="Next commit"
-          aria-label="Next commit"
-        >›</button>
-        <span class="commit-label">{commits.label}</span>
-      </div>
+<header class="app" bind:this={headerEl}>
+  <!-- Row 1: global app controls. Always present. -->
+  <div class="header-row primary">
+    {#if toolbar}
+      <!-- Phone-only file-tree toggle. Hidden on desktop via CSS. -->
+      <button
+        class="tree-button"
+        type="button"
+        onclick={toolbar.tree.toggle}
+        aria-label="Toggle file list"
+        aria-expanded={!toolbar.tree.collapsed}
+      >☰</button>
     {/if}
-  {/if}
-  {#if loading}
-    <span class="spinner" aria-label="loading"></span>
-  {/if}
-  <span style="flex: 1"></span>
-  {#if toolbar}
-    {#if toolbar.drafts}
-      {@const drafts = toolbar.drafts}
-      <div class="draft-nav" role="group" aria-label="Draft navigation">
+    <h1>
+      <img class="app-icon" src="/favicon.svg" alt="" width="22" height="22" />
+      Kata
+    </h1>
+    {#if screen.kind === 'review'}
+      <button onclick={back} aria-label="Back to review list">← <span class="lbl">Back</span></button>
+      <button
+        onclick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+        title="Scroll to the top of the review"
+        aria-label="Scroll to top"
+      >↑ <span class="lbl">Top</span></button>
+      {#if toolbar?.commits}
+        {@const commits = toolbar.commits}
+        <div
+          class="commit-nav"
+          role="group"
+          aria-label="Commit navigation"
+          title={commits.label}
+        >
+          <button
+            onclick={commits.prev}
+            title="Previous commit"
+            aria-label="Previous commit"
+          >‹</button>
+          <span class="position">
+            {commits.position === 0 ? 'All' : commits.position}/{commits.total}
+          </span>
+          <button
+            onclick={commits.next}
+            title="Next commit"
+            aria-label="Next commit"
+          >›</button>
+          <span class="commit-label">{commits.label}</span>
+        </div>
+      {/if}
+    {/if}
+    {#if loading}
+      <span class="spinner" aria-label="loading"></span>
+    {/if}
+    <span style="flex: 1"></span>
+    {#if toolbar}
+      {#if toolbar.drafts}
+        {@const drafts = toolbar.drafts}
+        <div class="draft-nav" role="group" aria-label="Draft navigation">
+          <button
+            type="button"
+            onclick={drafts.prev}
+            title="Previous draft"
+            aria-label="Previous draft"
+          >‹</button>
+          <span class="draft-count" aria-live="polite">
+            {drafts.position || '–'}/<strong>{drafts.count}</strong>
+            <span class="lbl">draft{drafts.count === 1 ? '' : 's'}</span>
+          </span>
+          <button
+            type="button"
+            onclick={drafts.next}
+            title="Next draft"
+            aria-label="Next draft"
+          >›</button>
+        </div>
+        <button onclick={drafts.discard} disabled={drafts.saving}>Discard</button>
+        <button class="primary" onclick={drafts.publish} disabled={drafts.saving}>
+          {drafts.saving ? 'Publishing…' : 'Publish'}
+        </button>
+      {/if}
+    {/if}
+    {#if whoami}
+      <span class="author">signed in as {whoami.author}</span>
+    {/if}
+  </div>
+
+  <!-- Row 2: review-scoped state (title, comment filter chips, comment
+       navigation, comments-only toggle). Renders only on a review
+       page once the viewer has reported its toolbar state. Pinning
+       these controls in a fixed-at-top row solves the problem the
+       previous in-body sticky comment-bar had: clicking `< >`
+       repeatedly used to chase the bar around as the page scrolled. -->
+  {#if screen.kind === 'review' && toolbar?.title}
+    {@const title = toolbar.title}
+    <div class="header-row review">
+      <span class="review-title">
+        <span class="review-number">#{title.number}</span>
+        <span class="review-name">{title.name}</span>
+        {#if title.archived}
+          <span class="archived-badge" title="Archived — read-only until unarchived">
+            Archived
+          </span>
+        {/if}
+      </span>
+      <!-- Float controls to the right so the title gets breathing
+           room from the chips next to it. -->
+      <span style="flex: 1"></span>
+      <!-- Order is `nav | hint | chips | diffs-toggle` rather than the
+           visual-reading-order opposite so the chip cluster stays
+           anchored against the diffs-toggle at the right edge: when
+           the nav or hint disappears (no comments, filter not empty),
+           only the elements between the title spacer and the chips
+           shift — the chips themselves keep their position. -->
+      {#if toolbar.comments}
+        {@const c = toolbar.comments}
+        <div class="comment-nav" role="group" aria-label="Comment navigation">
+          <button
+            type="button"
+            onclick={c.prev}
+            title="Previous comment"
+            aria-label="Previous comment"
+          >‹</button>
+          <span class="position" aria-live="polite">
+            {c.position || '–'}/{c.total}
+          </span>
+          <button
+            type="button"
+            onclick={c.next}
+            title="Next comment"
+            aria-label="Next comment"
+          >›</button>
+        </div>
+      {/if}
+      {#if toolbar.filter && toolbar.filter.hiddenCount > 0}
         <button
           type="button"
-          onclick={drafts.prev}
-          title="Previous draft"
-          aria-label="Previous draft"
-        >‹</button>
-        <span class="draft-count" aria-live="polite">
-          {drafts.position || '–'}/<strong>{drafts.count}</strong>
-          <span class="lbl">draft{drafts.count === 1 ? '' : 's'}</span>
-        </span>
+          class="filter-empty-hint"
+          onclick={toolbar.filter.reset}
+          title="All chips off — click to restore"
+        >
+          Filter hides {toolbar.filter.hiddenCount}
+          {toolbar.filter.hiddenCount === 1 ? 'comment' : 'comments'} — show all
+        </button>
+      {/if}
+      {#if toolbar.filter}
+        {@const filter = toolbar.filter}
+        <div class="filter-chips">
+          <span class="label">Status</span>
+          <button
+            type="button"
+            class="chip status-draft"
+            class:on={filter.status.draft}
+            aria-pressed={filter.status.draft}
+            onclick={() => filter.toggleStatus('draft')}
+          >Draft</button>
+          <button
+            type="button"
+            class="chip status-open"
+            class:on={filter.status.open}
+            aria-pressed={filter.status.open}
+            onclick={() => filter.toggleStatus('open')}
+          >Open</button>
+          <button
+            type="button"
+            class="chip status-resolved"
+            class:on={filter.status.resolved}
+            aria-pressed={filter.status.resolved}
+            onclick={() => filter.toggleStatus('resolved')}
+          >Resolved</button>
+          <span class="sep" aria-hidden="true"></span>
+          <span class="label">Severity</span>
+          <button
+            type="button"
+            class="chip flag-must-do"
+            class:on={filter.flag['must-do']}
+            aria-pressed={filter.flag['must-do']}
+            onclick={() => filter.toggleFlag('must-do')}
+          >Must do</button>
+          <button
+            type="button"
+            class="chip flag-suggestion"
+            class:on={filter.flag.suggestion}
+            aria-pressed={filter.flag.suggestion}
+            onclick={() => filter.toggleFlag('suggestion')}
+          >Suggestion</button>
+          <button
+            type="button"
+            class="chip flag-other"
+            class:on={filter.flag.other}
+            aria-pressed={filter.flag.other}
+            onclick={() => filter.toggleFlag('other')}
+          >Other</button>
+        </div>
+      {/if}
+      {#if toolbar.diffs}
+        {@const d = toolbar.diffs}
         <button
           type="button"
-          onclick={drafts.next}
-          title="Next draft"
-          aria-label="Next draft"
-        >›</button>
-      </div>
-      <button onclick={drafts.discard} disabled={drafts.saving}>Discard</button>
-      <button class="primary" onclick={drafts.publish} disabled={drafts.saving}>
-        {drafts.saving ? 'Publishing…' : 'Publish'}
-      </button>
-    {/if}
-  {/if}
-  {#if whoami}
-    <span class="author">signed in as {whoami.author}</span>
+          class="diffs-toggle"
+          onclick={d.toggle}
+          title={d.collapsed ? 'Show file diffs' : 'Hide file diffs, leave only comments'}
+        >
+          {d.collapsed ? 'Show diffs' : 'Comments only'}
+        </button>
+      {/if}
+    </div>
   {/if}
 </header>
 

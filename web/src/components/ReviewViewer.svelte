@@ -26,11 +26,19 @@
    *  the sticky top bar. Re-emitted whenever any of the underlying fields
    *  change; null only when the review viewer is unmounted.
    *
-   *  Comment-level controls (filter chips, prev/next nav, comments-only
-   *  toggle) live in a second sticky bar rendered by the viewer itself,
-   *  directly above the commits panel — they share visual context with
-   *  the comments and shouldn't be split across two bars. */
+   *  The top bar is two-row in review mode: row 1 carries the global app
+   *  controls (back, commit-nav, drafts) and row 2 carries review-level
+   *  state (title, filter chips, comment-nav, comments-only). Putting
+   *  the comment-nav in a fixed-at-top container — rather than a sticky
+   *  bar that shares the scroll viewport — keeps the prev / next buttons
+   *  pinned in one spot so repeat clicks don't chase the bar around. */
+  type StatusBucket = 'draft' | 'open' | 'resolved';
+  type FlagBucket = 'must-do' | 'suggestion' | 'other';
   export interface ReviewToolbarState {
+    /** Compact review identity for the row-2 left side: `#N name` plus
+     *  whether to render the Archived pill. Replaces the in-body header
+     *  `<h2>` so the title is visible while the user scrolls. */
+    title: { number: number; name: string; archived: boolean } | null;
     /** Draft session controls. Null when the user has no open drafts.
      *  `position` is 1-based among `count` drafts (in document order),
      *  or 0 when the current nav target isn't one of the viewer's
@@ -61,6 +69,32 @@
       prev: () => void;
       next: () => void;
     } | null;
+    /** Comment lifecycle / severity filter, plus the "filter hides N"
+     *  hint surfaced when every comment is filtered out. `null` while
+     *  the review has zero comments (no chips needed). */
+    filter: {
+      status: Record<StatusBucket, boolean>;
+      flag: Record<FlagBucket, boolean>;
+      toggleStatus: (key: StatusBucket) => void;
+      toggleFlag: (key: FlagBucket) => void;
+      /** When > 0, every comment is hidden by the chip combination. The
+       *  shell renders a one-click "show all" hint. */
+      hiddenCount: number;
+      reset: () => void;
+    } | null;
+    /** Prev / next nav across the visible-after-filter comments.
+     *  `null` while no comments would be in the nav. Position 0 means
+     *  no current selection; 1..total points at one. */
+    comments: {
+      total: number;
+      position: number;
+      prev: () => void;
+      next: () => void;
+    } | null;
+    /** Comments-only toggle (collapses every file's diff to just its
+     *  comments). `null` if the review has nothing to show in compact
+     *  mode (no comments, no files). */
+    diffs: { collapsed: boolean; toggle: () => void } | null;
     /** File-tree visibility. The top bar surfaces this so phones can
      *  toggle the drawer-style tree without scrolling. */
     tree: { collapsed: boolean; toggle: () => void };
@@ -121,12 +155,12 @@
 
   // --- Comment filter -------------------------------------------------
   // Two independent dimensions: lifecycle (draft / open / resolved) and
-  // severity (must-do / suggestion / other). A comment is shown when
-  // BOTH dimensions accept it — so flipping every chip off hides
-  // everything. Resolved here covers both "resolved" and "wont-fix":
-  // the user thinks of them as the same "done with it" bucket.
-  type StatusBucket = 'draft' | 'open' | 'resolved';
-  type FlagBucket = 'must-do' | 'suggestion' | 'other';
+  // severity (must-do / suggestion / other) — bucket types are declared
+  // alongside `ReviewToolbarState` above so the toolbar interface can
+  // type them.  A comment is shown when BOTH dimensions accept it — so
+  // flipping every chip off hides everything. Resolved here covers
+  // both "resolved" and "wont-fix": the user thinks of them as the
+  // same "done with it" bucket.
   const FILTER_KEY = 'kata:commentFilter';
   function readFilter(): {
     status: Record<StatusBucket, boolean>;
@@ -167,30 +201,6 @@
     filterStatus = { draft: true, open: true, resolved: true };
     filterFlag = { 'must-do': true, suggestion: true, other: true };
   }
-
-  /** Bound to the sticky `.comment-bar` so we can measure its height
-   *  and expose it as a CSS variable. The file-header is also sticky
-   *  at `top: var(--app-header-h)` — without offsetting it by the
-   *  comment bar's height the two would collide and the comment bar
-   *  (higher z-index) would cover the file name as the user scrolls. */
-  let commentBarEl: HTMLElement | undefined = $state();
-  $effect(() => {
-    if (!commentBarEl) return;
-    const update = () => {
-      document.documentElement.style.setProperty(
-        '--comment-bar-h',
-        `${commentBarEl!.offsetHeight}px`,
-      );
-    };
-    update();
-    const ro = new ResizeObserver(update);
-    ro.observe(commentBarEl);
-    return () => {
-      ro.disconnect();
-      // Clear so other (non-review) screens don't inherit the offset.
-      document.documentElement.style.removeProperty('--comment-bar-h');
-    };
-  });
 
   const allComments: CommentView[] = $derived([
     ...current.comments,
@@ -494,13 +504,21 @@
   });
 
   /** Mirror toolbar state up to the app shell whenever it changes. The
-   *  shell renders publish / discard, commit nav, and the file-tree
-   *  toggle. Comment filter + prev/next + comments-only toggle live in
-   *  the viewer's own sticky bar (see template), so they're omitted here. */
+   *  shell renders both header rows from this state — see the
+   *  ReviewToolbarState interface for the breakdown. */
   $effect(() => {
     const hasDrafts =
       !!current.drafts.session && current.drafts.comments.length > 0;
+    const hasComments = allComments.length > 0;
+    const hiddenCount = hasComments && visibleComments.length === 0
+      ? allComments.length
+      : 0;
     ontoolbarchange?.({
+      title: {
+        number: current.manifest.number,
+        name: current.manifest.name,
+        archived: !!current.manifest.archived_at,
+      },
       drafts: hasDrafts
         ? {
             count: current.drafts.comments.length,
@@ -522,6 +540,30 @@
               next: commitNavNext,
             }
           : null,
+      filter: hasComments
+        ? {
+            status: filterStatus,
+            flag: filterFlag,
+            toggleStatus: (key) =>
+              (filterStatus = { ...filterStatus, [key]: !filterStatus[key] }),
+            toggleFlag: (key) =>
+              (filterFlag = { ...filterFlag, [key]: !filterFlag[key] }),
+            hiddenCount,
+            reset: resetFilter,
+          }
+        : null,
+      comments:
+        orderedComments.length > 0
+          ? {
+              total: orderedComments.length,
+              position: navPosition,
+              prev: navPrev,
+              next: navNext,
+            }
+          : null,
+      diffs: hasComments
+        ? { collapsed: diffsCollapsed, toggle: toggleDiffs }
+        : null,
       tree: {
         collapsed: treeCollapsed,
         toggle: () => (treeCollapsed = !treeCollapsed),
@@ -1145,22 +1187,11 @@
    *  exactly here, not one pixel above (we'd see the previous file's
    *  sticky header in that pixel) and not one pixel below (gap).
    *
-   *  Computing this as `header.offsetHeight + bar.offsetHeight` looks
-   *  obvious but is wrong: `offsetHeight` includes the header's
-   *  border-bottom, while the bar's `top` is bound to the *content*
-   *  height var (`--app-header-h`), so the bar overlaps the header's
-   *  border by one pixel — covered by the header's higher z-index. Use
-   *  the bar's computed `top` (= where it actually sticks) plus its
-   *  own offsetHeight, which together describe its real stuck bottom.
-   *  Falls back to the header bottom on screens with no comment bar
-   *  (the review-list view, etc.). */
+   *  Both rows of the top header live in the same `header.app`
+   *  element, so its rendered `offsetHeight` is the exact pixel
+   *  threshold to subtract when positioning scroll targets. */
   function stickyTop(): number {
     if (typeof document === 'undefined') return 0;
-    const bar = document.querySelector('.comment-bar') as HTMLElement | null;
-    if (bar) {
-      const top = parseFloat(getComputedStyle(bar).top) || 0;
-      return top + bar.offsetHeight;
-    }
     const header = document.querySelector('header.app') as HTMLElement | null;
     return header?.offsetHeight ?? 0;
   }
@@ -1230,16 +1261,10 @@
   }
 </script>
 
-<section class="header" class:archived={!!current.manifest.archived_at}>
-  <h2>
-    <span class="review-number">#{current.manifest.number}</span>
-    {current.manifest.name}
-    {#if current.manifest.archived_at}
-      <span class="archived-badge" title="Archived — read-only until unarchived">
-        Archived
-      </span>
-    {/if}
-  </h2>
+<section class="header">
+  <!-- Title (#N name + Archived pill) lives in the top header bar so
+       it stays visible while the user scrolls. See App.svelte's
+       `.header-row.review` row. -->
   <p class="muted">
     {#if current.manifest.bookmark}bookmark: <strong>{current.manifest.bookmark}</strong> ·{/if}
     revset: <code>{current.manifest.revset}</code>
@@ -1383,97 +1408,9 @@
   <div class="main-pane">
     <!-- Sticky bar grouping every comment-level control: lifecycle +
          severity filter chips on the left, prev/next nav and the
-         comments-only toggle on the right. Sticky at the top of the
-         scroll container so it remains visible as the user scrolls
-         through long file diffs. -->
-    <div class="comment-bar" bind:this={commentBarEl} role="group" aria-label="Comment controls">
-      <div class="filter-chips">
-        <span class="label">Status</span>
-        <button
-          type="button"
-          class="chip status-draft"
-          class:on={filterStatus.draft}
-          aria-pressed={filterStatus.draft}
-          onclick={() => (filterStatus = { ...filterStatus, draft: !filterStatus.draft })}
-        >Draft</button>
-        <button
-          type="button"
-          class="chip status-open"
-          class:on={filterStatus.open}
-          aria-pressed={filterStatus.open}
-          onclick={() => (filterStatus = { ...filterStatus, open: !filterStatus.open })}
-        >Open</button>
-        <button
-          type="button"
-          class="chip status-resolved"
-          class:on={filterStatus.resolved}
-          aria-pressed={filterStatus.resolved}
-          onclick={() => (filterStatus = { ...filterStatus, resolved: !filterStatus.resolved })}
-        >Resolved</button>
-        <span class="sep" aria-hidden="true"></span>
-        <span class="label">Severity</span>
-        <button
-          type="button"
-          class="chip flag-must-do"
-          class:on={filterFlag['must-do']}
-          aria-pressed={filterFlag['must-do']}
-          onclick={() => (filterFlag = { ...filterFlag, 'must-do': !filterFlag['must-do'] })}
-        >Must do</button>
-        <button
-          type="button"
-          class="chip flag-suggestion"
-          class:on={filterFlag.suggestion}
-          aria-pressed={filterFlag.suggestion}
-          onclick={() => (filterFlag = { ...filterFlag, suggestion: !filterFlag.suggestion })}
-        >Suggestion</button>
-        <button
-          type="button"
-          class="chip flag-other"
-          class:on={filterFlag.other}
-          aria-pressed={filterFlag.other}
-          onclick={() => (filterFlag = { ...filterFlag, other: !filterFlag.other })}
-        >Other</button>
-      </div>
-      <div class="comment-bar-actions">
-        {#if allComments.length > 0 && visibleComments.length === 0}
-          <button
-            type="button"
-            class="filter-empty-hint"
-            onclick={resetFilter}
-            title="All chips off — click to restore"
-          >
-            Filter hides {allComments.length}
-            {allComments.length === 1 ? 'comment' : 'comments'} — show all
-          </button>
-        {/if}
-        {#if orderedComments.length > 0}
-          <div class="comment-nav" role="group" aria-label="Comment navigation">
-            <button
-              type="button"
-              onclick={navPrev}
-              title="Previous comment"
-              aria-label="Previous comment"
-            >‹</button>
-            <span class="position" aria-live="polite">
-              {navPosition || '–'}/{orderedComments.length}
-            </span>
-            <button
-              type="button"
-              onclick={navNext}
-              title="Next comment"
-              aria-label="Next comment"
-            >›</button>
-          </div>
-        {/if}
-        <button
-          type="button"
-          onclick={toggleDiffs}
-          title={diffsCollapsed ? 'Show file diffs' : 'Hide file diffs, leave only comments'}
-        >
-          {diffsCollapsed ? 'Show diffs' : 'Comments only'}
-        </button>
-      </div>
-    </div>
+         comments-only toggle on the right. These now render in the
+         second row of `header.app` (see App.svelte); the viewer
+         emits their state through ontoolbarchange. -->
     <!-- Hidden in compare mode: the commits panel scopes the file diff
          to base..commit for a single commit, which has no meaning
          between two patchsets — and per-commit comment counts would
@@ -1578,37 +1515,6 @@
     margin-bottom: 16px;
   }
 
-  .header .review-number {
-    color: var(--text-muted);
-    font-variant-numeric: tabular-nums;
-    margin-right: 6px;
-  }
-
-  /* Archived state: a subtle visual ramp so the user always knows what
-   * they're looking at. The header's title takes a strikethrough +
-   * desaturate; the banner pill in the title sits beside the name. */
-  .header.archived h2 {
-    color: var(--text-muted);
-    text-decoration: line-through;
-    text-decoration-thickness: 1px;
-  }
-
-  .archived-badge {
-    display: inline-block;
-    margin-left: 10px;
-    padding: 1px 8px;
-    border: 1px solid var(--border);
-    border-radius: 9999px;
-    background: var(--bg-panel);
-    color: var(--text-muted);
-    font-size: 11px;
-    font-weight: 500;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    /* Negate the h2 strikethrough so the pill text stays readable. */
-    text-decoration: none;
-  }
-
   .archive-btn {
     margin-left: 12px;
     padding: 2px 10px;
@@ -1672,168 +1578,6 @@
     display: flex;
     align-items: flex-start;
     gap: 0;
-  }
-
-  /* Sticky bar of comment-level controls — filter chips on the left,
-   * prev/next nav and the diff-collapse toggle on the right. Sits
-   * directly below the app header (`top: var(--app-header-h)`) so it
-   * stays in view as the user scrolls through the file diffs. The
-   * solid background + bottom border keep the page content from
-   * showing through. */
-  .comment-bar {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 8px 12px;
-    /* Spacing below the bar lives inside the box (not as margin) so
-     * `offsetHeight` reflects the full visual footprint. Anything we
-     * measure via offsetHeight is what `stickyTop` then subtracts when
-     * positioning scroll targets — a margin here would leak as a
-     * transparent strip below the bar where the previous file's
-     * sticky header could peek through. */
-    padding: 8px 0 16px;
-    background: var(--bg);
-    border-bottom: 1px solid var(--border);
-    position: sticky;
-    top: var(--app-header-h);
-    z-index: 20;
-    font-size: 12px;
-  }
-
-  .comment-bar .filter-chips {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 6px;
-    flex: 1 1 auto;
-    min-width: 0;
-  }
-
-  .comment-bar-actions {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex: 0 0 auto;
-  }
-
-  /* Surfaced when every visible comment has been filtered out — the
-   * chip combination that produces this is easy to leave persisted by
-   * accident, and the empty viewer gives no cue that comments exist.
-   * One-click resets every chip to "on". */
-  .comment-bar-actions .filter-empty-hint {
-    padding: 2px 10px;
-    font-size: 11px;
-    background: var(--warn-bg);
-    color: var(--warn-text);
-    border: 1px solid var(--warn-text);
-    border-radius: 4px;
-    cursor: pointer;
-  }
-
-  .comment-bar-actions .filter-empty-hint:hover {
-    filter: brightness(0.96);
-  }
-
-  .comment-bar-actions .comment-nav {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-  }
-
-  .comment-bar-actions .comment-nav button {
-    padding: 2px 8px;
-    font-size: 14px;
-    line-height: 1;
-  }
-
-  .comment-bar-actions .comment-nav .position {
-    color: var(--text-muted);
-    font-variant-numeric: tabular-nums;
-    min-width: 3.5em;
-    text-align: center;
-  }
-
-  .comment-bar-actions > button {
-    padding: 4px 10px;
-    font-size: 12px;
-  }
-
-  .comment-bar .label {
-    color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    font-size: 11px;
-    margin-right: 2px;
-  }
-
-  .comment-bar .sep {
-    width: 1px;
-    height: 16px;
-    background: var(--border);
-    margin: 0 6px;
-  }
-
-  .comment-bar .chip {
-    border: 1px solid var(--border);
-    border-radius: 9999px;
-    padding: 2px 10px;
-    font-size: 11px;
-    line-height: 1.5;
-    background: var(--bg);
-    color: var(--text-faint);
-    cursor: pointer;
-    /* When off, render in a desaturated neutral; when on (via .on) we
-     * adopt the same tint flags use elsewhere so the bar reads at a
-     * glance. */
-  }
-
-  .comment-bar .chip:hover {
-    background: var(--bg-panel);
-  }
-
-  .comment-bar .chip.on.status-draft {
-    background: var(--attention-bg);
-    color: var(--attention-text);
-    border-color: var(--attention-border);
-  }
-
-  .comment-bar .chip.on.status-open {
-    background: var(--link-bg);
-    color: var(--link);
-    border-color: var(--link);
-  }
-
-  .comment-bar .chip.on.status-resolved {
-    background: var(--success-bg);
-    color: var(--success-text);
-    border-color: var(--success-text);
-  }
-
-  .comment-bar .chip.on.flag-must-do {
-    background: var(--error-bg);
-    color: var(--error-text);
-    border-color: var(--error-text);
-  }
-
-  .comment-bar .chip.on.flag-suggestion {
-    background: var(--link-bg);
-    color: var(--link);
-    border-color: var(--link);
-  }
-
-  .comment-bar .chip.on.flag-other {
-    background: var(--other-bg);
-    color: var(--other-text);
-    border-color: var(--other-text);
-  }
-
-  /* On phones the header wraps to two lines so a fixed `top` offset
-   * would overlap content. Drop the sticky behavior — the bar still
-   * sits above the commits panel, just not pinned. */
-  @media (max-width: 640px) {
-    .comment-bar {
-      position: static;
-    }
   }
 
   .tree-pane {

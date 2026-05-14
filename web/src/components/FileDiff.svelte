@@ -608,12 +608,12 @@
     border-bottom: 1px solid var(--border);
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 13px;
-    /* Pin under the app header AND the (separately sticky) comment bar
-     * so the file name stays in view while scrolling without colliding
-     * with either. The `--comment-bar-h` is set by ReviewViewer's
-     * ResizeObserver; defaults to 0 outside the review viewer. */
+    /* Pin under the top header (which carries both rows in review
+     * mode — see App.svelte). `--app-header-h` is set live by
+     * App.svelte's ResizeObserver so this stays correct as the
+     * second row appears / disappears. */
     position: sticky;
-    top: calc(var(--app-header-h) + var(--comment-bar-h, 0px));
+    top: var(--app-header-h);
     z-index: 10;
   }
 

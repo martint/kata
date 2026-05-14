@@ -106,16 +106,36 @@ main.wide {
 }
 
 header.app {
+  /* Two-row header in review mode: row 1 carries the global app
+   * controls, row 2 carries the review's title + comment filter /
+   * navigation. Outside review mode only row 1 renders. The whole
+   * header is sticky as one block. */
   display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 0 24px;
-  height: var(--app-header-h);
+  flex-direction: column;
+  align-items: stretch;
   border-bottom: 1px solid var(--border);
   background: var(--bg-panel);
   position: sticky;
   top: 0;
   z-index: 30;
+}
+
+header.app .header-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 24px;
+}
+
+header.app .header-row.primary {
+  height: 48px;
+}
+
+header.app .header-row.review {
+  height: 40px;
+  gap: 10px;
+  font-size: 12px;
+  border-top: 1px solid var(--border-muted);
 }
 
 header.app h1 {
@@ -232,14 +252,15 @@ header.app .tree-button {
     padding: 8px 12px;
   }
 
-  header.app {
+  header.app .header-row {
     padding: 0 8px;
     gap: 6px;
-    /* Allow the bar to wrap if it can't fit on one line — the wrapped
-     * row sits below the title and is fully visible without scrolling. */
+    /* Allow the row to wrap if it can't fit on one line — the wrapped
+     * bottom sits below the start of the row and is fully visible
+     * without scrolling. */
     flex-wrap: wrap;
     height: auto;
-    min-height: var(--app-header-h);
+    min-height: 44px;
   }
 
   header.app h1 {
@@ -264,6 +285,155 @@ header.app .tree-button {
   header.app button {
     padding: 4px 8px;
   }
+}
+
+/* ---- Row 2 (review): title + filter chips + comment nav --------- */
+
+header.app .review-title {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  font-size: 13px;
+}
+
+header.app .review-title .review-number {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+header.app .review-title .review-name {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 28ch;
+}
+
+header.app .review-title .archived-badge {
+  display: inline-block;
+  padding: 1px 8px;
+  margin-left: 4px;
+  border: 1px solid var(--border);
+  border-radius: 9999px;
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+header.app .filter-chips {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+header.app .filter-chips .label {
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 11px;
+  margin-right: 2px;
+}
+
+header.app .filter-chips .sep {
+  width: 1px;
+  height: 16px;
+  background: var(--border);
+  margin: 0 6px;
+}
+
+header.app .chip {
+  border: 1px solid var(--border);
+  border-radius: 9999px;
+  padding: 2px 10px;
+  font-size: 11px;
+  line-height: 1.5;
+  background: var(--bg);
+  color: var(--text-faint);
+  cursor: pointer;
+}
+
+header.app .chip:hover {
+  background: var(--bg-panel);
+}
+
+header.app .chip.on.status-draft {
+  background: var(--attention-bg);
+  color: var(--attention-text);
+  border-color: var(--attention-border);
+}
+
+header.app .chip.on.status-open {
+  background: var(--link-bg);
+  color: var(--link);
+  border-color: var(--link);
+}
+
+header.app .chip.on.status-resolved {
+  background: var(--success-bg);
+  color: var(--success-text);
+  border-color: var(--success-text);
+}
+
+header.app .chip.on.flag-must-do {
+  background: var(--error-bg);
+  color: var(--error-text);
+  border-color: var(--error-text);
+}
+
+header.app .chip.on.flag-suggestion {
+  background: var(--link-bg);
+  color: var(--link);
+  border-color: var(--link);
+}
+
+header.app .chip.on.flag-other {
+  background: var(--other-bg);
+  color: var(--other-text);
+  border-color: var(--other-text);
+}
+
+header.app .filter-empty-hint {
+  padding: 2px 10px;
+  font-size: 11px;
+  background: var(--warn-bg);
+  color: var(--warn-text);
+  border: 1px solid var(--warn-text);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+header.app .filter-empty-hint:hover {
+  filter: brightness(0.96);
+}
+
+header.app .comment-nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+header.app .comment-nav button {
+  padding: 2px 8px;
+  font-size: 14px;
+  line-height: 1;
+}
+
+header.app .comment-nav .position {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  min-width: 3.5em;
+  text-align: center;
+}
+
+header.app .diffs-toggle {
+  padding: 2px 10px;
+  font-size: 11px;
 }
 
 .spinner {
