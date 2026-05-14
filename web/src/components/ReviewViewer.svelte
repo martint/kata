@@ -627,6 +627,32 @@
     return id.length > 12 ? id.slice(0, 12) : id;
   }
 
+  /** Human label for one entry of the patchset dropdown.
+   *
+   * Three flavours after the `PSn` prefix:
+   *   * `amended` — same `tip_change` as the previous patchset, just
+   *     a different `tip_commit`. The author edited their tip commit
+   *     in place (the normal jj amend flow).
+   *   * `rewritten` — `parent_patchset` is null and we're not PS1, so
+   *     the new tip is neither a descendant of the previous tip nor
+   *     the same change. The history was genuinely thrown away.
+   *   * (no suffix) — fast-forward: new commits stacked on top of the
+   *     previous patchset's tip. Boring continuation, nothing to flag.
+   */
+  function patchsetLabel(p: import('./../lib/types').Patchset): string {
+    let label = `PS${p.n}`;
+    if (p.n === current.manifest.current_patchset) label += ' (latest)';
+    if (p.parent_patchset == null) {
+      if (p.n > 1) label += ' · rewritten';
+    } else {
+      const prev = current.manifest.patchsets.find(
+        (x) => x.n === p.parent_patchset,
+      );
+      if (prev && prev.tip_change === p.tip_change) label += ' · amended';
+    }
+    return label;
+  }
+
   /** Re-resolve the manifest's revset against the underlying jj repo,
    *  appending a new patchset if the branch has moved. The server's
    *  SSE event flow will also push the update to other viewers. */
@@ -1071,13 +1097,7 @@
             selectPatchset(Number((e.currentTarget as HTMLSelectElement).value))}
         >
           {#each current.manifest.patchsets as p (p.n)}
-            <option value={p.n}>
-              PS{p.n}{p.n === current.manifest.current_patchset ? ' (latest)' : ''}{p.parent_patchset
-                ? ''
-                : p.n > 1
-                  ? ' · rewritten'
-                  : ''}
-            </option>
+            <option value={p.n}>{patchsetLabel(p)}</option>
           {/each}
         </select>
       </label>

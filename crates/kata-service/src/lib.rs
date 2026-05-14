@@ -638,10 +638,25 @@ impl ReviewService {
             return Ok(manifest);
         }
         if tip_moved {
-            let parent_patchset = if jj
+            // A new patchset is a *continuation* of the previous one when
+            // EITHER:
+            //   * the new tip is a descendant of the old tip (normal
+            //     fast-forward: new commits stacked on top), OR
+            //   * the new tip's change_id matches the old tip's change_id
+            //     (the author amended the tip in place — same change in
+            //     jj's identity model, different commit_id under it).
+            //
+            // We used to check only the first. That conflated "the
+            // author edited a commit" (the *common* case in jj) with
+            // "the author abandoned the branch and started over" — both
+            // showed up as `parent_patchset: None` and were labelled
+            // "rewritten" in the UI. Now `parent_patchset` is None only
+            // when neither signal holds, i.e. genuine history rewrite.
+            let same_tip_change = range.tip.change_id == current.tip_change;
+            let descends = jj
                 .is_ancestor(&current.tip_commit, &range.tip.commit_id)
-                .await?
-            {
+                .await?;
+            let parent_patchset = if same_tip_change || descends {
                 Some(current.n)
             } else {
                 None
