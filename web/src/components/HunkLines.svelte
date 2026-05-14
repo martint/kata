@@ -123,6 +123,32 @@
     });
   }
 
+  /** Set of `side:line` keys for every line covered by a comment's
+   *  anchored range. Used to tint the line so the reader can see what
+   *  the thread (rendered below the last line) is talking about — a
+   *  five-line range otherwise looks just like a thread attached to
+   *  one line. The thread is still anchored to `effective.end`; this
+   *  just decorates the rest of the range. */
+  const commentedLines = $derived.by(() => {
+    const set = new Set<string>();
+    for (const c of comments) {
+      if (!c.side) continue;
+      const effective =
+        c.anchor.kind === 'moved' || c.anchor.kind === 'drifted'
+          ? c.anchor.new_lines
+          : c.lines;
+      if (!effective) continue;
+      for (let l = effective.start; l <= effective.end; l++) {
+        set.add(`${c.side}:${l}`);
+      }
+    }
+    return set;
+  });
+
+  function isCommented(a: { side: Side; line: number } | null): boolean {
+    return a != null && commentedLines.has(`${a.side}:${a.line}`);
+  }
+
   function onPointerDown(e: PointerEvent, side: Side, line: number) {
     if (e.button !== 0) return;
     e.preventDefault();
@@ -182,7 +208,7 @@
       {@const a = anchor(line)}
       {@const stripped = line.content.replace(/\n$/, '')}
       {@const html = htmlFor(line)}
-      <tr class={rowClass(line.origin)}>
+      <tr class={`${rowClass(line.origin)}${isCommented(a) ? ' commented' : ''}`}>
         {#if showBase}
           <!-- data-side/data-line are also on the gutter cell so that the
                drag-selection logic finds it via `elementFromPoint` while
@@ -308,6 +334,17 @@
    * live), not the row, so the rule targets that cell. */
   .content.selected {
     box-shadow: inset 4px 0 0 var(--selection-rule);
+    background-image: linear-gradient(var(--selection-tint), var(--selection-tint));
+  }
+
+  /* A row covered by a posted comment's anchor range. Tints the content
+   * cell so the reader sees which line(s) the thread (rendered below
+   * the last covered row) is about — particularly important for
+   * multi-line ranges, which would otherwise look indistinguishable
+   * from a thread attached to a single line. The left stripe matches
+   * the `.thread-sticky` accent so the eye links the two together. */
+  .row.commented .content {
+    box-shadow: inset 3px 0 0 var(--link);
     background-image: linear-gradient(var(--selection-tint), var(--selection-tint));
   }
 

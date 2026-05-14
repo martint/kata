@@ -130,6 +130,29 @@
     });
   }
 
+  /** See `HunkLines.svelte` — same idea, but indexed on the side
+   *  this column renders so a multi-line range tints every covered
+   *  row, not just the one the thread attaches to. */
+  const commentedLines = $derived.by(() => {
+    const set = new Set<string>();
+    for (const c of comments) {
+      if (!c.side) continue;
+      const effective =
+        c.anchor.kind === 'moved' || c.anchor.kind === 'drifted'
+          ? c.anchor.new_lines
+          : c.lines;
+      if (!effective) continue;
+      for (let l = effective.start; l <= effective.end; l++) {
+        set.add(`${c.side}:${l}`);
+      }
+    }
+    return set;
+  });
+
+  function isCommented(side: Side, line: number | null | undefined): boolean {
+    return line != null && commentedLines.has(`${side}:${line}`);
+  }
+
   function onPointerDown(e: PointerEvent, side: Side, line: number) {
     if (e.button !== 0) return;
     e.preventDefault();
@@ -240,7 +263,7 @@
               {row.left?.base_line ?? row.left?.tip_line ?? ''}
             </td>
             <td
-              class="content {row.left ? row.left.origin : 'empty'}"
+              class={`content ${row.left ? row.left.origin : 'empty'}${isCommented('base', leftLine) ? ' commented' : ''}`}
               data-side="base"
               data-line={leftLine ?? ''}
             >
@@ -299,7 +322,7 @@
               {row.right?.tip_line ?? row.right?.base_line ?? ''}
             </td>
             <td
-              class="content {row.right ? row.right.origin : 'empty'}"
+              class={`content ${row.right ? row.right.origin : 'empty'}${isCommented('tip', rightLine) ? ' commented' : ''}`}
               data-side="tip"
               data-line={rightLine ?? ''}
             >
@@ -426,6 +449,15 @@
 
   .content.selected {
     box-shadow: inset 4px 0 0 var(--selection-rule);
+    background-image: linear-gradient(var(--selection-tint), var(--selection-tint));
+  }
+
+  /* Content cell of a row covered by a posted comment's anchor range —
+   * tints the row so multi-line ranges visibly span their lines instead
+   * of looking attached to just the last one. Stripe matches the
+   * `.thread-sticky` accent so the eye links the two together. */
+  .content.commented {
+    box-shadow: inset 3px 0 0 var(--link);
     background-image: linear-gradient(var(--selection-tint), var(--selection-tint));
   }
 
