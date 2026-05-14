@@ -13,10 +13,19 @@
 
   let editing = $state(false);
   let draft = $state('');
+  let mode = $state<'edit' | 'preview'>('edit');
   let textareaEl: HTMLTextAreaElement | undefined = $state();
+
+  /** Rendered HTML for the preview tab. Only computed when in preview
+   *  mode — re-rendering markdown on every keystroke would otherwise
+   *  show up in profiles on big summaries. */
+  const renderedPreview = $derived(
+    mode === 'preview' ? renderMarkdown(draft) : '',
+  );
 
   function startEdit() {
     draft = summary ?? '';
+    mode = 'edit';
     editing = true;
   }
 
@@ -51,17 +60,44 @@
   <section class="summary editing">
     <header>
       <span class="muted">Editing review summary (markdown)</span>
+      <span style="flex: 1"></span>
+      <div class="tabs" role="tablist">
+        <button
+          type="button"
+          class="tab {mode === 'edit' ? 'active' : ''}"
+          role="tab"
+          aria-selected={mode === 'edit'}
+          onclick={() => (mode = 'edit')}>Write</button
+        >
+        <button
+          type="button"
+          class="tab {mode === 'preview' ? 'active' : ''}"
+          role="tab"
+          aria-selected={mode === 'preview'}
+          onclick={() => (mode = 'preview')}>Preview</button
+        >
+      </div>
     </header>
-    <textarea
-      bind:this={textareaEl}
-      bind:value={draft}
-      placeholder="A short description of the change. Leave empty to clear. (⌘+Enter to save, Esc to cancel)"
-      rows="6"
-      onkeydown={onKeydown}
-      disabled={saving}
-      spellcheck="false"
-      autocomplete="off"
-    ></textarea>
+    {#if mode === 'edit'}
+      <textarea
+        bind:this={textareaEl}
+        bind:value={draft}
+        placeholder="A short description of the change. Leave empty to clear. (⌘+Enter to save, Esc to cancel)"
+        rows="6"
+        onkeydown={onKeydown}
+        disabled={saving}
+        spellcheck="false"
+        autocomplete="off"
+      ></textarea>
+    {:else}
+      <div class="preview markdown">
+        {#if draft.trim().length > 0}
+          {@html renderedPreview}
+        {:else}
+          <em class="muted">Nothing to preview.</em>
+        {/if}
+      </div>
+    {/if}
     <footer>
       <button type="button" onclick={cancel} disabled={saving}>Cancel</button>
       <button type="button" class="primary" onclick={save} disabled={saving}>
@@ -114,6 +150,30 @@
     margin-bottom: 8px;
   }
 
+  /* Write/Preview pill — same shape as the comment composer's so the
+   * markdown affordances feel like one consistent control across the
+   * app. */
+  .tabs {
+    display: flex;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+
+  .tab {
+    background: transparent;
+    border: none;
+    padding: 2px 10px;
+    font-size: 12px;
+    cursor: pointer;
+    color: var(--text-muted);
+  }
+
+  .tab.active {
+    background: var(--link);
+    color: var(--on-accent);
+  }
+
   textarea {
     width: 100%;
     box-sizing: border-box;
@@ -124,6 +184,44 @@
     border-radius: 4px;
     resize: vertical;
     min-height: 100px;
+  }
+
+  /* Preview pane mirrors the textarea's footprint so toggling between
+   * Write and Preview doesn't jank the page height. */
+  .preview {
+    min-height: 100px;
+    padding: 8px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg);
+  }
+
+  .preview :global(p:first-child) {
+    margin-top: 0;
+  }
+
+  .preview :global(p:last-child) {
+    margin-bottom: 0;
+  }
+
+  .preview :global(pre) {
+    background: var(--bg-panel);
+    padding: 8px;
+    border-radius: 4px;
+    overflow-x: auto;
+  }
+
+  .preview :global(code) {
+    background: var(--bg-panel);
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-family: ui-monospace, monospace;
+    font-size: 12px;
+  }
+
+  .preview :global(pre code) {
+    background: transparent;
+    padding: 0;
   }
 
   footer {

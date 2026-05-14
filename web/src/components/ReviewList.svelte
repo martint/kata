@@ -1,5 +1,6 @@
 <script lang="ts">
   import { api } from '../lib/api';
+  import { renderMarkdown } from '../lib/markdown';
   import type { Bookmark, RepoSummary, ReviewSummary } from '../lib/types';
 
   interface Props {
@@ -28,8 +29,16 @@
   let revset: string = $state('');
   let revsetEdited: boolean = $state(false);
   let summary: string = $state('');
+  let summaryMode = $state<'edit' | 'preview'>('edit');
   let creating: boolean = $state(false);
   let createError: string | null = $state(null);
+
+  /** Rendered HTML for the preview tab. Only computed when in preview
+   *  mode — same idea as the in-review summary editor: don't pay the
+   *  markdown-render cost on every keystroke while in Write. */
+  const summaryPreview = $derived(
+    summaryMode === 'preview' ? renderMarkdown(summary) : '',
+  );
 
   async function loadBookmarks() {
     if (!repo) {
@@ -154,6 +163,7 @@
       });
       revsetEdited = false;
       summary = '';
+      summaryMode = 'edit';
       onopen(selected);
     } catch (e) {
       createError = (e as Error).message;
@@ -244,6 +254,91 @@
     border-radius: 4px;
     resize: vertical;
     min-height: 120px;
+  }
+
+  /* `.summary-field` replaces the previous label wrapper now that it
+   * contains its own header row (caption + Write/Preview tabs) above
+   * the textarea / preview pane. */
+  .summary-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 13px;
+  }
+
+  .summary-field-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .summary-field-header label {
+    /* Override `.create-form label`'s flex-column / font-size — here
+     * the caption is just inline text, not a stacked control. */
+    display: inline;
+    font-size: inherit;
+  }
+
+  /* Same Write/Preview pill shape as the in-review summary editor and
+   * the comment composer. */
+  .summary-field .tabs {
+    display: flex;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+
+  .summary-field .tab {
+    background: transparent;
+    border: none;
+    padding: 2px 10px;
+    font-size: 12px;
+    cursor: pointer;
+    color: var(--text-muted);
+  }
+
+  .summary-field .tab.active {
+    background: var(--link);
+    color: var(--on-accent);
+  }
+
+  /* Preview pane mirrors the textarea's footprint so toggling Write
+   * ↔ Preview doesn't jank the form height. */
+  .summary-field .preview {
+    min-height: 120px;
+    padding: 8px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg);
+    box-sizing: border-box;
+  }
+
+  .summary-field .preview :global(p:first-child) {
+    margin-top: 0;
+  }
+
+  .summary-field .preview :global(p:last-child) {
+    margin-bottom: 0;
+  }
+
+  .summary-field .preview :global(pre) {
+    background: var(--bg-panel);
+    padding: 8px;
+    border-radius: 4px;
+    overflow-x: auto;
+  }
+
+  .summary-field .preview :global(code) {
+    background: var(--bg-panel);
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-family: ui-monospace, monospace;
+    font-size: 12px;
+  }
+
+  .summary-field .preview :global(pre code) {
+    background: transparent;
+    padding: 0;
   }
 
   /* Hint sits in the actions row left of the button (flex: 1 to push
@@ -420,14 +515,46 @@
             />
           </label>
         </div>
-        <label class="summary-field">
-          Summary <span class="muted">(optional, markdown)</span>
-          <textarea
-            bind:value={summary}
-            rows="4"
-            placeholder="A short description of the change. Shown at the top of the review."
-          ></textarea>
-        </label>
+        <div class="summary-field">
+          <div class="summary-field-header">
+            <label for="new-review-summary">
+              Summary <span class="muted">(optional, markdown)</span>
+            </label>
+            <span style="flex: 1"></span>
+            <div class="tabs" role="tablist">
+              <button
+                type="button"
+                class="tab {summaryMode === 'edit' ? 'active' : ''}"
+                role="tab"
+                aria-selected={summaryMode === 'edit'}
+                onclick={() => (summaryMode = 'edit')}>Write</button
+              >
+              <button
+                type="button"
+                class="tab {summaryMode === 'preview' ? 'active' : ''}"
+                role="tab"
+                aria-selected={summaryMode === 'preview'}
+                onclick={() => (summaryMode = 'preview')}>Preview</button
+              >
+            </div>
+          </div>
+          {#if summaryMode === 'edit'}
+            <textarea
+              id="new-review-summary"
+              bind:value={summary}
+              rows="4"
+              placeholder="A short description of the change. Shown at the top of the review."
+            ></textarea>
+          {:else}
+            <div class="preview markdown">
+              {#if summary.trim().length > 0}
+                {@html summaryPreview}
+              {:else}
+                <em class="muted">Nothing to preview.</em>
+              {/if}
+            </div>
+          {/if}
+        </div>
         <div class="create-actions">
           {#if revsetStatus?.kind === 'error'}
             <p class="hint revset-error">
