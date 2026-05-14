@@ -170,6 +170,39 @@ header.app .comment-nav .position {
   text-align: center;
 }
 
+header.app .commit-nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  /* Cap the label so a long subject doesn't push the rest of the bar
+   * off-screen — overflow is handled by `.commit-label` below. */
+  max-width: 420px;
+  min-width: 0;
+}
+
+header.app .commit-nav button {
+  padding: 2px 8px;
+  font-size: 14px;
+  line-height: 1;
+}
+
+header.app .commit-nav .position {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+header.app .commit-nav .commit-label {
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+
 /* Hamburger / drawer toggle. Phone-only — see media query below. */
 header.app .tree-button {
   display: none;

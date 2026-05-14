@@ -200,6 +200,30 @@
       title="Scroll to the top of the review"
       aria-label="Scroll to top"
     >↑ <span class="lbl">Top</span></button>
+    {#if toolbar?.commits}
+      {@const commits = toolbar.commits}
+      <div
+        class="commit-nav"
+        role="group"
+        aria-label="Commit navigation"
+        title={commits.label}
+      >
+        <button
+          onclick={commits.prev}
+          title="Previous commit"
+          aria-label="Previous commit"
+        >‹</button>
+        <span class="position">
+          {commits.position === 0 ? 'All' : commits.position}/{commits.total}
+        </span>
+        <span class="commit-label">{commits.label}</span>
+        <button
+          onclick={commits.next}
+          title="Next commit"
+          aria-label="Next commit"
+        >›</button>
+      </div>
+    {/if}
   {/if}
   {#if loading}
     <span class="spinner" aria-label="loading"></span>

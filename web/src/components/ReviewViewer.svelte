@@ -45,6 +45,21 @@
       prev: () => void;
       next: () => void;
     };
+    /** Prev / next commit nav. `null` when the review has zero
+     *  commits in its revset (nothing to scope to). Position 0 means
+     *  the viewer is on "All commits"; 1..total points at an
+     *  individual commit. `prev` / `next` cycle through the commits,
+     *  bouncing through 0 ("All commits") between the ends so the
+     *  user can always get back to the whole-review view. */
+    commits: {
+      total: number;
+      position: number;
+      /** Short label for the current selection — change-id prefix +
+       *  description first-line, or "All commits". */
+      label: string;
+      prev: () => void;
+      next: () => void;
+    } | null;
     /** File-tree visibility. The top bar surfaces this so phones can
      *  toggle the drawer-style tree without scrolling. */
     tree: { collapsed: boolean; toggle: () => void };
@@ -227,6 +242,16 @@
         prev: navPrev,
         next: navNext,
       },
+      commits:
+        current.commits.length > 0
+          ? {
+              total: current.commits.length,
+              position: commitNavIndex + 1, // 1..N, 0 for "All"
+              label: commitNavLabel,
+              prev: commitNavPrev,
+              next: commitNavNext,
+            }
+          : null,
       tree: {
         collapsed: treeCollapsed,
         toggle: () => (treeCollapsed = !treeCollapsed),
@@ -375,6 +400,56 @@
       error = (e as Error).message;
     } finally {
       loadingDiff = false;
+    }
+  }
+
+  /** Where the currently scoped commit sits in `current.commits`.
+   *  -1 = "All commits", otherwise the 0-based index. The toolbar's
+   *  prev/next bounce through -1 between the ends, so the user can
+   *  always step back to the whole-review view without leaving the
+   *  keyboard. */
+  const commitNavIndex = $derived.by(() => {
+    if (scopedChangeId === null) return -1;
+    return current.commits.findIndex((c) => c.change_id === scopedChangeId);
+  });
+  const commitNavLabel = $derived.by(() => {
+    if (commitNavIndex < 0) return 'All commits';
+    const c = current.commits[commitNavIndex];
+    if (!c) return 'All commits';
+    const short = c.change_id.slice(0, 8);
+    const subject = c.description_first_line.trim() || '(no description)';
+    // Truncate so the top bar stays a single line on narrower screens.
+    const trimmed = subject.length > 60 ? `${subject.slice(0, 57)}…` : subject;
+    return `${short} · ${trimmed}`;
+  });
+  function selectCommitByIndex(i: number) {
+    if (i < 0) {
+      void selectCommit(null);
+      return;
+    }
+    const c = current.commits[i];
+    if (c) void selectCommit(c.change_id);
+  }
+  function commitNavPrev() {
+    if (current.commits.length === 0) return;
+    if (commitNavIndex < 0) {
+      // From "All" → last commit.
+      selectCommitByIndex(current.commits.length - 1);
+    } else if (commitNavIndex === 0) {
+      // Wrap to "All".
+      selectCommitByIndex(-1);
+    } else {
+      selectCommitByIndex(commitNavIndex - 1);
+    }
+  }
+  function commitNavNext() {
+    if (current.commits.length === 0) return;
+    if (commitNavIndex < 0) {
+      selectCommitByIndex(0);
+    } else if (commitNavIndex === current.commits.length - 1) {
+      selectCommitByIndex(-1);
+    } else {
+      selectCommitByIndex(commitNavIndex + 1);
     }
   }
 
