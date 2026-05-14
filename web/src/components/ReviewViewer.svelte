@@ -917,7 +917,7 @@
     class:hidden={treeCollapsed}
     style:width="{treeWidth}px"
   >
-    <FileTree files={displayedFiles} onselect={scrollToFile}>
+    <FileTree files={visibleFiles} onselect={scrollToFile}>
       {#snippet headerLeft()}
         <button
           class="tree-toggle"
