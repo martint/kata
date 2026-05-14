@@ -9,6 +9,7 @@ pub mod error;
 pub mod filesystem;
 pub mod frontmatter;
 pub mod ids;
+pub mod sqlite;
 pub mod storage;
 
 pub use error::{Error, Result};

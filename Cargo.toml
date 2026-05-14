@@ -33,6 +33,7 @@ tokio = { version = "1", features = ["macros", "process", "rt-multi-thread", "fs
 tokio-stream = { version = "0.1", features = ["sync"] }
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
+rusqlite = { version = "0.37", features = ["bundled", "chrono", "serde_json"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rmcp = { version = "0.8", features = ["server", "transport-streamable-http-server", "macros", "schemars"] }

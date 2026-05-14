@@ -43,4 +43,14 @@ pub enum Error {
 
     #[error("review {review} already exists")]
     ReviewExists { review: String },
+
+    #[error("sqlite error: {0}")]
+    Sqlite(#[from] rusqlite::Error),
+
+    #[error("json serialization error at {context}: {source}")]
+    Json {
+        context: String,
+        #[source]
+        source: serde_json::Error,
+    },
 }
