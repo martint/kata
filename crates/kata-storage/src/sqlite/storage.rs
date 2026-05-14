@@ -102,6 +102,265 @@ impl SqliteStorage {
         .await
         .expect("blocking task panicked")
     }
+
+    // ---- archive (export/import) helpers --------------------------------
+    //
+    // These read/write without the normal lifecycle gating that the
+    // `Storage` trait imposes (`upsert_draft_comment` checks the session
+    // is in draft state, `open_or_create_session` allocates a new id,
+    // and so on). The export/import path needs to copy the store as-is:
+    // a published comment imports back as published, a discarded
+    // session preserves its id, etc.
+
+    /// Every repo registered in the database, in insertion order.
+    pub async fn list_all_repos(&self) -> Result<Vec<RepoManifest>> {
+        self.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT repo_id, canonical_path, schema_version FROM repos ORDER BY created_at",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok(RepoManifest {
+                    repo_id: RepoId::new(row.get::<_, String>(0)?),
+                    canonical_path: row.get(1)?,
+                    schema_version: row.get(2)?,
+                })
+            })?;
+            let mut out = Vec::new();
+            for r in rows {
+                out.push(r.map_err(Error::from)?);
+            }
+            Ok(out)
+        })
+        .await
+    }
+
+    /// Every session for a review, regardless of `status`. The
+    /// trait-level `list_drafts_for` filters to one author's drafts and
+    /// `list_published_*` filter to published sessions — neither
+    /// surfaces discarded sessions, which the archive needs to round-trip.
+    pub async fn list_all_sessions(
+        &self,
+        repo: &RepoId,
+        review: &ReviewId,
+    ) -> Result<Vec<Session>> {
+        let repo_str = repo.as_str().to_owned();
+        let review_clone = review.clone();
+        let review_str = review.as_str().to_owned();
+        self.with_conn(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT session_id, schema_version, author, status, created_at, published_at
+                 FROM sessions WHERE repo_id = ?1 AND review_id = ?2
+                 ORDER BY created_at",
+            )?;
+            let rows = stmt.query_map(params![repo_str, review_str], |row| {
+                let status_str: String = row.get(3)?;
+                let status = crate::sqlite::serde_enums::session_status_to_str_inverse(&status_str)
+                    .map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            3,
+                            rusqlite::types::Type::Text,
+                            Box::new(e),
+                        )
+                    })?;
+                Ok(Session {
+                    session_id: SessionId::new(row.get::<_, String>(0)?),
+                    schema_version: row.get(1)?,
+                    review_id: review_clone.clone(),
+                    author: Author::new(row.get::<_, String>(2)?),
+                    status,
+                    created_at: row.get(4)?,
+                    published_at: row.get(5)?,
+                })
+            })?;
+            let mut out = Vec::new();
+            for r in rows {
+                out.push(r.map_err(Error::from)?);
+            }
+            Ok(out)
+        })
+        .await
+    }
+
+    /// Every comment under one session — including comments under
+    /// discarded sessions, which the trait-level read paths filter out.
+    pub async fn list_all_comments_for_session(
+        &self,
+        session: &SessionId,
+    ) -> Result<Vec<Comment>> {
+        let session_str = session.as_str().to_owned();
+        self.with_conn(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT comment_id, session_id, review_id, schema_version, author,
+                        created_at, patchset, anchor_change_id, anchor_commit_id,
+                        file, side, line_start, line_end, flag, body
+                 FROM comments WHERE session_id = ?1 ORDER BY created_at",
+            )?;
+            let rows = stmt.query_map(params![session_str], comment_from_row)?;
+            let mut out = Vec::new();
+            for r in rows {
+                out.push(r.map_err(Error::from)?);
+            }
+            Ok(out)
+        })
+        .await
+    }
+
+    /// Every response under one session. Counterpart to
+    /// [`Self::list_all_comments_for_session`].
+    pub async fn list_all_responses_for_session(
+        &self,
+        session: &SessionId,
+    ) -> Result<Vec<Response>> {
+        let session_str = session.as_str().to_owned();
+        self.with_conn(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT response_id, in_reply_to, session_id, schema_version, author,
+                        created_at, action, body
+                 FROM responses WHERE session_id = ?1 ORDER BY created_at",
+            )?;
+            let rows = stmt.query_map(params![session_str], response_from_row)?;
+            let mut out = Vec::new();
+            for r in rows {
+                out.push(r.map_err(Error::from)?);
+            }
+            Ok(out)
+        })
+        .await
+    }
+
+    /// Insert a session at its archive-preserved status (`published`,
+    /// `discarded`, or `draft`), keeping the original id. Used by the
+    /// import path; not on the `Storage` trait because the normal
+    /// caller goes through `open_or_create_session` which always
+    /// allocates a fresh draft.
+    pub async fn raw_insert_session(
+        &self,
+        repo: &RepoId,
+        session: &Session,
+    ) -> Result<()> {
+        ensure_repo_id(repo)?;
+        ensure_review_id(&session.review_id)?;
+        ensure_session_id(&session.session_id)?;
+        ensure_author(&session.author)?;
+        let repo_str = repo.as_str().to_owned();
+        let session = session.clone();
+        self.with_conn(move |conn| {
+            conn.execute(
+                "INSERT INTO sessions (session_id, repo_id, review_id, schema_version, author,
+                                       status, created_at, published_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    session.session_id.as_str(),
+                    repo_str,
+                    session.review_id.as_str(),
+                    session.schema_version,
+                    session.author.as_str(),
+                    session_status_to_str(session.status),
+                    session.created_at,
+                    session.published_at,
+                ],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Insert a comment at its archive-preserved content. Bypasses the
+    /// "session must be in draft" check that `upsert_draft_comment`
+    /// uses — the archive can hold comments under any session status.
+    pub async fn raw_insert_comment(
+        &self,
+        repo: &RepoId,
+        comment: &Comment,
+    ) -> Result<()> {
+        ensure_repo_id(repo)?;
+        ensure_review_id(&comment.review_id)?;
+        ensure_session_id(&comment.session_id)?;
+        ensure_comment_id(&comment.comment_id)?;
+        let repo_str = repo.as_str().to_owned();
+        let comment = comment.clone();
+        self.with_conn(move |conn| {
+            let (line_start, line_end) = match &comment.lines {
+                Some(LineRange { start, end }) => (Some(*start), Some(*end)),
+                None => (None, None),
+            };
+            conn.execute(
+                "INSERT INTO comments
+                    (comment_id, repo_id, review_id, session_id, schema_version, author,
+                     created_at, patchset, anchor_change_id, anchor_commit_id, file, side,
+                     line_start, line_end, flag, body)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                params![
+                    comment.comment_id.as_str(),
+                    repo_str,
+                    comment.review_id.as_str(),
+                    comment.session_id.as_str(),
+                    comment.schema_version,
+                    comment.author.as_str(),
+                    comment.created_at,
+                    comment.patchset,
+                    comment.anchor_change_id.as_str(),
+                    comment.anchor_commit_id.as_str(),
+                    comment.file,
+                    comment.side.map(side_to_str),
+                    line_start,
+                    line_end,
+                    flag_to_str(comment.flag),
+                    comment.body,
+                ],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Insert a response at its archive-preserved content. Counterpart
+    /// to [`Self::raw_insert_comment`].
+    pub async fn raw_insert_response(
+        &self,
+        repo: &RepoId,
+        response: &Response,
+    ) -> Result<()> {
+        ensure_repo_id(repo)?;
+        ensure_session_id(&response.session_id)?;
+        ensure_response_id(&response.response_id)?;
+        let repo_str = repo.as_str().to_owned();
+        let response = response.clone();
+        self.with_conn(move |conn| {
+            // Look up the comment's review_id so the FK and the column
+            // stay consistent without the caller having to thread it.
+            let review_id: String = conn
+                .query_row(
+                    "SELECT review_id FROM comments WHERE comment_id = ?1",
+                    params![response.in_reply_to.as_str()],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .ok_or_else(|| Error::NotFound {
+                    what: format!("comment {}", response.in_reply_to),
+                })?;
+            conn.execute(
+                "INSERT INTO responses
+                    (response_id, repo_id, review_id, session_id, in_reply_to, schema_version,
+                     author, created_at, action, body)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![
+                    response.response_id.as_str(),
+                    repo_str,
+                    review_id,
+                    response.session_id.as_str(),
+                    response.in_reply_to.as_str(),
+                    response.schema_version,
+                    response.author.as_str(),
+                    response.created_at,
+                    action_to_str(response.action),
+                    response.body,
+                ],
+            )?;
+            Ok(())
+        })
+        .await
+    }
 }
 
 #[async_trait]

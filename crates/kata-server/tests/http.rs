@@ -9,7 +9,8 @@ use http_body_util::BodyExt;
 use kata_core::{Author, RepoManifest, SCHEMA_VERSION};
 use kata_jj::JjCli;
 use kata_server::{AppState, ReviewService, router};
-use kata_storage::{FilesystemStorage, Storage, compute_repo_id, jj_repo_canonical_path};
+use kata_storage::sqlite::SqliteStorage;
+use kata_storage::{Storage, compute_repo_id, jj_repo_canonical_path};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tower::ServiceExt;
@@ -36,7 +37,11 @@ impl Harness {
 
         let canonical = jj_repo_canonical_path(workspace.path()).unwrap();
         let repo_id = compute_repo_id(&canonical);
-        let storage = Arc::new(FilesystemStorage::new(storage_root.path().to_path_buf()));
+        let storage = Arc::new(
+            SqliteStorage::open(storage_root.path().join("kata.db"))
+                .await
+                .unwrap(),
+        );
         storage
             .ensure_repo(&RepoManifest {
                 schema_version: SCHEMA_VERSION,

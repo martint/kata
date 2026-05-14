@@ -60,6 +60,22 @@ pub fn session_status_to_str(s: SessionStatus) -> &'static str {
     }
 }
 
+/// Inverse of [`session_status_to_str`]. Used when reading rows that
+/// preserve every session's status (the archive export path), unlike
+/// the trait-level reads that only ever return one known status.
+pub fn session_status_to_str_inverse(s: &str) -> Result<SessionStatus, Error> {
+    match s {
+        "draft" => Ok(SessionStatus::Draft),
+        "published" => Ok(SessionStatus::Published),
+        "discarded" => Ok(SessionStatus::Discarded),
+        _ => Err(Error::InvalidId {
+            label: "session_status".into(),
+            value: s.into(),
+            reason: "unknown status",
+        }),
+    }
+}
+
 pub fn side_to_str(s: Side) -> &'static str {
     match s {
         Side::Base => "base",

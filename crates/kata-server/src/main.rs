@@ -2,27 +2,65 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use kata_core::{Author, RepoManifest, SCHEMA_VERSION};
 use kata_jj::JjCli;
 use kata_server::{
     AppState, ServerConfig, router_with_assets, router_with_embedded_assets,
 };
 use kata_service::ReviewService;
-use kata_storage::{Storage, compute_repo_id, jj_repo_canonical_path};
+use kata_storage::sqlite::SqliteStorage;
+use kata_storage::{Storage, archive, compute_repo_id, jj_repo_canonical_path};
 
 #[derive(Debug, Parser)]
-#[command(name = "kata", about = "HTTP server for the kata code-review tool")]
-struct Args {
+#[command(name = "kata", about = "Code-review tool: server + archive tooling")]
+struct Cli {
+    /// Storage root. `kata.db` lives here; `kata export` and
+    /// `kata import` use sibling directories under it.
+    #[arg(long, env = "KATA_ROOT", global = true)]
+    root: Option<PathBuf>,
+
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Run the HTTP server (this is the long-lived process the web UI
+    /// and MCP clients connect to).
+    Serve(ServeArgs),
+    /// Snapshot the SQLite database into a directory of TOML + Markdown
+    /// files. The output format is intentionally stable across schema
+    /// changes so it survives migrations and is friendly to other tools
+    /// (grep, rsync, version control).
+    Export {
+        /// Destination directory. Created if missing. Files inside are
+        /// overwritten atomically.
+        dir: PathBuf,
+    },
+    /// Load a previously-exported directory into a fresh SQLite
+    /// database. Errors if the database already contains overlapping
+    /// rows — point `import` at an empty `--root` (the typical use is
+    /// the one-shot migration from the old filesystem-only store).
+    Import {
+        /// Source directory written by a previous `kata export`.
+        dir: PathBuf,
+        /// Skip the interactive confirmation that triggers when the
+        /// target database already has rows. Use in scripts or when
+        /// you've already accepted that the import may error mid-way
+        /// on ID conflicts.
+        #[arg(long)]
+        force: bool,
+    },
+}
+
+#[derive(Debug, Parser)]
+struct ServeArgs {
     /// jj working copies to serve. Pass multiple times. Each value is either
     /// a bare path (the slug is derived from the directory name) or the
     /// explicit form `name=path`.
     #[arg(long = "workspace", env = "KATA_WORKSPACE", required = true, num_args = 1..)]
     workspaces: Vec<String>,
-
-    /// Directory where comments and manifests are stored.
-    #[arg(long, env = "KATA_ROOT")]
-    root: PathBuf,
 
     /// Identity used for writes when the client doesn't override it.
     #[arg(long, env = "KATA_AUTHOR")]
@@ -94,6 +132,32 @@ fn is_slug_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '-' || c == '_'
 }
 
+/// Print a warning that the target DB has data and read a y/N answer
+/// from stdin. Anything other than "y" / "yes" is taken as no.
+///
+/// Lives on the import path specifically because that's the only
+/// command where running on top of existing data is plausibly a
+/// mistake — `serve` is meant to run on a populated DB, and `export`
+/// is read-only.
+fn confirm_proceed(db_path: &Path) -> std::io::Result<bool> {
+    use std::io::{BufRead, Write};
+    eprintln!(
+        "Database {} already contains data.\n\
+         Importing on top will error on any ID overlap, and the import is\n\
+         row-by-row with no global rollback — a conflict mid-stream leaves\n\
+         a partial state. For a clean retry, delete `kata.db` first.\n",
+        db_path.display()
+    );
+    eprint!("Continue? [y/N] ");
+    std::io::stderr().flush()?;
+    let mut line = String::new();
+    std::io::stdin().lock().read_line(&mut line)?;
+    Ok(matches!(
+        line.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
+}
+
 async fn mcp_handler(
     axum::extract::State(dispatcher): axum::extract::State<kata_mcp::McpDispatcher>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
@@ -125,31 +189,71 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
 
-    let args = Args::parse();
+    let cli = Cli::parse();
+    let root = cli.root.ok_or("--root (or KATA_ROOT) is required")?;
+    let db_path = root.join("kata.db");
+    // Every subcommand wants to open `<root>/kata.db`. Create the
+    // parent first so SQLite doesn't fail with "unable to open
+    // database file" on a fresh `--root`.
+    if !root.exists() {
+        std::fs::create_dir_all(&root)?;
+    }
+
+    match cli.command {
+        Command::Serve(args) => serve(root, db_path, args).await,
+        Command::Export { dir } => {
+            // Open the existing DB read-only conceptually — we don't
+            // touch it, but the SqliteStorage abstraction always opens
+            // r/w and runs pending migrations. That's the right call:
+            // an export from a schema-newer DB into a directory readable
+            // by a schema-older importer is exactly the workflow we
+            // want to keep working.
+            let storage = SqliteStorage::open(&db_path).await?;
+            archive::export(&storage, &dir).await?;
+            tracing::info!(dest = ?dir, "export complete");
+            Ok(())
+        }
+        Command::Import { dir, force } => {
+            let storage = SqliteStorage::open(&db_path).await?;
+            // Importing on top of an already-populated database is
+            // almost always a mistake (forgot to wipe, pointed at the
+            // wrong --root). Surface it loudly. On confirmation we
+            // proceed — the import is row-by-row with no global
+            // rollback, so an ID overlap mid-stream leaves a partial
+            // state. The prompt message says so.
+            if !force && !storage.list_all_repos().await?.is_empty() {
+                if !confirm_proceed(&db_path)? {
+                    return Err("import aborted by user".into());
+                }
+            }
+            archive::import(&dir, &storage).await?;
+            tracing::info!(src = ?dir, "import complete");
+            Ok(())
+        }
+    }
+}
+
+async fn serve(
+    root: PathBuf,
+    db_path: PathBuf,
+    args: ServeArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
     let workspaces = args
         .workspaces
         .iter()
         .map(|raw| parse_workspace(raw))
         .collect::<Result<Vec<_>, _>>()?;
     let cfg = ServerConfig {
-        review_root: args.root,
-        author: Author::new(args.author),
+        review_root: root.clone(),
+        author: Author::new(args.author.clone()),
         bind_addr: args.bind,
     };
 
-    // `<review_root>/kata.db` keeps the SQLite file beside the per-repo
-    // export directories. WAL journal mode + a partial UNIQUE index on
-    // draft sessions make this safe with the multiple-writer pattern we
-    // run (the user, the coding agent, and reviewer agents all touching
-    // the same review). The filesystem-backed `Storage` impl is still
-    // around but only via `kata export` / `kata import` — see the
-    // storage-swap commits.
-    if !cfg.review_root.exists() {
-        std::fs::create_dir_all(&cfg.review_root)?;
-    }
-    let db_path = cfg.review_root.join("kata.db");
-    let storage: Arc<dyn Storage> =
-        Arc::new(kata_storage::sqlite::SqliteStorage::open(&db_path).await?);
+    // `kata.db` lives at `--root/kata.db`. WAL journal mode + a partial
+    // UNIQUE index on draft sessions make this safe with the
+    // multi-writer pattern we run (user + coding agent + reviewer
+    // agents touching the same review at once).
+    let storage: Arc<dyn Storage> = Arc::new(SqliteStorage::open(&db_path).await?);
     let mut builder = ReviewService::builder(storage.clone());
     let repo_count = workspaces.len();
 
