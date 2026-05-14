@@ -13,6 +13,8 @@
 //! Outdated never drops the comment — the caller surfaces it with the
 //! original lines and content preserved.
 
+use std::time::Instant;
+
 use kata_core::{CommitId, LineRange};
 use similar::TextDiff;
 
@@ -48,12 +50,54 @@ pub async fn resolve_anchor<B: JjBackend + ?Sized>(
     original_range: LineRange,
     current_commit: &CommitId,
 ) -> Result<AnchorResolution> {
+    let t_all = Instant::now();
+    let mut read_ms: u64 = 0;
+    let mut fuzzy_ms: u64 = 0;
+    let outcome: &'static str;
+    let result = resolve_anchor_inner(
+        backend,
+        path,
+        original_commit,
+        original_range,
+        current_commit,
+        &mut read_ms,
+        &mut fuzzy_ms,
+    )
+    .await?;
+    outcome = match &result {
+        AnchorResolution::Valid => "valid",
+        AnchorResolution::Moved { .. } => "moved",
+        AnchorResolution::Drifted { .. } => "drifted",
+        AnchorResolution::Outdated { .. } => "outdated",
+    };
+    tracing::debug!(
+        elapsed_ms = t_all.elapsed().as_millis() as u64,
+        read_ms,
+        fuzzy_ms,
+        outcome,
+        path,
+        "resolve_anchor",
+    );
+    Ok(result)
+}
+
+async fn resolve_anchor_inner<B: JjBackend + ?Sized>(
+    backend: &B,
+    path: &str,
+    original_commit: &CommitId,
+    original_range: LineRange,
+    current_commit: &CommitId,
+    read_ms: &mut u64,
+    fuzzy_ms: &mut u64,
+) -> Result<AnchorResolution> {
     if original_commit == current_commit {
         return Ok(AnchorResolution::Valid);
     }
 
+    let t = Instant::now();
     let original_bytes = backend.read_file(original_commit, path).await?;
     let current_bytes = backend.read_file(current_commit, path).await?;
+    *read_ms = t.elapsed().as_millis() as u64;
 
     let (Some(original_bytes), Some(current_bytes)) = (original_bytes, current_bytes) else {
         // File missing on one side. The UI will already show this as a deleted
@@ -83,7 +127,10 @@ pub async fn resolve_anchor<B: JjBackend + ?Sized>(
     }
 
     // 2. Fuzzy: sliding window of the same length, ranked by similarity.
-    if let Some((range, ratio)) = find_fuzzy(&current_lines, &snippet_text, snippet.len())
+    let t = Instant::now();
+    let fuzzy = find_fuzzy(&current_lines, &snippet_text, snippet.len());
+    *fuzzy_ms = t.elapsed().as_millis() as u64;
+    if let Some((range, ratio)) = fuzzy
         && ratio >= FUZZY_THRESHOLD
     {
         return Ok(AnchorResolution::Drifted {
