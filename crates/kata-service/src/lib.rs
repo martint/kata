@@ -255,6 +255,23 @@ impl ReviewService {
         Ok(self.jj_for(repo)?.list_bookmarks().await?)
     }
 
+    /// Try to resolve `expr` as a revset and report how many commits
+    /// it contains. Used by the new-review form to warn before the
+    /// user creates a review with an empty diff (the bookmark IS the
+    /// trunk, the range is `nothing..something`, the user fat-fingered
+    /// the syntax, etc.). Returns a parse error verbatim from jj when
+    /// the expression doesn't parse — that's also useful to surface
+    /// inline.
+    pub async fn preview_revset(
+        &self,
+        repo: &RepoId,
+        expr: &str,
+    ) -> ServiceResult<usize> {
+        let revset = kata_core::RevSet::new(expr);
+        let commits = self.jj_for(repo)?.list_commits(&revset).await?;
+        Ok(commits.len())
+    }
+
     pub async fn list_reviews(&self, repo: &RepoId) -> ServiceResult<Vec<ReviewSummary>> {
         Ok(self.storage.list_reviews(repo).await?)
     }

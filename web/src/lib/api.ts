@@ -81,6 +81,16 @@ export const api = {
   listBookmarks: (repo: string) =>
     request<Bookmark[]>('GET', `${repoBase(repo)}/bookmarks`),
 
+  /** Probe a revset against the jj backend to count its commits.
+   *  Used by the new-review form to warn before submitting an empty
+   *  or malformed revset. Throws `ApiError` on syntax / resolution
+   *  errors — the form surfaces those inline. */
+  previewRevset: (repo: string, expr: string) =>
+    request<{ count: number }>(
+      'GET',
+      `${repoBase(repo)}/revset/preview?expr=${enc(expr)}`,
+    ),
+
   listReviews: (repo: string) =>
     request<ReviewSummary[]>('GET', `${repoBase(repo)}/reviews`),
   createReview: (repo: string, params: CreateReviewParams) =>

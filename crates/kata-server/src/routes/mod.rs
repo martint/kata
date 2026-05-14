@@ -42,6 +42,7 @@ fn api_routes() -> Router<AppState> {
         .route("/api/repos", get(reviews::list_repos))
         .route("/api/events", get(events::stream))
         .route("/api/repos/{repo_name}/bookmarks", get(reviews::list_bookmarks))
+        .route("/api/repos/{repo_name}/revset/preview", get(reviews::preview_revset))
         .route("/api/repos/{repo_name}/files", get(reviews::read_file))
         .route(
             "/api/repos/{repo_name}/reviews",

@@ -30,6 +30,29 @@ pub async fn list_bookmarks(
     Ok(Json(state.service.list_bookmarks(&repo).await?))
 }
 
+#[derive(Debug, Deserialize)]
+pub struct PreviewRevsetQuery {
+    pub expr: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct RevsetPreview {
+    pub count: usize,
+}
+
+/// Resolve `expr` against the repo's revset parser and report the
+/// commit count. The new-review form calls this as the user types
+/// (debounced) to warn before they submit an empty review.
+pub async fn preview_revset(
+    State(state): State<AppState>,
+    Path(repo_name): Path<String>,
+    Query(q): Query<PreviewRevsetQuery>,
+) -> AppResult<Json<RevsetPreview>> {
+    let repo = state.service.resolve_repo(&repo_name)?;
+    let count = state.service.preview_revset(&repo, &q.expr).await?;
+    Ok(Json(RevsetPreview { count }))
+}
+
 pub async fn list_reviews(
     State(state): State<AppState>,
     Path(repo_name): Path<String>,

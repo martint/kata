@@ -79,13 +79,39 @@
       .slice(0, RECENT_LIMIT),
   );
 
-  /** Show the "this revset can be empty" hint only when the user is on
-   *  the default `trunk()..<bookmark>` shape and hasn't overridden it.
-   *  An author who's already typed a custom revset doesn't need a
-   *  warning about a default they're not using. */
-  const showDefaultRevsetHint = $derived(
-    !!selected && revset.trim() === `trunk()..${selected}`,
-  );
+  /** Async revset probe. The form submits the current revset to the
+   *  jj backend (debounced) and gets back the commit count, so we can
+   *  warn before a user creates an empty or malformed review.
+   *
+   *  Tri-state: `null` while idle / debouncing; `{ count }` once a
+   *  request has come back; `{ error }` when jj rejects the revset
+   *  (syntax issue, unknown symbol, etc). */
+  type RevsetStatus = { kind: 'ok'; count: number } | { kind: 'error'; message: string };
+  let revsetStatus: RevsetStatus | null = $state(null);
+  /** Bumped by every debounce timer fire so a slow request that
+   *  resolves after a newer one started can be dropped silently. */
+  let revsetCheckSeq = 0;
+  $effect(() => {
+    const expr = revset.trim();
+    if (!repo || !expr) {
+      revsetStatus = null;
+      return;
+    }
+    const mySeq = ++revsetCheckSeq;
+    const handle = setTimeout(async () => {
+      try {
+        const result = await api.previewRevset(repo, expr);
+        if (mySeq === revsetCheckSeq) {
+          revsetStatus = { kind: 'ok', count: result.count };
+        }
+      } catch (e) {
+        if (mySeq === revsetCheckSeq) {
+          revsetStatus = { kind: 'error', message: (e as Error).message };
+        }
+      }
+    }, 300);
+    return () => clearTimeout(handle);
+  });
 
   /** Compact relative-time formatting: "5m ago", "3h ago", "2d ago". */
   function relative(iso: string): string {
@@ -236,6 +262,19 @@
     flex: 1 1 240px;
     margin: 0;
     font-size: 12px;
+  }
+
+  /* Warning tone — revset resolves to zero commits. Not an error
+   * (jj accepted the expression), just a flag that submitting now
+   * would produce a degenerate review. The submit button is also
+   * disabled in this state. */
+  .create-actions .revset-warning {
+    color: var(--warn-text);
+  }
+
+  /* Error tone — jj couldn't parse / resolve the revset at all. */
+  .create-actions .revset-error {
+    color: var(--error-text);
   }
 
   .create-actions button {
@@ -390,18 +429,21 @@
           ></textarea>
         </label>
         <div class="create-actions">
-          {#if showDefaultRevsetHint}
-            <p class="hint muted">
-              <code>trunk()..&lt;bookmark&gt;</code> is empty when the bookmark
-              <em>is</em> the trunk. Edit the revset above — see
-              <a href="https://jj-vcs.github.io/jj/latest/revsets/" target="_blank" rel="noreferrer">jj revsets</a>
-              for the shapes you can use.
+          {#if revsetStatus?.kind === 'error'}
+            <p class="hint revset-error">
+              Revset error: <code>{revsetStatus.message}</code>
+            </p>
+          {:else if revsetStatus?.kind === 'ok' && revsetStatus.count === 0}
+            <p class="hint revset-warning">
+              This revset resolves to no commits — there'd be nothing to
+              review. See
+              <a href="https://jj-vcs.github.io/jj/latest/revsets/" target="_blank" rel="noreferrer">jj revsets</a>.
             </p>
           {/if}
           <button
             type="submit"
             class="primary"
-            disabled={creating || !selected || !revset.trim()}
+            disabled={creating || !selected || !revset.trim() || revsetStatus?.kind !== 'ok' || revsetStatus.count === 0}
           >
             {creating ? 'Creating…' : 'Create review'}
           </button>
