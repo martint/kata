@@ -263,24 +263,71 @@
     void scrollToComment(target.comment_id, target.file ?? null);
   }
 
+  /** True when `el` is already fully visible in the usable area —
+   *  i.e. it sits between the bottom edge of the sticky bars and the
+   *  bottom of the viewport. Used by comment-nav so prev/next becomes
+   *  a no-op when the target is already on screen, instead of
+   *  backtracking to re-center it. */
+  function fullyVisible(el: HTMLElement): boolean {
+    const rect = el.getBoundingClientRect();
+    const usableTop = stickyTop();
+    const usableBottom = window.innerHeight;
+    return rect.top >= usableTop && rect.bottom <= usableBottom;
+  }
+
+  /** Pixels of context kept above a comment when we scroll one into
+   *  view. Roughly six lines of diff text — enough to see what the
+   *  comment is anchored to without pushing the comment itself off
+   *  the bottom of the viewport. */
+  const COMMENT_CONTEXT = 120;
+
+  /** Scroll `el` so it sits `COMMENT_CONTEXT` pixels below the sticky
+   *  bars. The user lands on the comment with the anchored lines (and
+   *  a few rows of surrounding diff) still visible above it, instead
+   *  of slammed up against the comment-bar's edge. */
+  function scrollCommentIntoView(el: HTMLElement): void {
+    const target =
+      el.getBoundingClientRect().top + window.scrollY - stickyTop() - COMMENT_CONTEXT;
+    window.scrollTo({ top: Math.max(0, target), behavior: 'auto' });
+  }
+
+  /** Where to park a navigated-to comment vertically. In normal
+   *  (diff-visible) mode we keep `COMMENT_CONTEXT` pixels of diff
+   *  above so the reader sees what the comment is anchored to. In
+   *  comments-only mode there's no diff above to look at — that
+   *  buffer would just be dead space — so the comment goes flush
+   *  with the bottom of the sticky bars. */
+  function bringCommentIntoView(el: HTMLElement): void {
+    if (diffsCollapsed) {
+      scrollTopOf(el);
+    } else {
+      scrollCommentIntoView(el);
+    }
+  }
+
   /** Scroll a comment into view, mounting its file's slot if it's been
-   *  virtualized away. Direct lookup is tried first — it works in
-   *  compact mode and for files near the viewport. */
+   *  virtualized away.
+   *
+   *  In normal (diff-visible) mode an already-visible target stays
+   *  put so prev/next doesn't shake the page when two consecutive
+   *  comments share the screen. In comments-only mode the page is
+   *  dense — several comments often fit on screen at once, so that
+   *  rule would make multiple arrow presses look like no-ops until
+   *  the next comment ran off the bottom. Re-park on every press
+   *  there instead, so each step visibly advances. */
   async function scrollToComment(commentId: string, file: string | null) {
     let el = document.querySelector<HTMLElement>(
       `[data-comment-id="${CSS.escape(commentId)}"]`,
     );
     if (el) {
-      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      if (diffsCollapsed || !fullyVisible(el)) bringCommentIntoView(el);
       return;
     }
     if (file) {
       const slot = document.querySelector<HTMLElement>(
         `[data-file-path="${CSS.escape(file)}"]`,
       );
-      if (slot) {
-        slot.scrollIntoView({ behavior: 'auto', block: 'start' });
-      }
+      if (slot) scrollTopOf(slot);
     }
     // Wait up to ~500ms for the FileSlot's IntersectionObserver to mount
     // the file, then for FileDiff to render its comment threads.
@@ -290,7 +337,7 @@
         `[data-comment-id="${CSS.escape(commentId)}"]`,
       );
       if (el) {
-        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        if (diffsCollapsed || !fullyVisible(el)) bringCommentIntoView(el);
         return;
       }
     }
