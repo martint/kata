@@ -227,6 +227,52 @@ Wait for the demand signal before building — most reviews probably
 don't hit this, and the divergence banner + `jj abandon` workflow
 covers the common case.
 
+## Patchset-compare should show intent, not snapshot
+
+The compare branch in `open_review` runs `build_diff_metadata(PS_a.tip,
+PS_b.tip)` — a raw tree-vs-tree diff between the two snapshots. When
+the author rewrites *intermediate* commits between the two patchsets
+(an amend, a split, a squash, content moved between commits), the
+redistribution surfaces in the cumulative diff as lines that aren't
+in any reachable commit's per-commit diff. Reviewers see those lines
+as "phantom" — they're correct in the snapshot sense, but they don't
+match the user's mental model of "the diff is the sum of the per-
+commit diffs in the visible patchset."
+
+Concrete repro: review 5 ("named-args"), PS1→PS2 on
+`ParametricAggregationImplementation.java`. PS1's `wpty` introduced
+the new method with `/** ... */` javadoc; PS2's `wpty` (same change
+ID, different commit ID) introduces it with `///` slash-doc. The
+PS1→PS2 cumulative diff shows the javadoc removed and the slash-doc
+added — both legitimate from a tree-state perspective, but the
+removed javadoc is invisible in any PS2 commit's per-commit diff
+because PS2's commits don't have it. (Interdiff doesn't help here:
+both patches share the same base, so interdiff reduces to the
+snapshot diff.)
+
+The right fix is **per-commit evolution view**. In compare mode:
+
+- Walk the union of change IDs across PS_a and PS_b. Mark each as
+  `same` (matching commit IDs), `changed` (same change ID, different
+  commit ID), `added-in-PS_b` (no PS_a counterpart), or
+  `removed-from-PS_a` (no PS_b counterpart — abandoned during the
+  rewrite).
+- Surface the markers inline in the commits panel.
+- Clicking a `changed` commit shows its inter-version diff (PS_a's
+  version vs PS_b's), which is the right answer for "what did the
+  author change in this commit between rounds." jj's
+  `commit.inter_diff()` template method does the per-commit case
+  natively.
+- The current cumulative tree diff stays as a secondary "compare
+  trees" view for the cases where the snapshot answer is the right
+  one.
+
+Service-side shape: new `compare_patchsets(repo, review, ps_a, ps_b)`
+returning per-change-id pair status and per-pair inter-diffs.
+Probably a separate endpoint rather than overloading
+`open_review`'s `compare` query param so the wire format can grow
+independently.
+
 ## Other ideas
 
 _(add new entries above this line as they come up)_
