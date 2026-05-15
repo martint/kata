@@ -288,6 +288,22 @@
    *  an index so reorderings (e.g. a draft discard) don't strand us on
    *  the wrong comment — `navPosition` re-derives from the live list. */
   let navCommentId: string | null = $state(null);
+  /** Set to `true` while an explicit prev/next click (or
+   *  patchset-jump) is mid-scroll. Suppresses the scroll-sync effect
+   *  for the full duration of the operation — including the network
+   *  round-trip when the target's file slot needs to mount — so the
+   *  click's selection isn't clobbered by sync re-evaluating from a
+   *  transient layout. Released by a timer once scrollToComment
+   *  finishes, with a small grace period for any final scroll event
+   *  to drain. */
+  let navigating = false;
+  /** Bumped on every explicit nav so an in-flight `scrollToComment`
+   *  from a prior click can detect that it's been superseded and
+   *  exit its parking loop instead of fighting the new target — the
+   *  stabilization loop scrolls every frame, and a stale instance
+   *  would re-park the previous comment in lockstep with the new
+   *  click's parking attempts. */
+  let navGeneration = 0;
   const navPosition = $derived.by(() => {
     if (!navCommentId) return 0;
     const i = orderedComments.findIndex((c) => c.comment_id === navCommentId);
@@ -351,61 +367,40 @@
     navDraftAt(navDraftPosition === 0 ? 1 : navDraftPosition + 1);
   }
 
-  /** True when `el` is already fully visible in the usable area —
-   *  i.e. it sits between the bottom edge of the sticky bars and the
-   *  bottom of the viewport. Used by comment-nav so prev/next becomes
-   *  a no-op when the target is already on screen, instead of
-   *  backtracking to re-center it. */
-  function fullyVisible(el: HTMLElement): boolean {
-    const rect = el.getBoundingClientRect();
-    const usableTop = stickyTop();
-    const usableBottom = window.innerHeight;
-    return rect.top >= usableTop && rect.bottom <= usableBottom;
-  }
-
   /** Pixels of context kept above a comment when we scroll one into
    *  view. Roughly six lines of diff text — enough to see what the
    *  comment is anchored to without pushing the comment itself off
    *  the bottom of the viewport. */
   const COMMENT_CONTEXT = 120;
 
-  /** Scroll `el` so it sits `COMMENT_CONTEXT` pixels below the sticky
-   *  bars. The user lands on the comment with the anchored lines (and
-   *  a few rows of surrounding diff) still visible above it, instead
-   *  of slammed up against the comment-bar's edge. */
-  function scrollCommentIntoView(el: HTMLElement): void {
-    const target =
-      el.getBoundingClientRect().top + window.scrollY - stickyTop() - COMMENT_CONTEXT;
-    window.scrollTo({ top: Math.max(0, target), behavior: 'auto' });
-  }
-
-  /** Scroll `el` so its top sits just below the sticky bars *and* the
-   *  file's own sticky `.file-header` (which would otherwise cover
-   *  the top of the comment). Review-wide comments live outside any
-   *  file-diff, so the file-header term collapses to zero and we
-   *  end up flush with the comment bar. */
-  function scrollCommentFlush(el: HTMLElement): void {
-    const fileHeader = el
-      .closest('.file-diff')
-      ?.querySelector('.file-header') as HTMLElement | null;
-    const extra = fileHeader?.offsetHeight ?? 0;
-    const target =
-      el.getBoundingClientRect().top + window.scrollY - stickyTop() - extra;
-    window.scrollTo({ top: Math.max(0, target), behavior: 'auto' });
-  }
-
-  /** Where to park a navigated-to comment vertically. In normal
-   *  (diff-visible) mode we keep `COMMENT_CONTEXT` pixels of diff
-   *  above so the reader sees what the comment is anchored to. In
-   *  comments-only mode there's no diff above to look at — that
-   *  buffer would just be dead space — so the comment goes flush
-   *  with the bottom of the sticky bars. */
-  function bringCommentIntoView(el: HTMLElement): void {
+  /** Compute the scroll target that would park `el` `COMMENT_CONTEXT`
+   *  pixels below the sticky bars (normal mode) or flush with them
+   *  (comments-only mode). Doesn't actually scroll — callers gate on
+   *  the click's direction. */
+  function commentParkTarget(el: HTMLElement): number {
+    const rect = el.getBoundingClientRect();
     if (diffsCollapsed) {
-      scrollCommentFlush(el);
-    } else {
-      scrollCommentIntoView(el);
+      const fileHeader = el
+        .closest('.file-diff')
+        ?.querySelector('.file-header') as HTMLElement | null;
+      const extra = fileHeader?.offsetHeight ?? 0;
+      return rect.top + window.scrollY - stickyTop() - extra;
     }
+    return rect.top + window.scrollY - stickyTop() - COMMENT_CONTEXT;
+  }
+
+  /** Always park the target at `COMMENT_CONTEXT` below the sticky
+   *  bar. The earlier "respect click direction" heuristic produced
+   *  more surprises than it prevented — sync-driven re-selection
+   *  after the click felt like the click had stayed on the previous
+   *  comment, and across-file nav landed at the slot top instead of
+   *  the comment. Consistent parking + the sync suppression below
+   *  give a clean result. */
+  function bringCommentIntoView(el: HTMLElement): void {
+    const target = commentParkTarget(el);
+    const clamped = Math.max(0, target);
+    if (clamped === window.scrollY) return;
+    window.scrollTo({ top: clamped, behavior: 'auto' });
   }
 
   /** Scroll a comment into view, mounting its file's slot if it's been
@@ -419,29 +414,72 @@
    *  the next comment ran off the bottom. Re-park on every press
    *  there instead, so each step visibly advances. */
   async function scrollToComment(commentId: string, file: string | null) {
-    let el = document.querySelector<HTMLElement>(
-      `[data-comment-id="${CSS.escape(commentId)}"]`,
-    );
-    if (el) {
-      if (diffsCollapsed || !fullyVisible(el)) bringCommentIntoView(el);
-      return;
-    }
-    if (file) {
-      const slot = document.querySelector<HTMLElement>(
-        `[data-file-path="${CSS.escape(file)}"]`,
-      );
-      if (slot) scrollTopOf(slot);
-    }
-    // Wait up to ~500ms for the FileSlot's IntersectionObserver to mount
-    // the file, then for FileDiff to render its comment threads.
-    for (let i = 0; i < 30; i++) {
-      await new Promise((r) => requestAnimationFrame(r));
-      el = document.querySelector<HTMLElement>(
-        `[data-comment-id="${CSS.escape(commentId)}"]`,
-      );
-      if (el) {
-        if (diffsCollapsed || !fullyVisible(el)) bringCommentIntoView(el);
-        return;
+    const myGen = ++navGeneration;
+    const superseded = () => myGen !== navGeneration;
+    navigating = true;
+    try {
+      const sel = `[data-comment-id="${CSS.escape(commentId)}"]`;
+      // Unified time budget for the whole operation. Cross-file nav
+      // from a fresh page can have many intermediate slots to mount
+      // before the target is reachable, and each mount triggers a
+      // network round-trip that re-flows the layout. Splitting the
+      // budget between retry-for-element and stabilization had the
+      // retry phase use up most of it on a slow setup, leaving
+      // stabilization no time to ride out the settling.
+      const TOTAL_TIME_MS = 10000;
+      const startTime = performance.now();
+      const remaining = () => performance.now() - startTime < TOTAL_TIME_MS;
+
+      let el = document.querySelector<HTMLElement>(sel);
+      if (!el) {
+        // Element isn't in the DOM yet — its FileSlot is virtualized
+        // away. Bring the slot into the viewport so the
+        // IntersectionObserver mounts the file, then wait for the
+        // comment row to appear.
+        if (file) {
+          const slot = document.querySelector<HTMLElement>(
+            `[data-file-path="${CSS.escape(file)}"]`,
+          );
+          if (slot) scrollTopOf(slot);
+        }
+        while (!el && remaining() && !superseded()) {
+          await new Promise((r) => requestAnimationFrame(r));
+          el = document.querySelector<HTMLElement>(sel);
+        }
+        if (!el || superseded()) return;
+      }
+      // Park the comment. Loop until the page settles against
+      // placeholder slots above the target whose heights change as
+      // they mount in. Re-parking every frame keeps the comment at
+      // the right offset even mid-settle; exit once we get ~320ms of
+      // true stability, otherwise ride out the remaining budget.
+      let stableFrames = 0;
+      let lastTop = Number.NaN;
+      const STABLE_REQUIRED = 20;
+      while (
+        stableFrames < STABLE_REQUIRED &&
+        remaining() &&
+        !superseded()
+      ) {
+        bringCommentIntoView(el);
+        await new Promise((r) => requestAnimationFrame(r));
+        const cur = document.querySelector<HTMLElement>(sel);
+        if (!cur) return;
+        const top = cur.getBoundingClientRect().top;
+        if (Number.isFinite(lastTop) && Math.abs(top - lastTop) < 0.5) {
+          stableFrames++;
+        } else {
+          stableFrames = 0;
+        }
+        lastTop = top;
+      }
+    } finally {
+      // Only release the flag if we're still the latest scrollToComment
+      // — a newer call has its own lifecycle to manage navigating.
+      if (!superseded()) {
+        setTimeout(() => {
+          if (!superseded()) navigating = false;
+        }, 200);
       }
     }
   }
@@ -468,28 +506,41 @@
     function sync() {
       scheduled = false;
       if (orderedComments.length === 0) return;
-      const top = stickyTop();
-      // First comment whose top is at or below the sticky bars wins —
-      // that's "the next thing the reader will engage with." If they
-      // all sit above the bars (whole review scrolled past), use the
-      // last one so the counter pegs at N/N rather than blanking out.
-      let last: string | null = null;
+      // Skip while an explicit nav is in flight. The click's
+      // intermediate scrolls dispatch scroll events that would
+      // otherwise let sync re-claim navCommentId from whatever
+      // happens to be at the heuristic position mid-stabilization.
+      if (navigating) return;
+      // Pick the comment whose top is closest to the park position
+      // (stickyTop + COMMENT_CONTEXT). That's where bringCommentIntoView
+      // lands a navigated-to target, so on free-scroll the counter
+      // tracks "the comment under the reader's eye" instead of the
+      // first one barely peeking out below the sticky bar — which
+      // used to pick the previous comment when two were on screen.
+      const ideal = stickyTop() + COMMENT_CONTEXT;
+      let bestId: string | null = null;
+      let bestDist = Number.POSITIVE_INFINITY;
+      let fallback: string | null = null;
       for (const c of orderedComments) {
         const el = document.querySelector<HTMLElement>(
           `[data-comment-id="${CSS.escape(c.comment_id)}"]`,
         );
         if (!el) continue;
-        last = c.comment_id;
         const rect = el.getBoundingClientRect();
-        // -2 lets a comment that's *just* touching the sticky bar
-        // edge count as "current," avoiding flicker when scrolling
-        // lands exactly on the boundary.
-        if (rect.top >= top - 2) {
-          if (navCommentId !== c.comment_id) navCommentId = c.comment_id;
-          return;
+        // Track the last in-document comment encountered as a
+        // fallback for the "whole review scrolled past" state where
+        // every comment sits above the viewport — without it the
+        // counter would blank out at N/0.
+        if (rect.top < 0) fallback = c.comment_id;
+        if (rect.top > window.innerHeight) break;
+        const dist = Math.abs(rect.top - ideal);
+        if (dist < bestDist) {
+          bestDist = dist;
+          bestId = c.comment_id;
         }
       }
-      if (last && navCommentId !== last) navCommentId = last;
+      const next = bestId ?? fallback;
+      if (next && navCommentId !== next) navCommentId = next;
     }
     function onScroll() {
       if (scheduled) return;
@@ -786,6 +837,18 @@
     );
   });
 
+  /** File paths that carry at least one (visible) comment. Used to
+   *  flip on `eagerFetch` for those FileSlots: their per-file diff
+   *  loads in the background so the comment-nav can land on them
+   *  reliably without waiting for an on-demand fetch mid-scroll. */
+  const filesWithComments = $derived.by(() => {
+    const set = new Set<string>();
+    for (const c of allComments) {
+      if (c.file) set.add(c.file);
+    }
+    return set;
+  });
+
 
   function short(id: string): string {
     return id.length > 12 ? id.slice(0, 12) : id;
@@ -914,6 +977,28 @@
     } finally {
       saving = false;
     }
+  }
+
+  /** Switch to patchset `n` and, after the diff/comments for that
+   *  patchset have loaded, scroll to the comment whose id matches
+   *  `commentId` (if given). Used by the per-comment "added in PS N"
+   *  jump-button so the reader lands directly on the comment in the
+   *  patchset it was originally written against. */
+  async function jumpToPatchset(n: number, commentId?: string) {
+    if (n !== selectedPatchset) {
+      await selectPatchset(n);
+    }
+    if (!commentId) return;
+    // `current` now reflects the new patchset. Look the comment up
+    // (it might also be in the user's drafts) so we know which file
+    // to scroll the slot for.
+    const target = [...current.comments, ...current.drafts.comments].find(
+      (c) => c.comment_id === commentId,
+    );
+    if (!target) return;
+    navCommentId = commentId;
+    await tick();
+    await scrollToComment(commentId, target.file ?? null);
   }
 
   /** Switch into (or out of) patchset-compare mode. `n === null`
@@ -1448,6 +1533,8 @@
     <CommentThread
       comments={reviewComments}
       responses={allResponses}
+      currentPatchset={selectedPatchset}
+      onselectpatchset={jumpToPatchset}
       {saving}
       onreply={submitResponse}
       onstatus={setStatus}
@@ -1485,8 +1572,10 @@
           file={f}
           patchset={viewingFor}
           {compareWith}
+          eagerFetch={filesWithComments.has(f.path)}
           comments={visibleComments}
           responses={allResponses}
+          currentPatchset={selectedPatchset}
           composing={composing &&
           'file' in composing &&
           composing.file === f.path
@@ -1504,6 +1593,7 @@
           onstatus={setStatus}
           ondelete={deleteComment}
           onedit={startEdit}
+          onselectpatchset={jumpToPatchset}
         />
       {/each}
     {/if}

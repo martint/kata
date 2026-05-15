@@ -15,19 +15,33 @@
     comments: CommentView[];
     responses: ResponseView[];
     saving: boolean;
+    /** The patchset the page is currently displaying. Used to decide
+     *  whether the per-comment "added in PS N" badge is the current
+     *  view (rendered as a plain badge) or a different round
+     *  (rendered as a clickable jump). Optional — call sites that
+     *  don't know the active patchset omit it. */
+    currentPatchset?: number;
     onreply: (input: DraftResponseInput) => Promise<void>;
     onstatus: (commentId: string, action: ResolutionAction) => Promise<void>;
     ondelete: (comment: CommentView) => Promise<void>;
     onedit: (comment: CommentView) => void;
+    /** Switch the viewer to patchset `n`, optionally landing on
+     *  comment `commentId` after the switch completes. Threaded down
+     *  so a clicked "added in PS N" badge can jump to the patchset
+     *  the comment was originally written against AND scroll to the
+     *  comment itself in that view. Optional. */
+    onselectpatchset?: (n: number, commentId?: string) => void;
   }
   const {
     comments,
     responses,
     saving,
+    currentPatchset,
     onreply,
     onstatus,
     ondelete,
     onedit,
+    onselectpatchset,
   }: Props = $props();
 
   let replyingTo: string | null = $state(null);
@@ -103,6 +117,20 @@
         {#if state !== 'open'}
           <span class="badge resolution-{state}">{state}</span>
         {/if}
+        <!-- "Added in PS N" jump-button: appears only when the
+             comment came from a different patchset than the one
+             currently displayed, so the common case (comment on the
+             active patchset) stays uncluttered. Clicking switches the
+             viewer to that patchset so the user can read the comment
+             against the diff it was originally written against. -->
+        {#if currentPatchset !== undefined && c.patchset !== currentPatchset && onselectpatchset}
+          <button
+            type="button"
+            class="badge ps-jump"
+            title="Jump to this comment in PS{c.patchset}"
+            onclick={() => onselectpatchset(c.patchset, c.comment_id)}
+          >added in PS{c.patchset}</button>
+        {/if}
         <span class="time">{new Date(c.created_at).toLocaleString()}</span>
         <button
           type="button"
@@ -127,8 +155,15 @@
         {/if}
       </div>
       {#if c.anchor.kind === 'outdated'}
-        <details class="original">
-          <summary>Original lines (from commit when comment was made)</summary>
+        <!-- Open by default for outdated comments: the orphan-threads
+             block in FileDiff has no inline diff to anchor against, so
+             surfacing the original lines is the only way the reader
+             can tell what the comment was about. -->
+        <details class="original" open>
+          <summary>
+            Original lines from PS{c.patchset}
+            {#if c.lines}(lines {c.lines.start}–{c.lines.end}){/if}
+          </summary>
           <pre>{c.anchor.original_content}</pre>
         </details>
       {/if}
@@ -367,6 +402,22 @@
   .badge.resolution-wont-fix {
     background: var(--bg-elevated);
     color: var(--text-muted);
+  }
+
+  /* "Added in PS N" jump-button. Rendered only when the comment came
+   * from a patchset other than the one currently displayed; clicking
+   * switches the viewer to that round. */
+  button.badge.ps-jump {
+    background: var(--link-bg);
+    color: var(--link);
+    border: 1px solid transparent;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-weight: 500;
+    cursor: pointer;
+  }
+
+  button.badge.ps-jump:hover {
+    border-color: var(--link);
   }
 
   .original {

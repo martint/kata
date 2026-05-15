@@ -31,6 +31,7 @@
     patchset: Patchset;
     comments: CommentView[];
     responses: ResponseView[];
+    currentPatchset: number;
     composing: ComposerTarget | null;
     saving: boolean;
     /** Hide the diff hunks and show line-level comments as a flat list.
@@ -48,6 +49,7 @@
     onstatus: (commentId: string, action: ResolutionAction) => Promise<void>;
     ondelete: (comment: CommentView) => Promise<void>;
     onedit: (comment: CommentView) => void;
+    onselectpatchset: (n: number, commentId?: string) => void;
   }
   const {
     repo,
@@ -55,6 +57,7 @@
     patchset,
     comments,
     responses,
+    currentPatchset,
     composing,
     saving,
     compact = false,
@@ -66,6 +69,7 @@
     onstatus,
     ondelete,
     onedit,
+    onselectpatchset,
   }: Props = $props();
 
   let collapsed = $state(false);
@@ -183,6 +187,41 @@
         if (al !== bl) return al - bl;
         return a.created_at.localeCompare(b.created_at);
       }),
+  );
+
+  /** Every (side, line) the file's hunks actually render. Inline
+   *  comment threads attach next to a matching row, so a comment
+   *  anchored to a line that fell outside the diff's surrounding
+   *  context becomes invisible — visible only in comments-only mode
+   *  (which lists every line comment irrespective of hunk
+   *  coverage). We surface those orphan threads explicitly below. */
+  const renderedLineKeys = $derived.by(() => {
+    const set = new Set<string>();
+    for (const h of file.hunks ?? []) {
+      for (const ln of h.lines) {
+        if (ln.base_line != null) set.add(`base:${ln.base_line}`);
+        if (ln.tip_line != null) set.add(`tip:${ln.tip_line}`);
+      }
+    }
+    return set;
+  });
+
+  /** Line comments whose anchor line isn't in any rendered hunk row.
+   *  Render them at the file level so the inline-diff view doesn't
+   *  silently drop them. */
+  const orphanLineComments = $derived(
+    lineCommentsSorted.filter((c) => {
+      if (!c.side || !c.lines) return false;
+      // Hunks may not be loaded yet — the open_review payload ships
+      // file metadata only and hunks stream in per FileSlot. While
+      // we wait, don't classify everything as orphan.
+      if (!file.hunks) return false;
+      const effective =
+        c.anchor.kind === 'moved' || c.anchor.kind === 'drifted'
+          ? c.anchor.new_lines
+          : c.lines;
+      return !renderedLineKeys.has(`${c.side}:${effective.end}`);
+    }),
   );
 
   /** Anchor a file-level comment to the tip side of the viewed patchset. */
@@ -463,10 +502,38 @@
         comments={fileLevelComments}
         {responses}
         {saving}
+        {currentPatchset}
         {onreply}
         {onstatus}
         {ondelete}
         {onedit}
+        {onselectpatchset}
+      />
+    </div>
+  {/if}
+
+  <!-- Orphan line comments: anchored to a line that the diff's
+       surrounding context didn't include, so the inline hunk view
+       has no row to attach them to. Render at the file level so
+       they're not silently dropped in show-diffs mode. Suppressed
+       in compact mode because the compact-line-list below already
+       shows every line comment irrespective of hunk coverage. -->
+  {#if !compact && orphanLineComments.length > 0}
+    <div class="orphan-threads">
+      <p class="muted">
+        Anchored outside the diff's context — the lines these comments
+        attached to aren't part of the visible hunks.
+      </p>
+      <CommentThread
+        comments={orphanLineComments}
+        {responses}
+        {saving}
+        {currentPatchset}
+        {onreply}
+        {onstatus}
+        {ondelete}
+        {onedit}
+        {onselectpatchset}
       />
     </div>
   {/if}
@@ -496,10 +563,12 @@
               comments={[c]}
               {responses}
               {saving}
+              {currentPatchset}
               {onreply}
               {onstatus}
               {ondelete}
               {onedit}
+              {onselectpatchset}
             />
           </li>
         {/each}
@@ -532,6 +601,7 @@
               filePath={file.path}
               comments={fileComments}
               {responses}
+              {currentPatchset}
               {composing}
               {saving}
               {highlights}
@@ -540,6 +610,7 @@
               {onstatus}
               {ondelete}
               {onedit}
+              {onselectpatchset}
             />
           {:else}
             <HunkLines
@@ -547,6 +618,7 @@
               filePath={file.path}
               comments={fileComments}
               {responses}
+              {currentPatchset}
               {composing}
               {saving}
               {highlights}
@@ -556,6 +628,7 @@
               {onstatus}
               {ondelete}
               {onedit}
+              {onselectpatchset}
             />
           {/if}
           {#if canExpand && canExpandBelow(eh)}
@@ -689,6 +762,23 @@
     background: var(--link-bg);
     border-bottom: 1px solid var(--border);
     border-left: 3px solid var(--link);
+  }
+
+  /* Orphan-threads block: line comments anchored outside the diff's
+   * visible context. The amber left-accent + warn tint distinguishes
+   * them from file-level threads (link blue) — they're "should be
+   * inline but couldn't be" rather than "explicitly file-scoped." */
+  .orphan-threads {
+    padding: 8px 12px 8px 14px;
+    background: var(--warn-bg);
+    border-bottom: 1px solid var(--border);
+    border-left: 3px solid var(--warn-text);
+  }
+
+  .orphan-threads > p.muted {
+    margin: 0 0 6px;
+    font-size: 12px;
+    color: var(--warn-text);
   }
 
   .file-composer {

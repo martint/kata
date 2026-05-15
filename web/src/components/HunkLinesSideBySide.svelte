@@ -16,6 +16,7 @@
     filePath: string;
     comments: CommentView[];
     responses: ResponseView[];
+    currentPatchset: number;
     composing: ComposerTarget | null;
     saving: boolean;
     highlights: { base: Map<number, string>; tip: Map<number, string> };
@@ -24,12 +25,14 @@
     onstatus: (commentId: string, action: ResolutionAction) => Promise<void>;
     ondelete: (comment: CommentView) => Promise<void>;
     onedit: (comment: CommentView) => void;
+    onselectpatchset: (n: number, commentId?: string) => void;
   }
   const {
     hunk,
     filePath,
     comments,
     responses,
+    currentPatchset,
     composing,
     saving,
     highlights,
@@ -38,6 +41,7 @@
     onstatus,
     ondelete,
     onedit,
+    onselectpatchset,
   }: Props = $props();
 
   type PairedRow =
@@ -282,10 +286,12 @@
                     comments={leftThreads}
                     {responses}
                     {saving}
+                    {currentPatchset}
                     {onreply}
                     {onstatus}
                     {ondelete}
                     {onedit}
+                    {onselectpatchset}
                   />
                 </div>
               </td>
@@ -341,10 +347,12 @@
                     comments={rightThreads}
                     {responses}
                     {saving}
+                    {currentPatchset}
                     {onreply}
                     {onstatus}
                     {ondelete}
                     {onedit}
+                    {onselectpatchset}
                   />
                 </div>
               </td>

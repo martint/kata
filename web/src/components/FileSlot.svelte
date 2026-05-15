@@ -33,8 +33,20 @@
      *  hunks must be fetched with the same `compare` query so they
      *  match the metadata response. */
     compareWith: number | null;
+    /** Fetch the per-file diff up front, regardless of whether the
+     *  slot is in the viewport. Set for files that have at least one
+     *  comment — the comment-nav `< >` buttons need to land on those
+     *  files reliably, and waiting for an in-flight fetch during the
+     *  click made the page shift around as the slot mounted and
+     *  upstream slots settled. The render still happens lazily; only
+     *  the network round-trip is eager. */
+    eagerFetch: boolean;
     comments: CommentView[];
     responses: ResponseView[];
+    /** Patchset the viewer is currently showing. Threaded into
+     *  CommentThread so each comment's "PS N" badge can render as a
+     *  clickable jump when the comment came from a different round. */
+    currentPatchset: number;
     composing: ComposerTarget | null;
     saving: boolean;
     /** Keep this file mounted regardless of viewport — used so the file
@@ -51,6 +63,7 @@
     onstatus: (commentId: string, action: ResolutionAction) => Promise<void>;
     ondelete: (comment: CommentView) => Promise<void>;
     onedit: (comment: CommentView) => void;
+    onselectpatchset: (n: number, commentId?: string) => void;
   }
   const {
     repo,
@@ -58,8 +71,10 @@
     file,
     patchset,
     compareWith,
+    eagerFetch,
     comments,
     responses,
+    currentPatchset,
     composing,
     saving,
     forceRender,
@@ -71,6 +86,7 @@
     onstatus,
     ondelete,
     onedit,
+    onselectpatchset,
   }: Props = $props();
 
   let slotEl: HTMLElement | undefined = $state();
@@ -99,16 +115,18 @@
     loadError = null;
   });
 
-  /** Fires when the file is close enough to be visible. Skip if the
-   *  initial payload already had hunks (e.g. binary files; or the
-   *  client landed on a smaller endpoint that ships them eagerly).
+  /** Fires when the file is close enough to be visible OR when the
+   *  slot is marked `eagerFetch` (because the file carries one or
+   *  more comments and the comment-nav needs the diff in cache to
+   *  land reliably). Skip if the initial payload already had hunks
+   *  (binary files, or a smaller endpoint that ships them eagerly).
    *
    *  `!= null` rather than `!== undefined` because the metadata
    *  endpoint serialises `hunks: None` as JSON `null` (not an absent
    *  field). Without that, every file would short-circuit here and
    *  the diff would stay stuck on "Diff omitted". */
   $effect(() => {
-    if (!shouldRender) return;
+    if (!shouldRender && !eagerFetch) return;
     if (resolved !== null || loadingHunks) return;
     if (file.hunks != null || file.binary) return;
     loadingHunks = true;
@@ -167,11 +185,24 @@
   });
 
   /** Rough first-pass guess at how tall a file's diff will be before
-   *  we've ever rendered it. Doesn't need to be accurate — once the
-   *  file scrolls into view and renders, the ResizeObserver replaces
-   *  this with the real value. */
+   *  we've ever rendered it. Once the file scrolls into view, the
+   *  ResizeObserver replaces this with the real value — but the
+   *  estimate has to be close enough that a cross-file scroll lands
+   *  near the right place before the in-flight per-file fetches
+   *  finish. The old `80px` fallback for files without resolved
+   *  hunks was off by ~1-2 orders of magnitude for typical files,
+   *  which caused the initial-load comment-nav to overshoot wildly
+   *  while slots above the target settled. */
   function estimateHeight(f: FileChange): number {
-    if (f.binary || !f.hunks) return 80;
+    if (f.binary) return 80;
+    if (!f.hunks) {
+      // No hunks yet — open_review ships file metadata only. Lean
+      // on the (added + removed) line counts, which it does ship,
+      // so the estimate scales with the file rather than collapsing
+      // to a constant.
+      const lines = f.added + f.removed;
+      return Math.max(120, lines * 20 + 80);
+    }
     const lineCount = f.hunks.reduce((sum, h) => sum + h.lines.length, 0);
     return lineCount * 20 + f.hunks.length * 30 + 60;
   }
@@ -190,6 +221,7 @@
         {patchset}
         {comments}
         {responses}
+        {currentPatchset}
         {composing}
         {saving}
         {compact}
@@ -201,6 +233,7 @@
         {onstatus}
         {ondelete}
         {onedit}
+        {onselectpatchset}
       />
       {#if loadError}
         <p class="muted error">Could not load diff: {loadError}</p>

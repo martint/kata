@@ -16,6 +16,7 @@
     filePath: string;
     comments: CommentView[];
     responses: ResponseView[];
+    currentPatchset: number;
     composing: ComposerTarget | null;
     saving: boolean;
     /** Per-side, 1-based line number → rendered HTML. Populated from a
@@ -28,12 +29,14 @@
     onstatus: (commentId: string, action: ResolutionAction) => Promise<void>;
     ondelete: (comment: CommentView) => Promise<void>;
     onedit: (comment: CommentView) => void;
+    onselectpatchset: (n: number, commentId?: string) => void;
   }
   const {
     hunk,
     filePath,
     comments,
     responses,
+    currentPatchset,
     composing,
     saving,
     highlights,
@@ -43,6 +46,7 @@
     onstatus,
     ondelete,
     onedit,
+    onselectpatchset,
   }: Props = $props();
 
   const showBase = $derived(lineNumberMode !== 'tip');
@@ -271,10 +275,12 @@
                   comments={threads}
                   {responses}
                   {saving}
+                  {currentPatchset}
                   {onreply}
                   {onstatus}
                   {ondelete}
                   {onedit}
+                  {onselectpatchset}
                 />
               </div>
             </td>
