@@ -1,7 +1,7 @@
 # Kata
 
-**Code review for [Jujutsu](https://jj-vcs.github.io/jj/) — built around
-how `jj` actually works.**
+**Agent-friendly code review for [Jujutsu](https://jj-vcs.github.io/jj/) —
+built around how `jj` actually works.**
 
 <p align="center">
   <img src="docs/kata.png" alt="Kata reviewing a stack: file tree, side-by-side diff with word-level highlights, file and line-level comments." />
