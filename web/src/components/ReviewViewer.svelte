@@ -1836,12 +1836,14 @@
     }
   }
 
-  /* Sticky in-layout tree-pane toggle. Sits at the start of the
-   * main-pane in both open and collapsed states so the affordance
-   * stays in the same screen position regardless of tree visibility.
-   * `margin-right: -16px` cancels its own width so it doesn't shift
-   * the main-pane right; the button overlays the diff's left edge.
-   * The chevron flips to communicate which way the click moves it. */
+  /* Sticky in-layout tree-pane toggle. Anchored after the tree-pane
+   * + resizer when expanded (translateX pulls it back over the tree
+   * pane's right edge) and at the start of the flex flow when
+   * collapsed (translateX shifts it into the page's left padding so
+   * it doesn't sit on top of the commits panel or the diff's left
+   * gutter). `margin-right: -16px` cancels its own width so the
+   * main-pane keeps its flush-left alignment with the description
+   * box above it. */
   .panel-toggle {
     position: sticky;
     top: calc(var(--app-header-h) + 24px);
@@ -1856,12 +1858,24 @@
     background: var(--bg);
     color: var(--text-muted);
     cursor: pointer;
-    font-size: 14px;
     line-height: 1;
     z-index: 11;
     display: flex;
     align-items: center;
     justify-content: center;
+    /* Expanded default: ride the right edge of the tree-pane, just
+     * inside the panel. Numbers: resizer is 14px (6 + 4 + 4) wide
+     * and sits after the tree, so the button's natural left is
+     * tree-width + 14; shift back 22 to land at tree-width - 8. */
+    transform: translateX(-22px);
+  }
+
+  .panel-toggle.collapsed {
+    /* Collapsed: button is the first flex child (tree-pane is
+     * display:none, no resizer), so its natural left is 0. Shift
+     * left into the page padding so it doesn't overlap the diff's
+     * "+" gutter or the commits panel's leading chevron. */
+    transform: translateX(-20px);
   }
 
   .panel-toggle:hover {
