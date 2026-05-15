@@ -303,12 +303,12 @@
           </tr>
           {@const leftThreads = threadsAt('base', row.left?.base_line)}
           {#if leftThreads.length > 0}
-            <tr class="sbs-threads">
+            <tr class="sbs-threads from-{row.left?.origin ?? 'context'}">
               <td colspan="2" class="thread-cell">
                 <!-- Indent past the side's line-number gutter via
                      padding rather than an empty cell — see
                      HunkLines.svelte for the rationale. -->
-                <div class="thread-sticky" style:padding-left="62px">
+                <div class="thread-sticky" style="--gutter-offset: 62px">
                   <CommentThread
                     comments={leftThreads}
                     {responses}
@@ -367,12 +367,12 @@
           </tr>
           {@const rightThreads = threadsAt('tip', row.right?.tip_line)}
           {#if rightThreads.length > 0}
-            <tr class="sbs-threads">
+            <tr class="sbs-threads from-{row.right?.origin ?? 'context'}">
               <td colspan="2" class="thread-cell">
                 <!-- Indent past the side's line-number gutter via
                      padding rather than an empty cell — see
                      HunkLines.svelte for the rationale. -->
-                <div class="thread-sticky" style:padding-left="62px">
+                <div class="thread-sticky" style="--gutter-offset: 62px">
                   <CommentThread
                     comments={rightThreads}
                     {responses}
@@ -544,8 +544,19 @@
     border-color: var(--link);
   }
 
+  /* See HunkLines.svelte — match the adjacent diff row's tint so the
+   * gutter and right-gap don't read as a dark stripe through the
+   * column's color. */
   .sbs-threads {
     background: transparent;
+  }
+
+  .sbs-threads.from-added {
+    background: var(--add-bg);
+  }
+
+  .sbs-threads.from-removed {
+    background: var(--remove-bg);
   }
 
   .thread-cell {
@@ -556,10 +567,13 @@
   /* Blue tint + left stripe so inline threads visually separate from
    * surrounding diff rows. See HunkLines.svelte for rationale. */
   .thread-sticky {
+    /* See HunkLines.svelte — same indent / right-trim pattern. The
+     * inline `--gutter-offset` is one line-number column's width
+     * plus a small gap. */
     position: sticky;
-    left: 0;
-    /* See HunkLines.svelte — same indent / right-trim pattern. */
-    width: calc(var(--content-vp-width, 100%) - 12px);
+    left: var(--gutter-offset);
+    margin-left: var(--gutter-offset);
+    width: calc(var(--content-vp-width, 100%) - var(--gutter-offset) - 12px);
     background: var(--link-bg);
     padding: 8px 12px;
     border-top: 1px solid var(--border-muted);

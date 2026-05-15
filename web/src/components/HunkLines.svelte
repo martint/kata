@@ -294,7 +294,7 @@
       {#if a}
         {@const threads = threadsFor(a)}
         {#if threads.length > 0}
-          <tr class="thread-row">
+          <tr class="thread-row from-{line.origin}">
             <td colspan={colspan} class="thread-cell">
               <!-- Visual indent past the line-number gutter is done
                    with padding on the sticky wrapper rather than
@@ -305,7 +305,7 @@
                    awkward filler-coloured gap to the left. -->
               <div
                 class="thread-sticky"
-                style:padding-left="{lnCols * 48 + 14}px"
+                style="--gutter-offset: {lnCols * 48 + 14}px"
               >
                 <CommentThread
                   comments={threads}
@@ -481,8 +481,22 @@
     border-color: var(--link);
   }
 
+  /* The thread-row's tinted background bleeds through wherever the
+   * inner sticky block doesn't cover — that's the line-number gutter
+   * area on the left and the small right-edge gap. Tinting it to
+   * match the adjacent diff row's row-level color makes the thread
+   * read as embedded in the (added/removed) hunk rather than
+   * floating over the page background. */
   .thread-row {
     background: transparent;
+  }
+
+  .thread-row.from-added {
+    background: var(--add-bg);
+  }
+
+  .thread-row.from-removed {
+    background: var(--remove-bg);
   }
 
   .thread-cell {
@@ -498,15 +512,17 @@
    * the surrounding diff rows; with the previous --bg-panel background
    * they blended into context lines and were easy to miss. */
   .thread-sticky {
+    /* `--gutter-offset` is set inline by the call site to the cumulative
+     * width of the line-number gutter columns; the block's tinted box
+     * starts past that offset so it lines up with where the diff
+     * content begins rather than running over the gutter. Sticky
+     * `left` matches the margin so the block stays at the same x
+     * during horizontal scroll, and the width is trimmed to keep a
+     * little right-edge breathing room. */
     position: sticky;
-    left: 0;
-    /* `--content-vp-width` is the scroll viewport width (see the
-     * ResizeObserver in FileDiff); the thread stays as wide as
-     * what's actually visible. Trim a few px on the right so the
-     * tint stripe doesn't hug the page edge. `padding-left` is set
-     * inline above to the cumulative gutter width so the thread's
-     * blue stripe lands flush with where the diff content starts. */
-    width: calc(var(--content-vp-width, 100%) - 12px);
+    left: var(--gutter-offset);
+    margin-left: var(--gutter-offset);
+    width: calc(var(--content-vp-width, 100%) - var(--gutter-offset) - 12px);
     background: var(--link-bg);
     padding: 8px 12px;
     border-top: 1px solid var(--border-muted);
