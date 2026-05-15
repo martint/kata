@@ -398,15 +398,30 @@ impl ReviewService {
         // `/file-diff`. Keeps the open_review JSON tiny so the
         // browser's `JSON.parse` stays under ~10 ms instead of the
         // ~1 s it took when the whole diff was inlined.
-        let (diff, commits, live_range) = tokio::try_join!(
+        //
+        // Use `join!` (not `try_join!`) and tolerate failures on the
+        // revset-dependent calls: the manifest's revset can legitimately
+        // stop resolving (e.g. a referenced change ID has gone divergent
+        // in the underlying repo), and that shouldn't prevent the reviewer
+        // from opening the review. The diff comes from immutable commit
+        // IDs and is the load-bearing call.
+        let (diff_res, commits_res, live_res) = tokio::join!(
             build_diff_metadata(&**jj, diff_base, &selected.tip_commit),
             jj.list_commits(&manifest.revset),
             jj.resolve_range(&manifest.revset),
-        )?;
+        );
+        let diff = diff_res?;
+        let commits = commits_res.unwrap_or_default();
+        let live_range = live_res.ok();
 
         let latest = manifest.current();
-        let is_stale = live_range.tip.commit_id != latest.tip_commit
-            || live_range.base.commit_id != latest.base_commit;
+        let is_stale = match &live_range {
+            Some(r) => {
+                r.tip.commit_id != latest.tip_commit
+                    || r.base.commit_id != latest.base_commit
+            }
+            None => false,
+        };
 
         let (published, responses, drafts) = tokio::try_join!(
             self.storage.list_published_comments(repo, review),
