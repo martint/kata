@@ -17,6 +17,7 @@
     themeState,
     type LineHighlights,
   } from '../lib/highlight.svelte';
+  import Bubble from './Bubble.svelte';
   import CommentComposer from './CommentComposer.svelte';
   import CommentThread from './CommentThread.svelte';
   import HunkLines from './HunkLines.svelte';
@@ -491,9 +492,7 @@
       title="Comment on this file"
       onclick={() => onstartcompose({ kind: 'file', file: file.path })}
     >
-      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="currentColor">
-        <path d="M1 2.75A2.75 2.75 0 0 1 3.75 0h8.5A2.75 2.75 0 0 1 15 2.75v6.5A2.75 2.75 0 0 1 12.25 12H8.06l-2.573 2.573A1.457 1.457 0 0 1 3 13.543V12h-.25A1.75 1.75 0 0 1 1 10.25v-7.5z"/>
-      </svg>
+      <Bubble size={14} />
     </button>
   </header>
 

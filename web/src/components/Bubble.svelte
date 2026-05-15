@@ -17,14 +17,9 @@
   viewBox="0 0 16 16"
   aria-hidden="true"
   focusable="false"
+  fill="currentColor"
 >
-  <path
-    d="M2.4 3 H13.6 A1.4 1.4 0 0 1 15 4.4 V10 A1.4 1.4 0 0 1 13.6 11.4 H6.6 L4 14 V11.4 H2.4 A1.4 1.4 0 0 1 1 10 V4.4 A1.4 1.4 0 0 1 2.4 3 Z"
-    stroke="currentColor"
-    stroke-width="1.4"
-    fill="none"
-    stroke-linejoin="round"
-  />
+  <path d="M1 2.75A2.75 2.75 0 0 1 3.75 0h8.5A2.75 2.75 0 0 1 15 2.75v6.5A2.75 2.75 0 0 1 12.25 12H8.06l-2.573 2.573A1.457 1.457 0 0 1 3 13.543V12h-.25A1.75 1.75 0 0 1 1 10.25v-7.5z"/>
 </svg>
 
 <style>
