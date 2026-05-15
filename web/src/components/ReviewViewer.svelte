@@ -1504,7 +1504,7 @@
   <p class="error">{error}</p>
 {/if}
 
-<div class="review-layout">
+<div class="review-layout" class:tree-collapsed={treeCollapsed}>
   <!-- The tree pane stays mounted and is toggled via CSS. Unmounting it
        (the old `{#if}` shape) rebuilt the full FileTree on every expand,
        which for a 100-file review tipped past a second of mount work. -->
@@ -1857,6 +1857,14 @@
     flex: 1;
     min-width: 0;
     margin-left: 8px;
+  }
+
+  /* When the file tree is folded, drop the 8px gutter that was
+   * reserved for the resizer — without it the commits panel and the
+   * file diffs hang inboard of the description header above, looking
+   * misaligned with the rest of the page. */
+  .review-layout.tree-collapsed .main-pane {
+    margin-left: 0;
   }
 
   .diff-loading {
