@@ -15,10 +15,10 @@ use kata_storage::{Storage, archive, compute_repo_id, jj_repo_canonical_path};
 #[derive(Debug, Parser)]
 #[command(name = "kata", about = "Code-review tool: server + archive tooling")]
 struct Cli {
-    /// Storage root. `kata.db` lives here; `kata export` and
+    /// Storage directory. `kata.db` lives here; `kata export` and
     /// `kata import` use sibling directories under it.
-    #[arg(long, env = "KATA_ROOT", global = true)]
-    root: Option<PathBuf>,
+    #[arg(long, env = "KATA_DATA", global = true)]
+    data: Option<PathBuf>,
 
     #[command(subcommand)]
     command: Command,
@@ -40,7 +40,7 @@ enum Command {
     },
     /// Load a previously-exported directory into a fresh SQLite
     /// database. Errors if the database already contains overlapping
-    /// rows — point `import` at an empty `--root` (the typical use is
+    /// rows — point `import` at an empty `--data` (the typical use is
     /// the one-shot migration from the old filesystem-only store).
     Import {
         /// Source directory written by a previous `kata export`.
@@ -190,17 +190,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let cli = Cli::parse();
-    let root = cli.root.ok_or("--root (or KATA_ROOT) is required")?;
-    let db_path = root.join("kata.db");
-    // Every subcommand wants to open `<root>/kata.db`. Create the
+    let data = cli.data.ok_or("--data (or KATA_DATA) is required")?;
+    let db_path = data.join("kata.db");
+    // Every subcommand wants to open `<data>/kata.db`. Create the
     // parent first so SQLite doesn't fail with "unable to open
-    // database file" on a fresh `--root`.
-    if !root.exists() {
-        std::fs::create_dir_all(&root)?;
+    // database file" on a fresh `--data`.
+    if !data.exists() {
+        std::fs::create_dir_all(&data)?;
     }
 
     match cli.command {
-        Command::Serve(args) => serve(root, db_path, args).await,
+        Command::Serve(args) => serve(data, db_path, args).await,
         Command::Export { dir } => {
             // Open the existing DB read-only conceptually — we don't
             // touch it, but the SqliteStorage abstraction always opens
@@ -217,7 +217,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let storage = SqliteStorage::open(&db_path).await?;
             // Importing on top of an already-populated database is
             // almost always a mistake (forgot to wipe, pointed at the
-            // wrong --root). Surface it loudly. On confirmation we
+            // wrong --data). Surface it loudly. On confirmation we
             // proceed — the import is row-by-row with no global
             // rollback, so an ID overlap mid-stream leaves a partial
             // state. The prompt message says so.
@@ -234,7 +234,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn serve(
-    root: PathBuf,
+    data: PathBuf,
     db_path: PathBuf,
     args: ServeArgs,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -244,12 +244,12 @@ async fn serve(
         .map(|raw| parse_workspace(raw))
         .collect::<Result<Vec<_>, _>>()?;
     let cfg = ServerConfig {
-        review_root: root.clone(),
+        review_root: data.clone(),
         author: Author::new(args.author.clone()),
         bind_addr: args.bind,
     };
 
-    // `kata.db` lives at `--root/kata.db`. WAL journal mode + a partial
+    // `kata.db` lives at `--data/kata.db`. WAL journal mode + a partial
     // UNIQUE index on draft sessions make this safe with the
     // multi-writer pattern we run (user + coding agent + reviewer
     // agents touching the same review at once).

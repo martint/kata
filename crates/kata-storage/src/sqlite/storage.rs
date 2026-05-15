@@ -45,7 +45,7 @@ pub struct SqliteStorage {
 impl SqliteStorage {
     /// Open the SQLite file at `path`, applying any pending migrations.
     /// The file is created if it doesn't exist; its parent directory must
-    /// already exist (callers typically pass `<KATA_ROOT>/kata.db`).
+    /// already exist (callers typically pass `<KATA_DATA>/kata.db`).
     pub async fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_owned();
         let conn = tokio::task::spawn_blocking(move || -> Result<Connection> {

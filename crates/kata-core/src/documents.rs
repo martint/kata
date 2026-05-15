@@ -205,7 +205,7 @@ impl ReviewManifest {
     }
 }
 
-/// Per-repo manifest at `$KATA_ROOT/{repo-id}/repo.yaml`.
+/// Per-repo manifest at `$KATA_DATA/{repo-id}/repo.yaml`.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RepoManifest {
     pub schema_version: u32,
