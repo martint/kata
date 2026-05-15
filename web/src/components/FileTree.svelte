@@ -8,11 +8,32 @@
   interface Props {
     files: FileChange[];
     onselect: (path: string) => void;
+    /** Path of the file the reader is currently scrolled to. Used
+     *  to highlight the matching row so the tree stays oriented to
+     *  the page as the reader scrolls past long diffs. `null` means
+     *  no file is in view (e.g. scrolled above the first slot). */
+    activePath?: string | null;
     /** Optional content rendered before the title in the header — used by
      *  the parent to inject a collapse toggle. */
     headerLeft?: Snippet;
+    /** 1-based index of the active file (0 when none in view). Drives
+     *  the position indicator next to the prev/next buttons. */
+    navPosition?: number;
+    /** Total files navigable via prev/next. Buttons hide when 0. */
+    navTotal?: number;
+    onprev?: () => void;
+    onnext?: () => void;
   }
-  const { files, onselect, headerLeft }: Props = $props();
+  const {
+    files,
+    onselect,
+    activePath,
+    headerLeft,
+    navPosition = 0,
+    navTotal = 0,
+    onprev,
+    onnext,
+  }: Props = $props();
 
   let query = $state('');
 
@@ -35,6 +56,13 @@
       <span class="adds">+{fullRoot.added}</span>
       <span class="removes">-{fullRoot.removed}</span>
     </span>
+    {#if navTotal > 0 && onprev && onnext}
+      <span class="file-nav">
+        <button type="button" title="Previous file" onclick={onprev}>‹</button>
+        <span class="position">{navPosition || '-'}/{navTotal}</span>
+        <button type="button" title="Next file" onclick={onnext}>›</button>
+      </span>
+    {/if}
   </header>
   <div class="search">
     <input
@@ -60,7 +88,12 @@
     {:else}
       <ul>
         {#each root.children as child (child.fullPath)}
-          <FileTreeNode node={child} depth={0} {onselect} />
+          <FileTreeNode
+            node={child}
+            depth={0}
+            {onselect}
+            {activePath}
+          />
         {/each}
       </ul>
     {/if}
@@ -104,6 +137,36 @@
     gap: 6px;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 11px;
+  }
+
+  .file-nav {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    font-size: 11px;
+  }
+
+  .file-nav button {
+    background: transparent;
+    border: 1px solid transparent;
+    color: var(--text);
+    padding: 0 4px;
+    line-height: 1;
+    font-size: 13px;
+    cursor: pointer;
+    border-radius: 3px;
+  }
+
+  .file-nav button:hover {
+    background: var(--bg-hover);
+    border-color: var(--border);
+  }
+
+  .file-nav .position {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--text-muted);
+    min-width: 28px;
+    text-align: center;
   }
 
   .adds {

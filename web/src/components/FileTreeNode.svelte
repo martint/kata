@@ -6,8 +6,12 @@
     node: TreeNode;
     depth: number;
     onselect: (path: string) => void;
+    /** Path of the file currently being viewed. The matching leaf
+     *  highlights so the tree stays oriented as the reader
+     *  scrolls. */
+    activePath?: string | null;
   }
-  const { node, depth, onselect }: Props = $props();
+  const { node, depth, onselect, activePath }: Props = $props();
 
   let collapsed = $state(false);
 
@@ -18,7 +22,12 @@
 
 <li>
   {#if node.file}
-    <button class="leaf" style:padding-left="{8 + depth * 14}px" onclick={() => onselect(node.file!.path)}>
+    <button
+      class="leaf"
+      class:active={activePath === node.file.path}
+      style:padding-left="{8 + depth * 14}px"
+      onclick={() => onselect(node.file!.path)}
+    >
       <span class="status status-{node.file.status}">{statusChar(node.file.status)}</span>
       <span class="name">{node.name}</span>
       <span class="stats">
@@ -38,7 +47,12 @@
     {#if !collapsed}
       <ul>
         {#each node.children as child (child.fullPath)}
-          <Self node={child} depth={depth + 1} {onselect} />
+          <Self
+            node={child}
+            depth={depth + 1}
+            {onselect}
+            {activePath}
+          />
         {/each}
       </ul>
     {/if}
@@ -73,6 +87,18 @@
 
   button:hover {
     background: var(--bg-panel);
+  }
+
+  /* Highlight the leaf for the file currently being viewed so the
+   * reader can see where they are in the change list as they scroll
+   * through long diffs. */
+  .leaf.active {
+    background: var(--link-bg);
+    color: var(--link);
+  }
+
+  .leaf.active:hover {
+    background: var(--link-bg);
   }
 
   .folder-name {

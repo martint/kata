@@ -317,6 +317,34 @@
    *  would re-park the previous comment in lockstep with the new
    *  click's parking attempts. */
   let navGeneration = 0;
+
+  /** Path of the file the reader is currently looking at, derived
+   *  from the live scroll position. The file tree uses this to
+   *  highlight the current file as the reader scrolls past long
+   *  diffs, so the tree stays oriented to the page. `null` while no
+   *  file is in view (e.g. the user is scrolled above the first
+   *  file slot, inside the commits panel). */
+  let activeFilePath: string | null = $state(null);
+  /** Position of the active file in `orderedFiles` (1-based); 0 when
+   *  no file is in view. Drives the file-nav prev/next position
+   *  indicator in the file-tree header. */
+  const navFilePosition = $derived.by(() => {
+    if (!activeFilePath) return 0;
+    const i = orderedFiles.findIndex((f) => f.path === activeFilePath);
+    return i < 0 ? 0 : i + 1;
+  });
+  function fileNavTo(idx: number) {
+    if (orderedFiles.length === 0) return;
+    const n = orderedFiles.length;
+    const wrapped = ((idx - 1 + n) % n) + 1;
+    void scrollToFile(orderedFiles[wrapped - 1].path);
+  }
+  function fileNavPrev() {
+    fileNavTo(navFilePosition === 0 ? orderedFiles.length : navFilePosition - 1);
+  }
+  function fileNavNext() {
+    fileNavTo(navFilePosition === 0 ? 1 : navFilePosition + 1);
+  }
   const navPosition = $derived.by(() => {
     if (!navCommentId) return 0;
     const i = orderedComments.findIndex((c) => c.comment_id === navCommentId);
@@ -564,6 +592,45 @@
     // Run once on mount so the counter starts on whatever's at the
     // top, not stuck at 0/N.
     queueMicrotask(sync);
+    return () => window.removeEventListener('scroll', onScroll);
+  });
+
+  /** Track which file slot the reader is sitting on by reading the
+   *  live scroll position. The file tree highlights `activeFilePath`
+   *  so the reader can see where they are in the change list as
+   *  they scroll. Same rAF throttle as the comment sync above. */
+  $effect(() => {
+    if (typeof window === 'undefined') return;
+    let scheduled = false;
+    function syncActiveFile() {
+      scheduled = false;
+      if (orderedFiles.length === 0) {
+        if (activeFilePath !== null) activeFilePath = null;
+        return;
+      }
+      // Pick the last file whose top is at or above the sticky bar —
+      // that's the slot the reader is currently inside. If we're
+      // scrolled above the first slot, leave it un-highlighted.
+      const threshold = stickyTop() + 4;
+      let candidate: string | null = null;
+      for (const f of orderedFiles) {
+        const slot = document.querySelector<HTMLElement>(
+          `[data-file-path="${CSS.escape(f.path)}"]`,
+        );
+        if (!slot) continue;
+        const rect = slot.getBoundingClientRect();
+        if (rect.top <= threshold) candidate = f.path;
+        else break;
+      }
+      if (activeFilePath !== candidate) activeFilePath = candidate;
+    }
+    function onScroll() {
+      if (scheduled) return;
+      scheduled = true;
+      requestAnimationFrame(syncActiveFile);
+    }
+    window.addEventListener('scroll', onScroll, { passive: true });
+    queueMicrotask(syncActiveFile);
     return () => window.removeEventListener('scroll', onScroll);
   });
 
@@ -1457,7 +1524,15 @@
     class:hidden={treeCollapsed}
     style:width="{treeWidth}px"
   >
-    <FileTree files={visibleFiles} onselect={scrollToFile}>
+    <FileTree
+      files={visibleFiles}
+      activePath={activeFilePath}
+      onselect={scrollToFile}
+      navTotal={orderedFiles.length}
+      navPosition={navFilePosition}
+      onprev={fileNavPrev}
+      onnext={fileNavNext}
+    >
       {#snippet headerLeft()}
         <button
           class="tree-toggle"
