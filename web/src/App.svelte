@@ -336,6 +336,38 @@
           </span>
         {/if}
       </span>
+      {#if toolbar.patchsets}
+        {@const ps = toolbar.patchsets}
+        <label class="ps-picker">
+          <span class="muted">Patchset</span>
+          <select
+            value={ps.selected}
+            onchange={(e) =>
+              ps.select(Number((e.currentTarget as HTMLSelectElement).value))}
+          >
+            {#each ps.options as opt (opt.n)}
+              <option value={opt.n}>{opt.label}</option>
+            {/each}
+          </select>
+        </label>
+        <label class="ps-picker">
+          <span class="muted">compared to</span>
+          <select
+            value={ps.compareWith ?? ''}
+            onchange={(e) => {
+              const v = (e.currentTarget as HTMLSelectElement).value;
+              ps.selectCompareWith(v === '' ? null : Number(v));
+            }}
+          >
+            <option value="">base</option>
+            {#each ps.options as opt (opt.n)}
+              {#if opt.n !== ps.selected}
+                <option value={opt.n}>PS{opt.n}</option>
+              {/if}
+            {/each}
+          </select>
+        </label>
+      {/if}
       <!-- Float controls to the right so the title gets breathing
            room from the chips next to it. -->
       <span style="flex: 1"></span>

@@ -95,6 +95,19 @@
      *  comments). `null` if the review has nothing to show in compact
      *  mode (no comments, no files). */
     diffs: { collapsed: boolean; toggle: () => void } | null;
+    /** Patchset selector + compare-with selector. `null` for reviews
+     *  with only one patchset (nothing to switch between). Lives in
+     *  the row-2 header next to the title — the dropdowns are the
+     *  primary controls for shifting which round the diff is showing
+     *  against, so they sit alongside the review identity rather than
+     *  in the body. */
+    patchsets: {
+      options: { n: number; label: string }[];
+      selected: number;
+      compareWith: number | null;
+      select: (n: number) => void;
+      selectCompareWith: (n: number | null) => void;
+    } | null;
     /** File-tree visibility. The top bar surfaces this so phones can
      *  toggle the drawer-style tree without scrolling. */
     tree: { collapsed: boolean; toggle: () => void };
@@ -615,6 +628,19 @@
       diffs: hasComments
         ? { collapsed: diffsCollapsed, toggle: toggleDiffs }
         : null,
+      patchsets:
+        current.manifest.patchsets.length > 1
+          ? {
+              options: current.manifest.patchsets.map((p) => ({
+                n: p.n,
+                label: patchsetLabel(p),
+              })),
+              selected: selectedPatchset,
+              compareWith,
+              select: selectPatchset,
+              selectCompareWith,
+            }
+          : null,
       tree: {
         collapsed: treeCollapsed,
         toggle: () => (treeCollapsed = !treeCollapsed),
@@ -1371,42 +1397,12 @@
       </button>
     {/if}
   </p>
+  <!-- Patchset / compared-to selectors live in the top header
+       (App.svelte's row-2 header) so the dropdowns sit alongside the
+       review identity that they switch between. Only the base→tip
+       endpoint identifiers + the "refresh against the live branch"
+       affordance stay here. -->
   <p class="muted patchset-row">
-    {#if current.manifest.patchsets.length > 1}
-      <label>
-        Patchset
-        <select
-          value={selectedPatchset}
-          onchange={(e) =>
-            selectPatchset(Number((e.currentTarget as HTMLSelectElement).value))}
-        >
-          {#each current.manifest.patchsets as p (p.n)}
-            <option value={p.n}>{patchsetLabel(p)}</option>
-          {/each}
-        </select>
-      </label>
-      <!-- "compare against" lives next to the patchset selector so the
-           pair is read as one unit: "show me patchset N against
-           [base / patchset M]". -->
-      <label>
-        compared to
-        <select
-          value={compareWith ?? ''}
-          onchange={(e) => {
-            const v = (e.currentTarget as HTMLSelectElement).value;
-            selectCompareWith(v === '' ? null : Number(v));
-          }}
-        >
-          <option value="">base</option>
-          {#each current.manifest.patchsets as p (p.n)}
-            {#if p.n !== selectedPatchset}
-              <option value={p.n}>PS{p.n}</option>
-            {/if}
-          {/each}
-        </select>
-      </label>
-      ·
-    {/if}
     {#if compareWith !== null}
       <span class="compare-banner">
         Comparing <strong>PS{compareWith}</strong> →
