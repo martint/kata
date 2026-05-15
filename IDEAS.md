@@ -101,42 +101,15 @@ installers into one thing — native window, dock icon, system-tray
 refresh affordance, optional `kata://` URL handler. The axum routes
 don't change; it's mostly packaging.
 
-## Surface revset-resolution failures in the UI
+## Surface broken revsets on the review-list row
 
-`open_review` now tolerates the manifest's revset failing to
-resolve — it opens with `commits = []`, `live_range = None`, and
-no "stale" indicator. The reviewer sees an empty commits panel
-with no explanation. Two adds would close the loop:
-
-- A banner in the review header carrying the actual jj error so
-  the reader can act on it ("Change ID `X` is divergent —
-  disambiguate with `jj abandon` or change the revset").
-- A pill on the review-list row so the reader doesn't have to open
-  the review to discover it's broken.
-
-Plumb the error string through `ReviewView` alongside `is_stale`
-instead of swallowing the `Err` half of `live_res`. The watcher
-keeps skipping silently.
-
-## Op-log-aware "since you last looked"
-
-`.jj/repo/op_heads` records every operation against the repo —
-amend, rebase, abandon, describe, …. A review currently snapshots
-the tip/base each time it opens and treats anything between
-snapshots as opaque ("the tip moved"). If we also capture the op-id
-at each open, the next viewer can show what *kinds* of operations
-the author ran since: "since you were here, 3 amends + a rebase
-+ a description edit on commit `X`."
-
-The branch watcher could also subscribe to op-id changes instead
-of polling `resolve_range` per review on every tick — one
-notification per op, scoped to reviews whose revset touches the
-affected commits. Replaces the boolean "is_stale" with a
-structured "what changed and when" timeline.
-
-This is the killer demo for jj-native review: every other VCS
-reconstructs this from reflog or push history; jj makes it cheap
-and structured.
+The review-detail page renders a banner when the manifest's revset
+can't be resolved (`RevsetError` on `ReviewView`), but the same
+problem is invisible from `ReviewList` — the reader has to open
+each review to discover it's broken. Add a pill on the list row
+that mirrors the banner's headline, gated on the same
+`revset_error` shape so users can spot stuck reviews from the
+home screen.
 
 ## Conflicts as first-class diff content
 
@@ -177,18 +150,18 @@ patch-handoff variant first, with absorb-directly as an opt-in.
 
 ## Richer divergence panel
 
-The divergence banner shows jj's stderr (which already names the
-change ID and the `nzvkmnyu/0`, `nzvkmnyu/1`, … offsets), but the
-reader still has to drop to a shell to figure out which version is
-which before they can pick what to abandon. A more useful panel
-would enumerate the divergent siblings inline — call `jj log -r
-'change_id(X)'` and render each candidate's commit ID, author,
-timestamp, and description first line. Optionally a copy-button
-per row that yields `jj abandon <commit_id>` so the reader doesn't
-have to retype the ID.
+The divergence banner already lists `divergent_commit_ids` (12-char
+prefixes), but that's still just a bag of IDs — the reader can't
+tell which version is which without dropping to a shell. Two adds
+would close the loop:
 
-The data is one extra `list_commits` call against `change_id(X)`;
-the panel only renders when `revset_error` is set, so the cost is
+- For each sibling, fetch commit metadata (author, timestamp,
+  description first line) via one extra `list_commits` call against
+  `change_id(X)` and render the row inline.
+- A copy-button per row that yields `jj abandon <commit_id>` so
+  the reader doesn't have to retype anything.
+
+The panel only renders when `revset_error` is set, so the cost is
 gated.
 
 ## Edit a review's revset after creation
