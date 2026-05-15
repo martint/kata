@@ -65,6 +65,10 @@ export interface Comment {
   file?: string;
   side?: Side;
   lines?: LineRange;
+  /** True when the comment is about the whole review rather than a
+   *  specific commit. UI groups these under the "All commits" row.
+   *  Mutually exclusive with `file`/`lines`. */
+  review_wide?: boolean;
   flag: Flag;
   body: string;
 }
@@ -275,6 +279,7 @@ export interface DraftCommentInput {
   file?: string;
   side?: Side;
   lines?: LineRange;
+  review_wide?: boolean;
   flag: Flag;
   body?: string;
 }
@@ -291,12 +296,16 @@ export interface WhoAmI {
 
 /** What level of comment the composer is targeting. Line targets carry
  *  an inclusive `startLine..endLine` so multi-line selections work too.
- *  When `editing` is present the composer is editing an existing draft
- *  rather than creating a new one — submit goes via PUT and the anchor
- *  is the existing comment's anchor (kept verbatim). */
+ *  `commit` targets carry the change_id and commit_id of the commit the
+ *  comment is about, so the anchor is fixed to that specific change
+ *  regardless of where the review's tip is now. When `editing` is
+ *  present the composer is editing an existing draft rather than
+ *  creating a new one — submit goes via PUT and the anchor is the
+ *  existing comment's anchor (kept verbatim). */
 export type ComposerTarget = (
   | { kind: 'line'; file: string; side: Side; startLine: number; endLine: number }
   | { kind: 'file'; file: string }
+  | { kind: 'commit'; change_id: ChangeId; commit_id: CommitId }
   | { kind: 'review' }
 ) & {
   editing?: { commentId: string; body: string; flag: Flag };

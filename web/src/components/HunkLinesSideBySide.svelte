@@ -9,6 +9,7 @@
     ResponseView,
     Side,
   } from '../lib/types';
+  import Bubble from './Bubble.svelte';
   import CommentThread from './CommentThread.svelte';
   import { computeHunkWordDiff, wrapRanges } from '../lib/wordDiff';
 
@@ -285,8 +286,9 @@
                   class="add-comment"
                   title="Click to comment; click-drag to extend"
                   onpointerdown={(e) => onPointerDown(e, 'base', row.left!.base_line!)}
-                  >+</button
                 >
+                  <Bubble size={12} />
+                </button>
               {/if}
               {row.left?.base_line ?? row.left?.tip_line ?? ''}
             </td>
@@ -349,8 +351,9 @@
                   class="add-comment"
                   title="Click to comment; click-drag to extend"
                   onpointerdown={(e) => onPointerDown(e, 'tip', row.right!.tip_line!)}
-                  >+</button
                 >
+                  <Bubble size={12} />
+                </button>
               {/if}
               {row.right?.tip_line ?? row.right?.base_line ?? ''}
             </td>

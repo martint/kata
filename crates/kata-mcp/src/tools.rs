@@ -236,6 +236,7 @@ impl ReviewMcp {
             file: Some(file),
             side: Some(side),
             lines: Some(lines),
+            review_wide: false,
             flag,
             body: body.unwrap_or_default(),
         };
@@ -280,6 +281,7 @@ impl ReviewMcp {
             file: Some(file),
             side: None,
             lines: None,
+            review_wide: false,
             flag,
             body: body.unwrap_or_default(),
         };
@@ -353,6 +355,7 @@ impl ReviewMcp {
             file: None,
             side: None,
             lines: None,
+            review_wide: true,
             flag,
             body: body.unwrap_or_default(),
         };

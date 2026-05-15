@@ -18,8 +18,6 @@
   import { setTokenizationPaused } from '../lib/highlight.svelte';
   import { resolutionFor } from '../lib/resolution';
   import Chevron from './Chevron.svelte';
-  import CommentComposer from './CommentComposer.svelte';
-  import CommentThread from './CommentThread.svelte';
   import CommitsPanel from './CommitsPanel.svelte';
   import FileSlot from './FileSlot.svelte';
   import FileTree from './FileTree.svelte';
@@ -920,10 +918,6 @@
     }
   }
 
-  /** Whole-review comments (no file, no lines). Filtered. */
-  const reviewComments: CommentView[] = $derived(
-    visibleComments.filter((c) => c.file == null),
-  );
 
   /** Files actually rendered in the main panel. In comments-only mode
    *  files with no (visible) comments are hidden so the page is a flat
@@ -1291,7 +1285,19 @@
     } else if (comment.file) {
       composing = { kind: 'file', file: comment.file, editing };
     } else {
-      composing = { kind: 'review', editing };
+      // file == null: route as 'commit' if the anchor is still in the
+      // visible commit list, otherwise fall back to 'review' (orphan).
+      const target = current.commits.find(
+        (c) => c.change_id === comment.anchor_change_id,
+      );
+      composing = target
+        ? {
+            kind: 'commit',
+            change_id: target.change_id,
+            commit_id: target.commit_id,
+            editing,
+          }
+        : { kind: 'review', editing };
     }
   }
 
@@ -1623,8 +1629,21 @@
       <CommitsPanel
         commits={current.commits}
         comments={visibleComments}
+        responses={allResponses}
         selectedChangeId={scopedChangeId}
+        currentPatchset={selectedPatchset}
+        {reviewAnchorIds}
+        {composing}
+        {saving}
         onselect={selectCommit}
+        onstartcompose={startCompose}
+        oncancelcompose={cancelCompose}
+        onsubmit={submitComment}
+        onreply={submitResponse}
+        onstatus={setStatus}
+        ondelete={deleteComment}
+        onedit={startEdit}
+        onselectpatchset={jumpToPatchset}
       />
     {/if}
 
@@ -1635,43 +1654,6 @@
       </div>
     {/if}
 
-    <section class="review-comments">
-  <header>
-    <h3>Review-wide comments</h3>
-    <button
-      type="button"
-      class="primary"
-      onclick={() => startCompose({ kind: 'review' })}
-      disabled={composing?.kind === 'review'}
-    >
-      Add comment
-    </button>
-  </header>
-  {#if reviewComments.length > 0}
-    <CommentThread
-      comments={reviewComments}
-      responses={allResponses}
-      currentPatchset={selectedPatchset}
-      onselectpatchset={jumpToPatchset}
-      {saving}
-      onreply={submitResponse}
-      onstatus={setStatus}
-      ondelete={deleteComment}
-      onedit={startEdit}
-    />
-  {:else if !composing || composing.kind !== 'review'}
-    <p class="muted">No review-wide comments yet.</p>
-  {/if}
-  {#if composing && composing.kind === 'review'}
-    <CommentComposer
-      target={composing}
-      anchorIds={reviewAnchorIds}
-      {saving}
-      oncancel={cancelCompose}
-      onsubmit={submitComment}
-    />
-  {/if}
-</section>
 
 {#if orderedFiles.length === 0}
       <p class="muted">No files changed.</p>
@@ -2050,18 +2032,4 @@
     to { transform: rotate(360deg); }
   }
 
-  .review-comments {
-    margin: 16px 0;
-  }
-
-  .review-comments header {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 8px;
-  }
-
-  .review-comments h3 {
-    margin: 0;
-  }
 </style>

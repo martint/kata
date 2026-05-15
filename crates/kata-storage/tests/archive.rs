@@ -95,6 +95,7 @@ async fn seed_database(storage: &SqliteStorage) {
         file: Some("src/foo.rs".into()),
         side: Some(Side::Tip),
         lines: Some(LineRange::new(10, 15)),
+        review_wide: false,
         flag: Flag::MustDo,
         body: "this needs a doc comment\n".into(),
     };
@@ -146,6 +147,7 @@ async fn seed_database(storage: &SqliteStorage) {
         file: None,
         side: None,
         lines: None,
+        review_wide: true,
         flag: Flag::Other,
         body: "review-wide thought\n".into(),
     };
@@ -276,6 +278,7 @@ async fn import_handles_cross_session_responses() {
         file: Some("src/foo.rs".into()),
         side: Some(Side::Tip),
         lines: Some(LineRange::new(10, 15)),
+        review_wide: false,
         flag: Flag::MustDo,
         body: "fix this\n".into(),
     };

@@ -79,6 +79,16 @@ pub struct Comment {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lines: Option<LineRange>,
 
+    /// True for "review-wide" comments — file/lines/side are all `None`
+    /// and the comment is intentionally about the whole review rather
+    /// than any specific commit in it. The UI renders these under the
+    /// "All commits" row of the commits panel. `false` (the default)
+    /// covers everything else, including commit-level comments
+    /// (file/lines/side all `None`, but `review_wide = false`, meaning
+    /// the comment is about the specific change at `anchor_change_id`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub review_wide: bool,
+
     pub flag: Flag,
 
     /// Markdown body. Storage backends pull this out of the TOML

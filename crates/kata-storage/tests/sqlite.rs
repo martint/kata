@@ -65,6 +65,7 @@ fn line_comment(session: &Session) -> Comment {
         file: Some("src/foo.rs".into()),
         side: Some(Side::Tip),
         lines: Some(LineRange::new(10, 15)),
+        review_wide: false,
         flag: Flag::MustDo,
         body: "this needs a doc comment\n".into(),
     }

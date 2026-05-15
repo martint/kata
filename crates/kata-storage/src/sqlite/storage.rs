@@ -192,7 +192,7 @@ impl SqliteStorage {
             let mut stmt = conn.prepare(
                 "SELECT comment_id, session_id, review_id, schema_version, author,
                         created_at, patchset, anchor_change_id, anchor_commit_id,
-                        file, side, line_start, line_end, flag, body
+                        file, side, line_start, line_end, review_wide, flag, body
                  FROM comments WHERE session_id = ?1 ORDER BY created_at",
             )?;
             let rows = stmt.query_map(params![session_str], comment_from_row)?;
@@ -288,8 +288,8 @@ impl SqliteStorage {
                 "INSERT INTO comments
                     (comment_id, repo_id, review_id, session_id, schema_version, author,
                      created_at, patchset, anchor_change_id, anchor_commit_id, file, side,
-                     line_start, line_end, flag, body)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                     line_start, line_end, review_wide, flag, body)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
                 params![
                     comment.comment_id.as_str(),
                     repo_str,
@@ -305,6 +305,7 @@ impl SqliteStorage {
                     comment.side.map(side_to_str),
                     line_start,
                     line_end,
+                    comment.review_wide as i64,
                     flag_to_str(comment.flag),
                     comment.body,
                 ],
@@ -734,8 +735,8 @@ impl Storage for SqliteStorage {
                 "INSERT INTO comments
                     (comment_id, repo_id, review_id, session_id, schema_version, author,
                      created_at, patchset, anchor_change_id, anchor_commit_id, file, side,
-                     line_start, line_end, flag, body)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+                     line_start, line_end, review_wide, flag, body)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
                  ON CONFLICT(comment_id) DO UPDATE SET
                     schema_version = excluded.schema_version,
                     author = excluded.author,
@@ -747,6 +748,7 @@ impl Storage for SqliteStorage {
                     side = excluded.side,
                     line_start = excluded.line_start,
                     line_end = excluded.line_end,
+                    review_wide = excluded.review_wide,
                     flag = excluded.flag,
                     body = excluded.body",
                 params![
@@ -764,6 +766,7 @@ impl Storage for SqliteStorage {
                     comment.side.map(side_to_str),
                     line_start,
                     line_end,
+                    comment.review_wide as i64,
                     flag_to_str(comment.flag),
                     comment.body,
                 ],
@@ -883,7 +886,7 @@ impl Storage for SqliteStorage {
             let mut stmt = conn.prepare(
                 "SELECT c.comment_id, c.session_id, c.review_id, c.schema_version, c.author,
                         c.created_at, c.patchset, c.anchor_change_id, c.anchor_commit_id,
-                        c.file, c.side, c.line_start, c.line_end, c.flag, c.body
+                        c.file, c.side, c.line_start, c.line_end, c.review_wide, c.flag, c.body
                  FROM comments c
                  JOIN sessions s ON s.session_id = c.session_id
                  WHERE c.repo_id = ?1 AND c.review_id = ?2 AND s.status = 'published'
@@ -968,7 +971,7 @@ impl Storage for SqliteStorage {
             let mut comment_stmt = conn.prepare(
                 "SELECT comment_id, session_id, review_id, schema_version, author,
                         created_at, patchset, anchor_change_id, anchor_commit_id,
-                        file, side, line_start, line_end, flag, body
+                        file, side, line_start, line_end, review_wide, flag, body
                  FROM comments WHERE session_id = ?1 ORDER BY created_at",
             )?;
             let comments: Vec<Comment> = comment_stmt
@@ -1079,7 +1082,8 @@ fn comment_from_row(row: &Row<'_>) -> rusqlite::Result<Comment> {
     let side: Option<String> = row.get(10)?;
     let line_start: Option<u32> = row.get(11)?;
     let line_end: Option<u32> = row.get(12)?;
-    let flag_str: String = row.get(13)?;
+    let review_wide: i64 = row.get(13)?;
+    let flag_str: String = row.get(14)?;
     let side = match side {
         Some(s) => Some(side_from_str(&s).map_err(|e| {
             rusqlite::Error::FromSqlConversionFailure(
@@ -1095,7 +1099,7 @@ fn comment_from_row(row: &Row<'_>) -> rusqlite::Result<Comment> {
         _ => None,
     };
     let flag = flag_from_str(&flag_str).map_err(|e| {
-        rusqlite::Error::FromSqlConversionFailure(13, rusqlite::types::Type::Text, Box::new(e))
+        rusqlite::Error::FromSqlConversionFailure(14, rusqlite::types::Type::Text, Box::new(e))
     })?;
     Ok(Comment {
         comment_id: CommentId::new(row.get::<_, String>(0)?),
@@ -1110,8 +1114,9 @@ fn comment_from_row(row: &Row<'_>) -> rusqlite::Result<Comment> {
         file: row.get(9)?,
         side,
         lines,
+        review_wide: review_wide != 0,
         flag,
-        body: row.get(14)?,
+        body: row.get(15)?,
     })
 }
 

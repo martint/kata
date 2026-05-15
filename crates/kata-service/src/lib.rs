@@ -896,6 +896,7 @@ impl ReviewService {
             file: input.file,
             side: input.side,
             lines: input.lines,
+            review_wide: input.review_wide,
             flag: input.flag,
             body: input.body,
         };
@@ -931,6 +932,7 @@ impl ReviewService {
             file: existing.file.clone(),
             side: existing.side.clone(),
             lines: existing.lines.clone(),
+            review_wide: existing.review_wide,
             flag,
             body,
         };
@@ -1021,6 +1023,10 @@ pub struct DraftCommentInput {
     pub side: Option<Side>,
     #[serde(default)]
     pub lines: Option<LineRange>,
+    /// `true` for review-wide comments (no specific file or commit
+    /// scope). Must be `false` when `file` or `lines` is set.
+    #[serde(default)]
+    pub review_wide: bool,
     pub flag: Flag,
     #[serde(default)]
     pub body: String,

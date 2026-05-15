@@ -56,7 +56,10 @@
       };
     } else if (target.kind === 'file') {
       input = { ...base, file: target.file };
+    } else if (target.kind === 'review') {
+      input = { ...base, review_wide: true };
     } else {
+      // kind: 'commit' — file/lines/side all null, review_wide stays false.
       input = base;
     }
     onsubmit(input);
@@ -83,6 +86,10 @@
     }
     if (target.kind === 'file') {
       return `${verb} ${target.file}`;
+    }
+    if (target.kind === 'commit') {
+      const short = target.change_id.slice(0, 12);
+      return `${verb} commit ${short}`;
     }
     return target.editing
       ? 'editing draft on the whole review'
