@@ -1,0 +1,25 @@
+# Third-party licenses
+
+This file is generated. Run `cargo about generate about.hbs > THIRD_PARTY_LICENSES.md` from the workspace root to refresh it; rerun after every dependency change.
+
+It lists every Rust dependency Kata pulls in, grouped by license. The
+top-level project itself is [Apache-2.0](LICENSE); these notices satisfy
+the requirements of the dependency licenses.
+
+{{#each licenses}}
+## {{{name}}}
+
+{{#each used_by}}
+- **{{this.crate.name}}** {{this.crate.version}}{{#if this.crate.repository}} — <{{this.crate.repository}}>{{/if}}
+{{/each}}
+
+<details>
+<summary>License text</summary>
+
+```
+{{{text}}}
+```
+
+</details>
+
+{{/each}}

@@ -123,4 +123,6 @@ Open issues and PRs are welcome.
 
 ## License
 
-[Apache-2.0](LICENSE).
+[Apache-2.0](LICENSE). See [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md)
+for the licenses of the dependencies Kata bundles; regenerate it with
+`scripts/gen-licenses.sh` after any dependency change.
