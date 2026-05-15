@@ -68,9 +68,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     init.headers = { 'content-type': 'application/json' };
     init.body = JSON.stringify(body);
   }
-  const t0 = performance.now();
   const res = await fetch(path, init);
-  const tFetch = performance.now() - t0;
   if (!res.ok) {
     let detail = res.statusText;
     try {
@@ -82,15 +80,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     throw new ApiError(res.status, detail);
   }
   if (res.status === 204) return undefined as T;
-  const parsed = (await res.json()) as T;
-  const tTotal = performance.now() - t0;
-  if (tTotal > 100) {
-    // eslint-disable-next-line no-console
-    console.log(
-      `[api] ${method} ${path}: ${tTotal.toFixed(0)}ms (fetch ${tFetch.toFixed(0)}ms, parse ${(tTotal - tFetch).toFixed(0)}ms)`,
-    );
-  }
-  return parsed;
+  return (await res.json()) as T;
 }
 
 const enc = encodeURIComponent;

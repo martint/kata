@@ -421,7 +421,6 @@
     // Reset on re-run (theme toggle, etc.) so we don't see stale colors.
     highlightsBase = new SvelteMap();
     highlightsTip = new SvelteMap();
-    const t0 = performance.now();
 
     (async () => {
       const [baseText, tipText, h] = await Promise.all([
@@ -449,16 +448,6 @@
           ? tokenizeWholeFile(h, tipText, lang, highlightsTip, { isCancelled })
           : Promise.resolve(),
       ]);
-
-      const total = performance.now() - t0;
-      if (total > 100) {
-        // eslint-disable-next-line no-console
-        console.log(
-          `[tokenize] ${file.path}: ${total.toFixed(0)}ms (base ${
-            highlightsBase.size
-          } lines, tip ${highlightsTip.size} lines)`,
-        );
-      }
     })();
     return () => {
       cancelled = true;
