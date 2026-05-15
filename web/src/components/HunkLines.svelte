@@ -10,6 +10,7 @@
     Side,
   } from '../lib/types';
   import CommentThread from './CommentThread.svelte';
+  import { computeHunkWordDiff, wrapRanges } from '../lib/wordDiff';
 
   interface Props {
     hunk: Hunk;
@@ -103,6 +104,21 @@
     if (line.tip_line != null) return highlights.tip.get(line.tip_line);
     if (line.base_line != null) return highlights.base.get(line.base_line);
     return undefined;
+  }
+
+  /** Word-level diff overlays per paired remove/add row in this hunk.
+   *  Recomputed when the hunk lines change; cheap enough not to memo. */
+  const wordDiff = $derived(computeHunkWordDiff(hunk.lines));
+
+  /** Apply the word-diff overlay (if any) to the row's existing
+   *  syntax-highlighted HTML. Falls back to the plain HTML when the
+   *  row has no overlay — most rows go straight through. */
+  function htmlWithWordDiff(line: HunkLine, idx: number): string | undefined {
+    const base = htmlFor(line);
+    if (!base) return base;
+    const wd = wordDiff.get(idx);
+    if (!wd) return base;
+    return wrapRanges(base, wd.ranges, wd.kind);
   }
 
   /** Which side+line a row anchors to. Removed → base side; added & context → tip. */
@@ -221,7 +237,7 @@
     {#each hunk.lines as line, i (i)}
       {@const a = anchor(line)}
       {@const stripped = line.content.replace(/\n$/, '')}
-      {@const html = htmlFor(line)}
+      {@const html = htmlWithWordDiff(line, i)}
       <tr class={`${rowClass(line.origin)}${isCommented(a) ? ' commented' : ''}`}>
         {#if showBase}
           <!-- data-side/data-line are also on the gutter cell so that the
@@ -350,6 +366,21 @@
 
   .row.removed {
     background: var(--remove-bg);
+  }
+
+  /* Word-level diff overlay: the line-level row tint already says
+   * 'something on this line changed'; these stronger backgrounds
+   * say 'these are the specific characters that differ'. The :global
+   * selector reaches the spans we inject into shiki's pre-rendered
+   * HTML via `wrapRanges`. */
+  :global(.row.removed .wd-removed) {
+    background: var(--remove-bg-strong);
+    border-radius: 2px;
+  }
+
+  :global(.row.added .wd-added) {
+    background: var(--add-bg-strong);
+    border-radius: 2px;
   }
 
   .row.context {

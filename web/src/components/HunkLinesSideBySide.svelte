@@ -10,6 +10,7 @@
     Side,
   } from '../lib/types';
   import CommentThread from './CommentThread.svelte';
+  import { computeHunkWordDiff, wrapRanges } from '../lib/wordDiff';
 
   interface Props {
     hunk: Hunk;
@@ -234,6 +235,26 @@
     if (line.base_line != null) return highlights.base.get(line.base_line);
     return undefined;
   }
+
+  /** Word-level diff per hunk-line index, computed against the original
+   *  flat `hunk.lines`. Looked up by the rows below using each side's
+   *  source HunkLine. */
+  const wordDiff = $derived(computeHunkWordDiff(hunk.lines));
+
+  function hunkLineIndex(line: HunkLine | null): number | null {
+    if (!line) return null;
+    const idx = hunk.lines.indexOf(line);
+    return idx < 0 ? null : idx;
+  }
+
+  function withWordDiff(html: string | undefined, line: HunkLine | null): string | undefined {
+    if (!html || !line) return html;
+    const idx = hunkLineIndex(line);
+    if (idx == null) return html;
+    const wd = wordDiff.get(idx);
+    if (!wd) return html;
+    return wrapRanges(html, wd.ranges, wd.kind);
+  }
 </script>
 
 <div class="sbs-pair">
@@ -275,7 +296,7 @@
               data-line={leftLine ?? ''}
             >
               {#if row.left}
-                {@const html = highlightedLeft(row.left)}
+                {@const html = withWordDiff(highlightedLeft(row.left), row.left)}
                 <pre>{#if html}{@html html}{:else}{lineText(row.left) || ' '}{/if}</pre>
               {/if}
             </td>
@@ -339,7 +360,7 @@
               data-line={rightLine ?? ''}
             >
               {#if row.right}
-                {@const html = highlightedRight(row.right)}
+                {@const html = withWordDiff(highlightedRight(row.right), row.right)}
                 <pre>{#if html}{@html html}{:else}{lineText(row.right) || ' '}{/if}</pre>
               {/if}
             </td>
@@ -457,6 +478,20 @@
   }
   .ln.removed {
     background: var(--remove-bg-strong);
+  }
+
+  /* Word-level diff overlay: the column-tinted cells say a line
+   * changed; these stronger backgrounds say which specific characters
+   * differ. `:global` because we inject the spans into shiki's
+   * pre-rendered HTML via `wrapRanges`. */
+  :global(.content.removed .wd-removed) {
+    background: var(--remove-bg-strong);
+    border-radius: 2px;
+  }
+
+  :global(.content.added .wd-added) {
+    background: var(--add-bg-strong);
+    border-radius: 2px;
   }
 
   .ln.empty,
