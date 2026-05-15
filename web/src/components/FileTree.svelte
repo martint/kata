@@ -1,5 +1,4 @@
 <script lang="ts">
-  import type { Snippet } from 'svelte';
   import type { FileChange } from '../lib/types';
   import FileTreeNode from './FileTreeNode.svelte';
   import type { TreeNode } from '../lib/tree';
@@ -13,9 +12,6 @@
      *  the page as the reader scrolls past long diffs. `null` means
      *  no file is in view (e.g. scrolled above the first slot). */
     activePath?: string | null;
-    /** Optional content rendered before the title in the header — used by
-     *  the parent to inject a collapse toggle. */
-    headerLeft?: Snippet;
     /** 1-based index of the active file (0 when none in view). Drives
      *  the position indicator next to the prev/next buttons. */
     navPosition?: number;
@@ -28,7 +24,6 @@
     files,
     onselect,
     activePath,
-    headerLeft,
     navPosition = 0,
     navTotal = 0,
     onprev,
@@ -50,7 +45,6 @@
 
 <nav class="file-tree" aria-label="Changed files">
   <header>
-    {#if headerLeft}{@render headerLeft()}{/if}
     <h3>Files ({files.length})</h3>
     <span class="totals">
       <span class="adds">+{fullRoot.added}</span>

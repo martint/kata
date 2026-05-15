@@ -1532,17 +1532,7 @@
       navPosition={navFilePosition}
       onprev={fileNavPrev}
       onnext={fileNavNext}
-    >
-      {#snippet headerLeft()}
-        <button
-          class="tree-toggle"
-          title="Hide files"
-          onclick={() => (treeCollapsed = true)}
-        >
-          ◂
-        </button>
-      {/snippet}
-    </FileTree>
+    />
   </aside>
   {#if !treeCollapsed}
     <div
@@ -1553,9 +1543,18 @@
       onpointerdown={startResize}
     ></div>
   {/if}
-  <!-- When the tree is collapsed there's no in-page re-open
-       affordance — the ☰ button in the top header bar handles
-       toggling, and the main pane gets the full width back. -->
+  <!-- Floating toggle that rides the boundary between the tree and
+       the main pane. Visible in both states so the affordance is
+       always discoverable; the chevron flips with the state. -->
+  <button
+    type="button"
+    class="panel-toggle"
+    class:collapsed={treeCollapsed}
+    aria-label={treeCollapsed ? 'Show file tree' : 'Hide file tree'}
+    aria-expanded={!treeCollapsed}
+    title={treeCollapsed ? 'Show file tree' : 'Hide file tree'}
+    onclick={() => (treeCollapsed = !treeCollapsed)}
+  >{treeCollapsed ? '›' : '‹'}</button>
   <div class="main-pane">
     <!-- Sticky bar grouping every comment-level control: lifecycle +
          severity filter chips on the left, prev/next nav and the
@@ -1816,25 +1815,47 @@
     .main-pane {
       margin-left: 0;
     }
+
+    /* Phones use the drawer pattern; the top-bar ☰ button opens
+     * and closes it. The in-layout panel-toggle would float over
+     * the diff content with nowhere meaningful to dock. */
+    .panel-toggle {
+      display: none;
+    }
   }
 
-  /* The fold-tree toggle inside the tree-pane header — passed in via a
-   * snippet, so this rule needs to apply across component boundaries. */
-  :global(.tree-toggle) {
-    width: 22px;
-    height: 22px;
+  /* Sticky in-layout tree-pane toggle. Sits at the start of the
+   * main-pane in both open and collapsed states so the affordance
+   * stays in the same screen position regardless of tree visibility.
+   * `margin-right: -16px` cancels its own width so it doesn't shift
+   * the main-pane right; the button overlays the diff's left edge.
+   * The chevron flips to communicate which way the click moves it. */
+  .panel-toggle {
+    position: sticky;
+    top: calc(var(--app-header-h) + 24px);
+    align-self: flex-start;
+    flex: 0 0 16px;
+    width: 16px;
+    height: 36px;
+    margin: 16px -16px 0 0;
     padding: 0;
     border: 1px solid var(--border);
-    border-radius: 4px;
+    border-radius: 8px;
     background: var(--bg);
     color: var(--text-muted);
     cursor: pointer;
-    font-size: 12px;
-    line-height: 18px;
+    font-size: 14px;
+    line-height: 1;
+    z-index: 11;
+    display: flex;
+    align-items: center;
+    justify-content: center;
   }
 
-  :global(.tree-toggle:hover) {
+  .panel-toggle:hover {
     background: var(--bg-elevated);
+    color: var(--text);
+    border-color: var(--text-muted);
   }
 
   .tree-resizer {
