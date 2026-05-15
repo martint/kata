@@ -505,13 +505,18 @@
   data-file-path={file.path}
 >
   <header class="file-header">
-    <button
-      class="toggle"
-      aria-label={collapsed ? 'expand' : 'collapse'}
-      onclick={() => (collapsed = !collapsed)}
-    >
-      {collapsed ? '▸' : '▾'}
-    </button>
+    {#if !compact}
+      <!-- In compact (comments-only) mode the file diff isn't rendered
+           at all, so a toggle that hides/shows nothing is just noise.
+           Hide it. -->
+      <button
+        class="toggle"
+        aria-label={collapsed ? 'expand' : 'collapse'}
+        onclick={() => (collapsed = !collapsed)}
+      >
+        {collapsed ? '▸' : '▾'}
+      </button>
+    {/if}
     <span class="status status-{file.status}">{file.status[0].toUpperCase()}</span>
     <!-- The path wrapper is direction:rtl so `text-overflow: ellipsis`
          falls on the left ("…/short/tail.rs") instead of cutting off the
