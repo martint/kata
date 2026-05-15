@@ -47,10 +47,6 @@
 <nav class="file-tree" aria-label="Changed files">
   <header>
     <h3>Files ({files.length})</h3>
-    <span class="totals">
-      <span class="adds">+{fullRoot.added}</span>
-      <span class="removes">-{fullRoot.removed}</span>
-    </span>
     {#if navTotal > 0 && onprev && onnext}
       <span class="file-nav">
         <button type="button" title="Previous file" onclick={onprev}>
@@ -62,6 +58,10 @@
         </button>
       </span>
     {/if}
+    <span class="totals">
+      <span class="adds">+{fullRoot.added}</span>
+      <span class="removes">-{fullRoot.removed}</span>
+    </span>
   </header>
   <div class="search">
     <input
