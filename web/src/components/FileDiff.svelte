@@ -274,13 +274,16 @@
     file.status === 'added' ? 'tip' : file.status === 'deleted' ? 'base' : 'both',
   );
 
-  /** Width of the line-number gutter, in pixels. Used to indent the
-   *  inline composer overlay past the gutter so it lines up with the
-   *  diff content (same treatment as a thread). Side-by-side has one
-   *  gutter on each half but the composer sits on the left side, so
-   *  it's still one gutter's width either way. */
+  /** Distance from the file-diff's left edge to where the content
+   *  cell of a diff row starts, in pixels. Used to indent the inline
+   *  composer overlay and the orphan-thread box so their left edges
+   *  line up with the .row.commented .content stripe — and, by
+   *  extension, with the inline thread's blue accent. One .ln cell
+   *  is 48 (declared width) + 16 (8 px padding each side) + 1
+   *  (right border) = 65 px wide; the side-by-side renderer has a
+   *  single .ln per half, unified-both has two. */
   const gutterIndentPx = $derived(
-    sideBySide || lineNumberMode !== 'both' ? 48 : 96,
+    sideBySide || lineNumberMode !== 'both' ? 65 : 130,
   );
 
   // ---- hunk context expansion -------------------------------------------
@@ -530,7 +533,7 @@
   {#if !compact && orphanLineComments.length > 0}
     <div
       class="orphan-threads"
-      style:margin-left="{gutterIndentPx + 14}px"
+      style:margin-left="{gutterIndentPx}px"
     >
       <p class="muted">
         Anchored outside the diff's context — the lines these comments
@@ -660,7 +663,7 @@
             class="line-composer-overlay"
             bind:this={composerOverlayEl}
             style:top="{composerTop}px"
-            style:left="{gutterIndentPx + 14}px"
+            style:left="{gutterIndentPx}px"
           >
             <CommentComposer
               target={composing}

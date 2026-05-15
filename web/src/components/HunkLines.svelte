@@ -305,7 +305,7 @@
                    awkward filler-coloured gap to the left. -->
               <div
                 class="thread-sticky"
-                style="--gutter-offset: {lnCols * 48 + 14}px"
+                style="--gutter-offset: {lnCols * 65}px"
               >
                 <CommentThread
                   comments={threads}

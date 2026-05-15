@@ -308,7 +308,7 @@
                 <!-- Indent past the side's line-number gutter via
                      padding rather than an empty cell — see
                      HunkLines.svelte for the rationale. -->
-                <div class="thread-sticky" style="--gutter-offset: 62px">
+                <div class="thread-sticky" style="--gutter-offset: 65px">
                   <CommentThread
                     comments={leftThreads}
                     {responses}
@@ -372,7 +372,7 @@
                 <!-- Indent past the side's line-number gutter via
                      padding rather than an empty cell — see
                      HunkLines.svelte for the rationale. -->
-                <div class="thread-sticky" style="--gutter-offset: 62px">
+                <div class="thread-sticky" style="--gutter-offset: 65px">
                   <CommentThread
                     comments={rightThreads}
                     {responses}
