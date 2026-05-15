@@ -58,23 +58,14 @@ impl JjCli {
     }
 
     async fn run(&self, args: &[&str]) -> Result<Vec<u8>> {
-        tracing::trace!(repo = ?self.repo, args = ?args, "jj");
         let output = self.cmd().args(args).output().await?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-            tracing::warn!(
-                repo = ?self.repo,
-                args = ?args,
-                status = ?output.status.code(),
-                stderr = %stderr,
-                "jj failed"
-            );
             return Err(Error::JjFailed {
                 status: output.status.code().unwrap_or(-1),
                 stderr,
             });
         }
-        tracing::trace!(stdout_len = output.stdout.len(), "jj ok");
         Ok(output.stdout)
     }
 
@@ -156,7 +147,6 @@ impl JjBackend for JjCli {
         // surface recent branches without re-sorting client-side. Anything
         // missing a timestamp drops to the bottom.
         bookmarks.sort_by(|a, b| b.commit_timestamp.cmp(&a.commit_timestamp));
-        tracing::debug!(count = bookmarks.len(), "list_bookmarks");
         Ok(bookmarks)
     }
 
@@ -355,7 +345,6 @@ impl JjBackend for JjCli {
                 changed_files,
             });
         }
-        tracing::debug!(count = commits.len(), revset = %revset, "list_commits");
         Ok(commits)
     }
 

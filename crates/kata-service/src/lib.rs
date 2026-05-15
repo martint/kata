@@ -172,12 +172,8 @@ impl ReviewService {
     ) {
         let repos: Vec<(String, RepoId)> = self.by_name.as_ref().clone();
         for (repo_name, repo_id) in repos {
-            let summaries = match self.storage.list_reviews(&repo_id).await {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::debug!(repo = %repo_name, error = %e, "branch watcher: list_reviews failed");
-                    continue;
-                }
+            let Ok(summaries) = self.storage.list_reviews(&repo_id).await else {
+                continue;
             };
             let jj = match self.jj_for(&repo_id) {
                 Ok(j) => j.clone(),
@@ -185,17 +181,8 @@ impl ReviewService {
             };
             for summary in summaries {
                 let review_id = summary.manifest.review_id.clone();
-                let range = match jj.resolve_range(&summary.manifest.revset).await {
-                    Ok(r) => r,
-                    Err(e) => {
-                        tracing::debug!(
-                            repo = %repo_name,
-                            review = %review_id,
-                            error = %e,
-                            "branch watcher: resolve_range failed",
-                        );
-                        continue;
-                    }
+                let Ok(range) = jj.resolve_range(&summary.manifest.revset).await else {
+                    continue;
                 };
                 let cur = summary.manifest.current();
                 let live = (range.tip.commit_id, range.base.commit_id);
@@ -376,11 +363,7 @@ impl ReviewService {
         compare: Option<u32>,
     ) -> ServiceResult<ReviewView> {
         let jj = self.jj_for(repo)?;
-        let total = std::time::Instant::now();
-
-        let t = std::time::Instant::now();
         let manifest = self.storage.open_review(repo, review).await?;
-        tracing::debug!(elapsed_ms = t.elapsed().as_millis() as u64, "open_review: manifest");
 
         let selected_n = patchset.unwrap_or(manifest.current_patchset);
         let selected = manifest
@@ -407,7 +390,6 @@ impl ReviewService {
         };
         let diff_base = compare_base.as_ref().unwrap_or(&selected.base_commit);
 
-        let t = std::time::Instant::now();
         // `live_range` lets us tell the UI whether re-resolving the revset
         // would advance the latest patchset (the "is_stale" flag below).
         // We resolve here, in parallel with the diff/commit work, to avoid
@@ -421,32 +403,17 @@ impl ReviewService {
             jj.list_commits(&manifest.revset),
             jj.resolve_range(&manifest.revset),
         )?;
-        tracing::debug!(
-            elapsed_ms = t.elapsed().as_millis() as u64,
-            files = diff.files.len(),
-            commits = commits.len(),
-            "open_review: diff + commits + live_range",
-        );
 
         let latest = manifest.current();
         let is_stale = live_range.tip.commit_id != latest.tip_commit
             || live_range.base.commit_id != latest.base_commit;
 
-        let t = std::time::Instant::now();
         let (published, responses, drafts) = tokio::try_join!(
             self.storage.list_published_comments(repo, review),
             self.storage.list_published_responses(repo, review),
             self.storage.list_drafts_for(repo, review, viewer),
         )?;
-        tracing::debug!(
-            elapsed_ms = t.elapsed().as_millis() as u64,
-            published = published.len(),
-            responses = responses.len(),
-            drafts = drafts.comments.len(),
-            "open_review: storage",
-        );
 
-        let t = std::time::Instant::now();
         // Many comments resolve against the same `(commit, path)` — every
         // line/file comment on a given file needs both its anchor_commit
         // and the current patchset endpoint. Read each pair once, in
@@ -479,18 +446,6 @@ impl ReviewService {
                     .await?,
             );
         }
-        tracing::debug!(
-            elapsed_ms = t.elapsed().as_millis() as u64,
-            comments = comments.len() + draft_comments.len(),
-            prefetched = cache.len(),
-            "open_review: comment views",
-        );
-
-        tracing::info!(
-            review = %review,
-            elapsed_ms = total.elapsed().as_millis() as u64,
-            "open_review",
-        );
 
         let response_views: Vec<ResponseView> = responses
             .into_iter()

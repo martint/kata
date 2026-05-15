@@ -15,8 +15,6 @@
 //!
 //! Added / deleted files just diff against an empty side.
 
-use std::time::{Duration, Instant};
-
 use imara_diff::intern::InternedInput;
 use imara_diff::sink::Counter;
 use imara_diff::{Algorithm, UnifiedDiffBuilder, diff};
@@ -173,19 +171,11 @@ pub async fn build_diff<B: JjBackend + ?Sized>(
     base: &CommitId,
     tip: &CommitId,
 ) -> Result<Diff> {
-    let t_all = Instant::now();
-    let t = Instant::now();
     let mut files = backend.changed_files(base, tip).await?;
-    let t_changed = t.elapsed();
 
     let (pairs, pair_indices) = collect_blob_pairs(base, tip, &files);
-
-    let t = Instant::now();
     let blobs = backend.read_files(&pairs).await?;
-    let read_ms = t.elapsed();
 
-    let mut diff_total = Duration::ZERO;
-    let mut slowest_diff = (Duration::ZERO, String::new());
     for (f, (bi, ti)) in files.iter_mut().zip(pair_indices.into_iter()) {
         let base_bytes: &[u8] = bi
             .and_then(|i| blobs[i].as_deref())
@@ -200,30 +190,12 @@ pub async fn build_diff<B: JjBackend + ?Sized>(
         }
         let base_text = String::from_utf8_lossy(base_bytes);
         let tip_text = String::from_utf8_lossy(tip_bytes);
-        let t = Instant::now();
         let hunks = histogram_hunks(&base_text, &tip_text, &f.path)?;
-        let elapsed = t.elapsed();
         let (added, removed) = count_lines(&hunks);
         f.hunks = Some(hunks);
         f.added = added;
         f.removed = removed;
-        diff_total += elapsed;
-        if elapsed > slowest_diff.0 {
-            slowest_diff = (elapsed, f.path.clone());
-        }
     }
-
-    tracing::info!(
-        elapsed_ms = t_all.elapsed().as_millis() as u64,
-        files = files.len(),
-        changed_files_ms = t_changed.as_millis() as u64,
-        reads = pairs.len(),
-        read_ms = read_ms.as_millis() as u64,
-        diff_ms = diff_total.as_millis() as u64,
-        slowest_diff_ms = slowest_diff.0.as_millis() as u64,
-        slowest_diff = %slowest_diff.1,
-        "build_diff",
-    );
 
     Ok(Diff {
         base: base.clone(),
