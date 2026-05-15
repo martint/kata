@@ -21,8 +21,10 @@ pub enum Flag {
     MustDo,
     /// Optional improvement.
     Suggestion,
-    /// Question, note, or anything else.
-    Other,
+    /// A question for the author. Whether the answer satisfies the
+    /// question is the author's call — responders should not auto-
+    /// resolve.
+    Question,
 }
 
 /// Effect a response has on a comment's resolution state. `Unresolve` is

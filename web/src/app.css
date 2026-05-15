@@ -44,8 +44,8 @@
   --error-text: #82071e;
   --success-bg: #dafbe1;
   --success-text: #1a7f37;
-  --other-bg: #fbefff;
-  --other-text: #8250df;
+  --question-bg: #fbefff;
+  --question-text: #8250df;
   --selection-tint: rgba(9, 105, 218, 0.12);
   --selection-rule: #0969da;
   /* Text color drawn on top of saturated accent backgrounds (primary
@@ -90,8 +90,8 @@
     --error-text: #f85149;
     --success-bg: rgba(46, 160, 67, 0.18);
     --success-text: #56d364;
-    --other-bg: rgba(163, 113, 247, 0.18);
-    --other-text: #a371f7;
+    --question-bg: rgba(163, 113, 247, 0.18);
+    --question-text: #a371f7;
     --selection-tint: rgba(56, 139, 253, 0.25);
     --selection-rule: #58a6ff;
   }
@@ -421,10 +421,10 @@ header.app .chip.on.flag-suggestion {
   border-color: var(--link);
 }
 
-header.app .chip.on.flag-other {
-  background: var(--other-bg);
-  color: var(--other-text);
-  border-color: var(--other-text);
+header.app .chip.on.flag-question {
+  background: var(--question-bg);
+  color: var(--question-text);
+  border-color: var(--question-text);
 }
 
 header.app .filter-empty-hint {
@@ -721,7 +721,7 @@ input[type='text'] {
   color: var(--link);
 }
 
-.flag-other {
-  background: var(--bg-elevated);
-  color: var(--text-muted);
+.flag-question {
+  background: var(--question-bg);
+  color: var(--question-text);
 }

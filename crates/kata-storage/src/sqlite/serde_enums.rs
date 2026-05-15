@@ -12,7 +12,7 @@ pub fn flag_to_str(f: Flag) -> &'static str {
     match f {
         Flag::MustDo => "must-do",
         Flag::Suggestion => "suggestion",
-        Flag::Other => "other",
+        Flag::Question => "question",
     }
 }
 
@@ -20,7 +20,7 @@ pub fn flag_from_str(s: &str) -> Result<Flag, Error> {
     match s {
         "must-do" => Ok(Flag::MustDo),
         "suggestion" => Ok(Flag::Suggestion),
-        "other" => Ok(Flag::Other),
+        "question" => Ok(Flag::Question),
         _ => Err(Error::InvalidId {
             label: "flag".into(),
             value: s.into(),

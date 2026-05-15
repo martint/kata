@@ -452,11 +452,11 @@
           >Suggestion</button>
           <button
             type="button"
-            class="chip flag-other"
-            class:on={filter.flag.other}
-            aria-pressed={filter.flag.other}
-            onclick={() => filter.toggleFlag('other')}
-          >Other</button>
+            class="chip flag-question"
+            class:on={filter.flag.question}
+            aria-pressed={filter.flag.question}
+            onclick={() => filter.toggleFlag('question')}
+          >Question</button>
         </div>
       {/if}
       {#if toolbar.diffs}

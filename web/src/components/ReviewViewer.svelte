@@ -34,7 +34,7 @@
    *  bar that shares the scroll viewport — keeps the prev / next buttons
    *  pinned in one spot so repeat clicks don't chase the bar around. */
   type StatusBucket = 'draft' | 'open' | 'resolved';
-  type FlagBucket = 'must-do' | 'suggestion' | 'other';
+  type FlagBucket = 'must-do' | 'suggestion' | 'question';
   export interface ReviewToolbarState {
     /** Compact review identity for the row-2 left side: `#N name` plus
      *  whether to render the Archived pill. Replaces the in-body header
@@ -169,7 +169,7 @@
 
   // --- Comment filter -------------------------------------------------
   // Two independent dimensions: lifecycle (draft / open / resolved) and
-  // severity (must-do / suggestion / other) — bucket types are declared
+  // severity (must-do / suggestion / question) — bucket types are declared
   // alongside `ReviewToolbarState` above so the toolbar interface can
   // type them.  A comment is shown when BOTH dimensions accept it — so
   // flipping every chip off hides everything. Resolved here covers
@@ -182,7 +182,7 @@
   } {
     const def = {
       status: { draft: true, open: true, resolved: true },
-      flag: { 'must-do': true, suggestion: true, other: true },
+      flag: { 'must-do': true, suggestion: true, question: true },
     } as const;
     if (typeof localStorage === 'undefined') return structuredClone(def);
     try {
@@ -213,7 +213,7 @@
    *  with nothing visible. */
   function resetFilter() {
     filterStatus = { draft: true, open: true, resolved: true };
-    filterFlag = { 'must-do': true, suggestion: true, other: true };
+    filterFlag = { 'must-do': true, suggestion: true, question: true };
   }
 
   const allComments: CommentView[] = $derived([

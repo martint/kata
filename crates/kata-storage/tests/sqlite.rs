@@ -215,7 +215,7 @@ async fn comment_field_round_trip() {
         file: None,
         side: None,
         lines: None,
-        flag: Flag::Other,
+        flag: Flag::Question,
         ..line.clone()
     };
     storage.upsert_draft_comment(&repo, &review_wide).await.unwrap();

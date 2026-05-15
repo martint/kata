@@ -44,7 +44,7 @@ export interface LineRange {
 }
 
 export type Side = 'base' | 'tip';
-export type Flag = 'must-do' | 'suggestion' | 'other';
+export type Flag = 'must-do' | 'suggestion' | 'question';
 export type SessionStatus = 'draft' | 'published' | 'discarded';
 export type ResolutionAction = 'comment' | 'resolve' | 'unresolve' | 'wont-fix';
 

@@ -54,6 +54,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "comment_review_wide",
         sql: include_str!("../../migrations/V005__comment_review_wide.sql"),
     },
+    Migration {
+        version: 6,
+        name: "rename_flag_other_to_question",
+        sql: include_str!("../../migrations/V006__rename_flag_other_to_question.sql"),
+    },
 ];
 
 /// Bring `conn` up to the latest schema. Idempotent: re-running on an

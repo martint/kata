@@ -207,7 +207,7 @@ impl ReviewMcp {
     // ---- comments ------------------------------------------------------
 
     #[tool(
-        description = "Draft a line-level comment. Auto-starts a session if none is open. Use `flag` to mark severity: must-do, suggestion, or other."
+        description = "Draft a line-level comment. Auto-starts a session if none is open. Use `flag` to mark severity: must-do, suggestion, or question."
     )]
     async fn draft_line_comment(
         &self,

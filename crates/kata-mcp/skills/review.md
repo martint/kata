@@ -32,15 +32,18 @@ MCP server can front multiple repositories; every tool call takes a
    - `draft_review_comment` — overall notes, not tied to any file.
 
    `flag` classifies severity: `must-do` (blocks merge), `suggestion`
-   (worth considering), or `other` (notes / questions). The first draft
-   call auto-opens a session; subsequent drafts reuse it until you
-   publish or discard. Revise a still-unpublished draft with
-   `update_draft_comment` (pass the `comment_id` plus the new `body` and
-   `flag`); the anchor stays put.
+   (worth considering), or `question` (you want the author to answer
+   something). The first draft call auto-opens a session; subsequent
+   drafts reuse it until you publish or discard. Revise a still-
+   unpublished draft with `update_draft_comment` (pass the `comment_id`
+   plus the new `body` and `flag`); the anchor stays put.
 
 4. **Respond.** `respond` replies to an existing comment. The `action`
    field also changes resolution state: `comment` (no change),
-   `resolve`, `unresolve`, `wont-fix`, `un-wont-fix`.
+   `resolve`, `unresolve`, `wont-fix`, `un-wont-fix`. **Never `resolve`
+   a `question` you're answering** — whether your answer satisfies the
+   author is the author's call, not yours. Use `action: comment` and
+   let them resolve.
 
 5. **Publish.** `publish_session` with the `session_id` from
    `drafts.session` makes the whole batch visible to the author. Use
@@ -69,3 +72,7 @@ that try to update the summary are rejected.
   was removed.
 - Reserve `must-do` for things you'd actually block on — overuse
   dilutes the signal.
+- Use `question` when you want the author to answer something
+  specific. The author decides whether your answer (or theirs)
+  resolved it — never `action: resolve` on a question you didn't
+  raise.

@@ -148,7 +148,7 @@ async fn seed_database(storage: &SqliteStorage) {
         side: None,
         lines: None,
         review_wide: true,
-        flag: Flag::Other,
+        flag: Flag::Question,
         body: "review-wide thought\n".into(),
     };
     storage.upsert_draft_comment(&repo, &drafted).await.unwrap();

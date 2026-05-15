@@ -289,7 +289,7 @@ async fn writes_after_publish_are_rejected() {
             Some(json!({
                 "anchor_change_id": anchor_change,
                 "anchor_commit_id": anchor_commit,
-                "flag": "other",
+                "flag": "question",
             })),
         )
         .await;
@@ -310,7 +310,7 @@ async fn writes_after_publish_are_rejected() {
             Some(json!({
                 "anchor_change_id": anchor_change,
                 "anchor_commit_id": anchor_commit,
-                "flag": "other",
+                "flag": "question",
             })),
         )
         .await;

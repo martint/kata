@@ -16,7 +16,7 @@
   // value after first render, so this is one-shot — subsequent edits
   // happen in the composer's own state.
   // svelte-ignore state_referenced_locally
-  let flag: Flag = $state(target.editing?.flag ?? 'other');
+  let flag: Flag = $state(target.editing?.flag ?? 'must-do');
   // svelte-ignore state_referenced_locally
   let body: string = $state(target.editing?.body ?? '');
   let mode = $state<'edit' | 'preview'>('edit');
@@ -121,7 +121,7 @@
   <div class="flags">
     <label><input type="radio" bind:group={flag} value="must-do" /> Must do</label>
     <label><input type="radio" bind:group={flag} value="suggestion" /> Suggestion</label>
-    <label><input type="radio" bind:group={flag} value="other" /> Other</label>
+    <label><input type="radio" bind:group={flag} value="question" /> Question</label>
   </div>
   {#if mode === 'edit'}
     <textarea
