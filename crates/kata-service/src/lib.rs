@@ -390,6 +390,17 @@ impl ReviewService {
         };
         let diff_base = compare_base.as_ref().unwrap_or(&selected.base_commit);
 
+        // The commits panel enumerates `diff_base..selected.tip_commit` —
+        // built from immutable commit IDs the manifest pinned at create /
+        // refresh time, so the listing is stable regardless of what the
+        // live revset evaluates to today (or whether it evaluates at all).
+        // Also matches the diff metadata above, which renders the same
+        // pair of endpoints.
+        let commits_revset = kata_core::RevSet::new(format!(
+            "{}..{}",
+            diff_base, selected.tip_commit,
+        ));
+
         // `live_range` lets us tell the UI whether re-resolving the revset
         // would advance the latest patchset (the "is_stale" flag below).
         // We resolve here, in parallel with the diff/commit work, to avoid
@@ -399,19 +410,16 @@ impl ReviewService {
         // browser's `JSON.parse` stays under ~10 ms instead of the
         // ~1 s it took when the whole diff was inlined.
         //
-        // Use `join!` (not `try_join!`) and tolerate failures on the
-        // revset-dependent calls: the manifest's revset can legitimately
-        // stop resolving (e.g. a referenced change ID has gone divergent
-        // in the underlying repo), and that shouldn't prevent the reviewer
-        // from opening the review. The diff comes from immutable commit
-        // IDs and is the load-bearing call.
+        // `live_range` uses the live revset and is allowed to fail (e.g.
+        // the revset references a change ID that's gone divergent); we
+        // fall back to "not stale" rather than failing the whole open.
         let (diff_res, commits_res, live_res) = tokio::join!(
             build_diff_metadata(&**jj, diff_base, &selected.tip_commit),
-            jj.list_commits(&manifest.revset),
+            jj.list_commits(&commits_revset),
             jj.resolve_range(&manifest.revset),
         );
         let diff = diff_res?;
-        let commits = commits_res.unwrap_or_default();
+        let commits = commits_res?;
         let live_range = live_res.ok();
 
         let latest = manifest.current();
