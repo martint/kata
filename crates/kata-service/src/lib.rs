@@ -420,6 +420,10 @@ impl ReviewService {
         );
         let diff = diff_res?;
         let commits = commits_res?;
+        let revset_error = match &live_res {
+            Err(e) => Some(build_revset_error(&**jj, e).await),
+            Ok(_) => None,
+        };
         let live_range = live_res.ok();
 
         let latest = manifest.current();
@@ -492,6 +496,7 @@ impl ReviewService {
                 responses: draft_response_views,
             },
             is_stale,
+            revset_error,
         })
     }
 
@@ -1029,6 +1034,31 @@ pub struct ReviewView {
     /// moved since the latest patchset was recorded. The UI uses this
     /// to decide whether the "Refresh" affordance is even worth showing.
     pub is_stale: bool,
+    /// The user-facing jj error from re-resolving the manifest's revset,
+    /// if it failed. Present when the revset has stopped resolving (e.g.
+    /// a referenced change ID has gone divergent) — the UI surfaces it
+    /// as a banner so the reader knows why `is_stale`, commits-panel
+    /// liveness, and similar features have degraded. `None` when the
+    /// revset resolves cleanly.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revset_error: Option<RevsetError>,
+}
+
+/// Structured information about a failure to resolve a review's
+/// revset. The UI uses this to render a warning banner that explains
+/// what went wrong and — for the divergent-change-ID case — lists
+/// the commit IDs the reader has to `jj abandon` to disambiguate.
+#[derive(Clone, Debug, Serialize)]
+pub struct RevsetError {
+    /// jj's stderr, with the leading `Error: ` framing stripped.
+    /// First line is the headline; the rest is jj's hint output and
+    /// renders as supplemental context.
+    pub message: String,
+    /// When the failure is a divergent change ID, the commit IDs of
+    /// the conflicting visible commits. Empty for other revset
+    /// errors (or when we couldn't enumerate the siblings).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub divergent_commit_ids: Vec<CommitId>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1079,4 +1109,46 @@ fn validate_anchor(input: &DraftCommentInput) -> ServiceResult<()> {
 fn clean_jj_stderr(stderr: &str) -> String {
     let trimmed = stderr.trim();
     trimmed.strip_prefix("Error: ").unwrap_or(trimmed).to_string()
+}
+
+/// Pull the change ID out of jj's stderr when the failure is a
+/// divergent-change error (`Error: Change ID `X` is divergent`).
+/// Returns `None` for any other shape so the caller can fall back
+/// to a plain message-only error.
+fn extract_divergent_change_id(stderr: &str) -> Option<&str> {
+    if !stderr.contains("is divergent") {
+        return None;
+    }
+    let after = stderr.split_once("Change ID `")?.1;
+    after.split('`').next()
+}
+
+/// Build the [`RevsetError`] surfaced through `ReviewView` when the
+/// live revset fails to resolve. For divergent change IDs we also
+/// list the conflicting commit IDs so the UI can show the reader
+/// exactly which commits to `jj abandon`.
+async fn build_revset_error(jj: &dyn JjBackend, err: &kata_jj::Error) -> RevsetError {
+    let stderr = match err {
+        kata_jj::Error::JjFailed { stderr, .. } => stderr.as_str(),
+        _ => {
+            return RevsetError {
+                message: err.to_string(),
+                divergent_commit_ids: Vec::new(),
+            };
+        }
+    };
+    let divergent_commit_ids = match extract_divergent_change_id(stderr) {
+        Some(change_id) => {
+            let revset = kata_core::RevSet::new(format!("change_id({change_id})"));
+            jj.list_commits(&revset)
+                .await
+                .map(|cs| cs.into_iter().map(|c| c.commit_id).collect())
+                .unwrap_or_default()
+        }
+        None => Vec::new(),
+    };
+    RevsetError {
+        message: clean_jj_stderr(stderr),
+        divergent_commit_ids,
+    }
 }

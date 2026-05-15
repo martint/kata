@@ -217,6 +217,20 @@ export interface ReviewView {
   /** True when re-resolving the manifest's revset would advance the
    *  current patchset. Used to gate the "Refresh" button. */
   is_stale: boolean;
+  /** Present when the live revset failed to resolve (e.g. divergent
+   *  change ID). Carries the cleaned jj message plus, for divergent
+   *  changes, the commit IDs the reader needs to disambiguate. UI
+   *  renders a warning banner. */
+  revset_error?: RevsetError;
+}
+
+export interface RevsetError {
+  /** jj's stderr with the `Error: ` framing stripped. */
+  message: string;
+  /** Commit IDs of the conflicting visible commits when the failure
+   *  is a divergent change ID. The reader runs `jj abandon` for the
+   *  version they don't want. Absent / empty for other errors. */
+  divergent_commit_ids?: CommitId[];
 }
 
 export interface CreateReviewParams {

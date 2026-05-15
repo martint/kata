@@ -1504,6 +1504,26 @@
   </p>
 </section>
 
+{#if current.revset_error}
+  {@const err = current.revset_error}
+  {@const headline = err.message.split('\n')[0] ?? err.message}
+  {@const ids = err.divergent_commit_ids ?? []}
+  <div class="revset-error-banner" role="status">
+    <p class="headline">
+      <strong>Revset can't be resolved:</strong>
+      <code>{headline}</code>
+    </p>
+    {#if ids.length > 0}
+      <p class="resolution">
+        Run <code>jj abandon</code> for the version you don't want:
+        {#each ids as id, i}
+          <code class="commit-id">{id.slice(0, 12)}</code>{#if i < ids.length - 1}{', '}{/if}
+        {/each}
+      </p>
+    {/if}
+  </div>
+{/if}
+
 <ReviewSummary
   summary={current.manifest.summary}
   editable={!!viewer && viewer === current.manifest.created_by}
@@ -1738,6 +1758,47 @@
   }
 
   .compare-banner strong {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+
+  /* Warning banner shown when the review's revset can't be resolved
+   * (typically a divergent change ID). The first line of jj's error
+   * is inline; the rest of jj's hint output (including the
+   * `jj abandon` resolution path) lives on the title attribute so a
+   * hover surfaces what to do next. */
+  /* Banner shown when the live revset can't be resolved. Sits above
+   * the review summary so the reader sees the problem before they
+   * try to act on the diff. For divergent change IDs it lists the
+   * conflicting commit IDs inline so the reader can copy one into
+   * `jj abandon`. */
+  .revset-error-banner {
+    margin: 12px 0;
+    padding: 8px 12px;
+    background: var(--warn-bg);
+    border: 1px solid var(--attention-border);
+    border-left: 3px solid var(--warn-text);
+    border-radius: 4px;
+    color: var(--warn-text);
+    font-size: 13px;
+  }
+
+  .revset-error-banner p {
+    margin: 0;
+  }
+
+  .revset-error-banner .resolution {
+    margin-top: 4px;
+    font-size: 12px;
+  }
+
+  .revset-error-banner code {
+    background: rgba(0, 0, 0, 0.08);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 12px;
+  }
+
+  .revset-error-banner .commit-id {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   }
 
