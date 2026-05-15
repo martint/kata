@@ -485,12 +485,12 @@
    * differ. `:global` because we inject the spans into shiki's
    * pre-rendered HTML via `wrapRanges`. */
   :global(.content.removed .wd-removed) {
-    background: var(--remove-bg-strong);
+    background: var(--remove-word-bg);
     border-radius: 2px;
   }
 
   :global(.content.added .wd-added) {
-    background: var(--add-bg-strong);
+    background: var(--add-word-bg);
     border-radius: 2px;
   }
 

@@ -374,12 +374,12 @@
    * selector reaches the spans we inject into shiki's pre-rendered
    * HTML via `wrapRanges`. */
   :global(.row.removed .wd-removed) {
-    background: var(--remove-bg-strong);
+    background: var(--remove-word-bg);
     border-radius: 2px;
   }
 
   :global(.row.added .wd-added) {
-    background: var(--add-bg-strong);
+    background: var(--add-word-bg);
     border-radius: 2px;
   }
 

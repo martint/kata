@@ -24,9 +24,15 @@
   --link-bg: #ddf4ff;
   --add-bg: #e6ffec;
   --add-bg-strong: #ccffd8;
+  /* Stronger shade used for the word-level diff overlay. Layered on
+   * top of `--add-bg`, so it has to be noticeably darker for the
+   * "which words changed" highlight to read on a row that's already
+   * tinted green. */
+  --add-word-bg: #abf2bc;
   --add-text: #1a7f37;
   --remove-bg: #ffebe9;
   --remove-bg-strong: #ffd7d5;
+  --remove-word-bg: #fdb8c0;
   --remove-text: #82071e;
   --warn-bg: #fff1cf;
   --warn-text: #9a6700;
@@ -65,10 +71,14 @@
      * gutter `.ln` cells are `position: sticky` and need an opaque
      * background; rgba lets the scrolling diff text show through. */
     --add-bg-strong: #1a4326;
+    /* Word-level overlay needs to read against the already-tinted
+     * line background — stronger alpha than `--add-bg`. */
+    --add-word-bg: rgba(46, 160, 67, 0.42);
     --add-text: #56d364;
     --remove-bg: rgba(248, 81, 73, 0.18);
     /* Solid pre-mix of rgb(248,81,73) at 35% over --bg. Same reason. */
     --remove-bg-strong: #5f2728;
+    --remove-word-bg: rgba(248, 81, 73, 0.42);
     --remove-text: #f85149;
     --warn-bg: rgba(187, 128, 9, 0.18);
     --warn-text: #d29922;
