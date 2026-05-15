@@ -96,6 +96,21 @@
     await onreply(input);
     replyingTo = null;
   }
+
+  /** Comment IDs the user has explicitly unfolded. Resolved /
+   *  won't-fix comments are collapsed by default — they're "done
+   *  with it" threads that just clutter the view otherwise — but
+   *  the user can click the header to expand them and re-read the
+   *  body or replies. Tracking only the explicit overrides keeps
+   *  the resolution-status as the source of truth: a comment
+   *  flipping back to open via a new response collapses naturally. */
+  let expanded: Set<string> = $state(new Set());
+  function toggleExpanded(id: string) {
+    const next = new Set(expanded);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    expanded = next;
+  }
 </script>
 
 <ul class="thread">
@@ -103,13 +118,26 @@
     {@const label = anchorLabel(c.anchor)}
     {@const state = resolutionFor(c.comment_id, responses)}
     {@const replies = responsesFor(c.comment_id)}
+    {@const collapsed = state !== 'open' && !expanded.has(c.comment_id)}
     <li
       class="comment {c.draft ? 'draft' : ''} {c.anchor.kind === 'outdated'
         ? 'outdated'
-        : ''}"
+        : ''} {collapsed ? 'collapsed' : ''}"
       data-comment-id={c.comment_id}
     >
       <header>
+        <!-- Header is the collapse handle for resolved / won't-fix
+             comments: click anywhere on it (other than the existing
+             buttons) to toggle the body + replies + actions. -->
+        {#if state !== 'open'}
+          <button
+            type="button"
+            class="fold-toggle"
+            aria-expanded={!collapsed}
+            title={collapsed ? 'Expand' : 'Collapse'}
+            onclick={() => toggleExpanded(c.comment_id)}
+          >{collapsed ? '▸' : '▾'}</button>
+        {/if}
         <strong>{c.author}</strong>
         <span class="flag flag-{c.flag}">{c.flag}</span>
         {#if c.draft}<span class="badge draft">draft</span>{/if}
@@ -147,6 +175,7 @@
           >
         {/if}
       </header>
+      {#if !collapsed}
       <div class="body markdown">
         {#if c.body.trim().length > 0}
           {@html renderMarkdown(c.body)}
@@ -257,6 +286,7 @@
           {/if}
         {/if}
       </footer>
+      {/if}
     </li>
   {/each}
 </ul>
@@ -288,6 +318,33 @@
   .comment.outdated {
     opacity: 0.85;
     border-style: dashed;
+  }
+
+  /* Resolved / won't-fix threads collapse to just their header to
+   * stop "done" comments from filling the page. The fold-toggle
+   * chevron at the start of the header expands them on demand.
+   *
+   * Padding deliberately matches the expanded state — overriding it
+   * smaller while collapsed used to jolt the header down a few
+   * pixels on expand, which felt buggy. The header just sits a
+   * little lower in the box when collapsed (no body or footer
+   * below it). */
+  .comment.collapsed {
+    opacity: 0.7;
+  }
+
+  .fold-toggle {
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    color: var(--text-muted);
+    font-size: 11px;
+    padding: 0 2px;
+    margin-right: 2px;
+  }
+
+  .fold-toggle:hover {
+    color: var(--link);
   }
 
   .comment header,
