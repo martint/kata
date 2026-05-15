@@ -528,7 +528,10 @@
        in compact mode because the compact-line-list below already
        shows every line comment irrespective of hunk coverage. -->
   {#if !compact && orphanLineComments.length > 0}
-    <div class="orphan-threads">
+    <div
+      class="orphan-threads"
+      style:margin-left="{gutterIndentPx + 14}px"
+    >
       <p class="muted">
         Anchored outside the diff's context — the lines these comments
         attached to aren't part of the visible hunks.
@@ -779,13 +782,18 @@
    * them from file-level threads (link blue) — they're "should be
    * inline but couldn't be" rather than "explicitly file-scoped."
    *
-   * Indented left to roughly line up with where inline threads
-   * start past the diff's line-number gutter, with a matching
-   * right-side gap so the tint doesn't hug the page edge. */
+   * The whole box (background + border + accent stripe) is pushed
+   * past the line-number gutter via `margin-left` so it visually
+   * starts where the diff content begins — matches the inline
+   * threads. `margin-right` keeps the same right-edge breathing
+   * room those threads use. */
   .orphan-threads {
-    padding: 8px 12px 8px 110px;
+    padding: 8px 12px;
+    /* `margin-left` is set inline from the file's gutter width so the
+     * box aligns with where inline threads start. */
     margin-right: 12px;
     background: var(--warn-bg);
+    border-top: 1px solid var(--border);
     border-bottom: 1px solid var(--border);
     border-left: 3px solid var(--warn-text);
   }
