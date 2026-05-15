@@ -767,9 +767,14 @@
   /* Orphan-threads block: line comments anchored outside the diff's
    * visible context. The amber left-accent + warn tint distinguishes
    * them from file-level threads (link blue) — they're "should be
-   * inline but couldn't be" rather than "explicitly file-scoped." */
+   * inline but couldn't be" rather than "explicitly file-scoped."
+   *
+   * Indented left to roughly line up with where inline threads
+   * start past the diff's line-number gutter, with a matching
+   * right-side gap so the tint doesn't hug the page edge. */
   .orphan-threads {
-    padding: 8px 12px 8px 14px;
+    padding: 8px 12px 8px 110px;
+    margin-right: 12px;
     background: var(--warn-bg);
     border-bottom: 1px solid var(--border);
     border-left: 3px solid var(--warn-text);
