@@ -899,10 +899,16 @@
     align-items: center;
     gap: 8px;
     padding: 8px 12px;
-    background: var(--bg-panel);
+    /* `--bg-elevated` is a step darker than `--bg-panel` — strong
+     * enough that the file boundary registers immediately while
+     * scrolling (--bg-panel was almost indistinguishable from the
+     * page background) but still neutral enough to not compete with
+     * the diff itself. */
+    background: var(--bg-elevated);
     border-bottom: 1px solid var(--border);
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 13px;
+    font-weight: 500;
     /* Pin under the top header (which carries both rows in review
      * mode — see App.svelte). `--app-header-h` is set live by
      * App.svelte's ResizeObserver so this stays correct as the
