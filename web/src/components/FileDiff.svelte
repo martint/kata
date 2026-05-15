@@ -657,7 +657,7 @@
             class="line-composer-overlay"
             bind:this={composerOverlayEl}
             style:top="{composerTop}px"
-            style:padding-left="{gutterIndentPx + 14}px"
+            style:left="{gutterIndentPx + 14}px"
           >
             <CommentComposer
               target={composing}
@@ -838,21 +838,17 @@
   }
 
   .line-composer-overlay {
+    /* `left` is set inline to (gutter width + 14) so the box itself
+     * starts at the diff content edge — matches the inline threads.
+     * `right: 12px` keeps the same breathing room on the far side. */
     position: absolute;
-    left: 0;
-    /* Pull in from the right edge a touch — the threads use the same
-     * 12px breathing room from the file-diff border. `padding-left`
-     * is set inline so the composer content starts past the gutter
-     * column (one or two 48px columns depending on the mode). */
     right: 12px;
     /* Must beat .file-header (z-index: 10) so the composer isn't behind
      * the sticky header when commenting on a line near the top. */
     z-index: 12;
     background: var(--bg-panel);
-    border-top: 1px solid var(--border);
-    border-bottom: 1px solid var(--border);
-    border-right: 1px solid var(--border);
-    border-radius: 0 6px 6px 0;
+    border: 1px solid var(--border);
+    border-radius: 6px;
   }
 
   /* Push table content down to make room for the absolute-positioned
