@@ -522,17 +522,20 @@
    * the surrounding diff rows; with the previous --bg-panel background
    * they blended into context lines and were easy to miss. */
   .thread-sticky {
-    /* `--gutter-offset` is set inline by the call site to the cumulative
-     * width of the line-number gutter columns; the block's tinted box
-     * starts past that offset so it lines up with where the diff
-     * content begins rather than running over the gutter. Sticky
-     * `left` matches the margin so the block stays at the same x
-     * during horizontal scroll, and the width is trimmed to keep a
-     * little right-edge breathing room. */
+    /* `--measured-gutter` is published by FileDiff via ResizeObserver on
+     * the first `.content` cell — the rendered offset where the diff
+     * content begins. `--gutter-offset` (set inline on this element)
+     * is the hardcoded `lnCols * 65` fallback used before the first
+     * measurement and if measurement fails. The block's tinted box
+     * starts at the measured offset so its 3px left stripe lines up
+     * with the .row.commented .content stripe; sticky `left` keeps
+     * the block pinned during horizontal scroll, and the width is
+     * trimmed to keep a little right-edge breathing room. */
+    --gutter: var(--measured-gutter, var(--gutter-offset));
     position: sticky;
-    left: var(--gutter-offset);
-    margin-left: var(--gutter-offset);
-    width: calc(var(--content-vp-width, 100%) - var(--gutter-offset) - 12px);
+    left: var(--gutter);
+    margin-left: var(--gutter);
+    width: calc(var(--content-vp-width, 100%) - var(--gutter) - 12px);
     background: var(--link-bg);
     padding: 8px 12px;
     border-top: 1px solid var(--border-muted);

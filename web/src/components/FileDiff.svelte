@@ -104,6 +104,46 @@
     return () => ro.disconnect();
   });
 
+  /** Measure the actual rendered offset of the first `.content` cell and
+   *  publish it as `--measured-gutter` on the hunks wrapper. The inline
+   *  thread's left stripe, the line-composer overlay, and the orphan-
+   *  threads block all indent past the gutter; without measuring, they
+   *  use a hardcoded `lnCols * 65` that drifts off whenever the table's
+   *  auto-layout expands the line-number column (e.g. 5-digit line
+   *  numbers, larger font). The .content cell's `offsetLeft` is the
+   *  truth — observe it via the gutter cells (which actually trigger
+   *  width changes) so the variable tracks the real gutter. */
+  $effect(() => {
+    if (!hunksWrapperEl) return;
+    const wrapper = hunksWrapperEl;
+    let lnCells: NodeListOf<Element> | null = null;
+    const measure = () => {
+      const contentCell = wrapper.querySelector<HTMLTableCellElement>(
+        'td.content',
+      );
+      if (!contentCell || contentCell.offsetLeft <= 0) return;
+      wrapper.style.setProperty(
+        '--measured-gutter',
+        `${contentCell.offsetLeft}px`,
+      );
+    };
+    const ro = new ResizeObserver(measure);
+    const observeLnCells = () => {
+      if (lnCells) for (const el of lnCells) ro.unobserve(el);
+      lnCells = wrapper.querySelectorAll('td.ln');
+      for (const el of lnCells) ro.observe(el);
+      measure();
+    };
+    observeLnCells();
+    // Re-observe when hunks are added/removed (context expansion, etc.).
+    const mo = new MutationObserver(observeLnCells);
+    mo.observe(wrapper, { childList: true, subtree: true });
+    return () => {
+      ro.disconnect();
+      mo.disconnect();
+    };
+  });
+
   /** Apply the range-selection highlight to rows within this file when a
    *  line-level composer is open here. Direct DOM so toggling `composing`
    *  doesn't re-evaluate every row in every hunk. */
@@ -279,14 +319,13 @@
     file.status === 'added' ? 'tip' : file.status === 'deleted' ? 'base' : 'both',
   );
 
-  /** Distance from the file-diff's left edge to where the content
-   *  cell of a diff row starts, in pixels. Used to indent the inline
-   *  composer overlay and the orphan-thread box so their left edges
-   *  line up with the .row.commented .content stripe — and, by
-   *  extension, with the inline thread's blue accent. One .ln cell
-   *  is 48 (declared width) + 16 (8 px padding each side) + 1
-   *  (right border) = 65 px wide; the side-by-side renderer has a
-   *  single .ln per half, unified-both has two. */
+  /** Fallback distance from the file-diff's left edge to where the
+   *  content cell of a diff row starts, in pixels. The runtime measures
+   *  the actual offset and publishes it as `--measured-gutter`; this
+   *  hardcoded value is what we use before the first measurement and
+   *  if measurement somehow fails. One `.ln` cell is 48 (declared
+   *  width) + 16 (8 px padding each side) + 1 (right border) = 65 px;
+   *  side-by-side has one per half, unified-both has two. */
   const gutterIndentPx = $derived(
     sideBySide || lineNumberMode !== 'both' ? 65 : 130,
   );
@@ -526,7 +565,7 @@
   {#if !compact && orphanLineComments.length > 0}
     <div
       class="orphan-threads"
-      style:margin-left="{gutterIndentPx}px"
+      style:margin-left="var(--measured-gutter, {gutterIndentPx}px)"
     >
       <p class="muted">
         Anchored outside the diff's context — the lines these comments
@@ -658,7 +697,7 @@
             class="line-composer-overlay"
             bind:this={composerOverlayEl}
             style:top="{composerTop}px"
-            style:left="{gutterIndentPx}px"
+            style:left="var(--measured-gutter, {gutterIndentPx}px)"
           >
             <CommentComposer
               target={composing}

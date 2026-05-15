@@ -576,13 +576,15 @@
   /* Blue tint + left stripe so inline threads visually separate from
    * surrounding diff rows. See HunkLines.svelte for rationale. */
   .thread-sticky {
-    /* See HunkLines.svelte — same indent / right-trim pattern. The
-     * inline `--gutter-offset` is one line-number column's width
-     * plus a small gap. */
+    /* See HunkLines.svelte — same measured / fallback / right-trim
+     * pattern. `--measured-gutter` is published by FileDiff and
+     * cascades down; the inline `--gutter-offset` is the hardcoded
+     * fallback (one line-number column's width plus a small gap). */
+    --gutter: var(--measured-gutter, var(--gutter-offset));
     position: sticky;
-    left: var(--gutter-offset);
-    margin-left: var(--gutter-offset);
-    width: calc(var(--content-vp-width, 100%) - var(--gutter-offset) - 12px);
+    left: var(--gutter);
+    margin-left: var(--gutter);
+    width: calc(var(--content-vp-width, 100%) - var(--gutter) - 12px);
     background: var(--link-bg);
     padding: 8px 12px;
     border-top: 1px solid var(--border-muted);

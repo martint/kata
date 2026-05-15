@@ -61,23 +61,6 @@ picking up once we have a workflow that mounts/unmounts the same
 slot quickly (rapid scrolling on a slow connection, automated
 navigation tests, etc.).
 
-## Measure the line-number gutter instead of hardcoding its width
-
-The inline thread, the line-composer overlay, and the orphan-thread
-block all indent past the gutter using `lnCols * 65` (where 65 =
-48 declared `width` + 8 + 8 padding + 1 right border on one `.ln`
-cell). That lines up with the `.row.commented .content` stripe
-today because the line-number digits fit inside the cell's 32 px
-content area at the 12.5 px monospace font. Once that breaks —
-5-digit line numbers, font size change, padding tweak — the table
-auto-grows the gutter column and the indents stop aligning again.
-
-Robust fix: ResizeObserver the first `.content` cell of the hunk
-table and publish its `offsetLeft` as a CSS variable on the
-wrapper. Everything that currently uses `lnCols * 65` reads the
-variable. One observer per visible file; no math, no coupling to
-the cell's box-model values.
-
 ## Word-diff pairing across uneven remove/add blocks
 
 `computeHunkWordDiff` (`web/src/lib/wordDiff.ts`) uses N:N pairing
