@@ -104,9 +104,12 @@ available slugs.
 | `kata-mcp`     | MCP transport (Streamable HTTP) over the same service.        |
 
 The Svelte 5 frontend lives in `web/`. The release binary embeds
-`web/dist` via `rust-embed`; pass `--web-dir <path>` at runtime to
-serve a different bundle, which is what you want during UI development
-(`cd web && bun run dev` for the Vite dev server).
+`web/dist` via `rust-embed`. For UI development, run `cd web && bun
+run dev` — the Vite dev server serves on `:5173` with hot module
+reload and proxies `/api` to a `kata serve` running on `:7878`.
+You can also pass `--web-dir <path>` to `kata serve` to serve a
+pre-built bundle from disk instead of the embedded one (useful
+when iterating on the bundle without rebuilding the binary).
 
 ## Development
 
