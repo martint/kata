@@ -192,6 +192,41 @@ Permission model is the open question — most reviewers don't have
 write access to the author's working copy. Probably ships as the
 patch-handoff variant first, with absorb-directly as an opt-in.
 
+## Richer divergence panel
+
+The divergence banner shows jj's stderr (which already names the
+change ID and the `nzvkmnyu/0`, `nzvkmnyu/1`, … offsets), but the
+reader still has to drop to a shell to figure out which version is
+which before they can pick what to abandon. A more useful panel
+would enumerate the divergent siblings inline — call `jj log -r
+'change_id(X)'` and render each candidate's commit ID, author,
+timestamp, and description first line. Optionally a copy-button
+per row that yields `jj abandon <commit_id>` so the reader doesn't
+have to retype the ID.
+
+The data is one extra `list_commits` call against `change_id(X)`;
+the panel only renders when `revset_error` is set, so the cost is
+gated.
+
+## Edit a review's revset after creation
+
+Today only `refresh_review` and `update_review_summary` mutate a
+review. There's no way to rewrite `manifest.revset` itself, which
+is exactly what a reader wants to do when divergence is genuine
+("both versions are real, the review should track only the new
+one") or when the original revset stopped meaning what they
+intended. The shape is straightforward:
+
+- `POST /api/repos/<slug>/reviews/<n>/revset` taking `{ revset:
+  string }`.
+- Service-side: validate the new revset resolves to a single tip
+  + base, append a new patchset, record the previous one's tip
+  as `parent_patchset` if it descends.
+
+Wait for the demand signal before building — most reviews probably
+don't hit this, and the divergence banner + `jj abandon` workflow
+covers the common case.
+
 ## Other ideas
 
 _(add new entries above this line as they come up)_
