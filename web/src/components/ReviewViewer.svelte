@@ -1635,6 +1635,8 @@
         {reviewAnchorIds}
         {composing}
         {saving}
+        lastVisitAt={current.last_visit_at ?? null}
+        {viewer}
         onselect={selectCommit}
         onstartcompose={startCompose}
         oncancelcompose={cancelCompose}
@@ -1687,6 +1689,8 @@
           compact={diffsCollapsed}
           diffCache={fileDiffCache}
           {saving}
+          lastVisitAt={current.last_visit_at ?? null}
+          {viewer}
           onstartcompose={startCompose}
           oncancelcompose={cancelCompose}
           onsubmit={submitComment}

@@ -41,6 +41,12 @@
     ondelete: (comment: CommentView) => Promise<void>;
     onedit: (comment: CommentView) => void;
     onselectpatchset: (n: number, commentId?: string) => void;
+    /** Timestamp of the viewer's previous open; threaded to
+     *  CommentThread to drive the "new replies" badge. */
+    lastVisitAt?: string | null;
+    /** Currently signed-in author, so responses they wrote aren't
+     *  counted as unread to themselves. */
+    viewer?: string;
   }
   const {
     commits,
@@ -60,6 +66,8 @@
     ondelete,
     onedit,
     onselectpatchset,
+    lastVisitAt = null,
+    viewer = '',
   }: Props = $props();
 
   let collapsed = $state(false);
@@ -198,6 +206,8 @@
                   {saving}
                   {currentPatchset}
                   {editingCommentId}
+                  {lastVisitAt}
+                  {viewer}
                   {onreply}
                   {onstatus}
                   {ondelete}
@@ -288,6 +298,8 @@
                     {saving}
                     {currentPatchset}
                     {editingCommentId}
+                    {lastVisitAt}
+                    {viewer}
                     {onreply}
                     {onstatus}
                     {ondelete}

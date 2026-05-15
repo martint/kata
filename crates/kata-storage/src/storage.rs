@@ -2,12 +2,23 @@
 //! implementation today and any future database-backed one.
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use kata_core::{
     Author, Comment, CommentId, OpId, RepoId, RepoManifest, Response, ResponseId, ReviewId,
     ReviewManifest, Session, SessionId,
 };
 
 use crate::error::Result;
+
+/// What the storage layer remembers from a reviewer's previous open of
+/// a review. The op-id is the jj-side baseline for "what operations
+/// have happened in the repo since"; the timestamp is the wall-clock
+/// baseline for "what comments / responses have landed since".
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ReviewVisit {
+    pub op_id: OpId,
+    pub visited_at: DateTime<Utc>,
+}
 
 /// Lightweight summary returned by listing.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -144,16 +155,16 @@ pub trait Storage: Send + Sync {
 
     // ---- per-reviewer visit log ----------------------------------------
 
-    /// Last jj op-id this `author` saw for `review`, set by
-    /// [`Self::record_review_visit`] each time they open it. `None` when
+    /// What this `author` saw the last time they opened `review`: the
+    /// jj op-id at that point and the wall-clock timestamp. `None` when
     /// the reviewer has never opened this review before — the service
-    /// treats that as "no since-you-last-looked list to render."
+    /// treats that as "no since-you-last-looked baseline yet."
     async fn last_review_visit(
         &self,
         repo: &RepoId,
         review: &ReviewId,
         author: &Author,
-    ) -> Result<Option<OpId>>;
+    ) -> Result<Option<ReviewVisit>>;
 
     /// Upsert `author`'s last-seen op-id for `review`. Idempotent — runs
     /// on every open_review and just overwrites the previous high-water

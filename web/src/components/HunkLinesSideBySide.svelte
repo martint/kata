@@ -28,6 +28,11 @@
     ondelete: (comment: CommentView) => Promise<void>;
     onedit: (comment: CommentView) => void;
     onselectpatchset: (n: number, commentId?: string) => void;
+    /** Timestamp of the viewer's previous open. Threaded to
+     *  CommentThread to drive the "new replies" badge. */
+    lastVisitAt?: string | null;
+    /** Currently signed-in author identity. */
+    viewer?: string;
   }
   const {
     hunk,
@@ -44,6 +49,8 @@
     ondelete,
     onedit,
     onselectpatchset,
+    lastVisitAt = null,
+    viewer = '',
   }: Props = $props();
 
   type PairedRow =
@@ -321,6 +328,8 @@
                     {saving}
                     {currentPatchset}
                     {editingCommentId}
+                    {lastVisitAt}
+                    {viewer}
                     {onreply}
                     {onstatus}
                     {ondelete}
@@ -387,6 +396,8 @@
                     {saving}
                     {currentPatchset}
                     {editingCommentId}
+                    {lastVisitAt}
+                    {viewer}
                     {onreply}
                     {onstatus}
                     {ondelete}

@@ -231,6 +231,10 @@ export interface ReviewView {
    *  open and when nothing changed. UI summarizes as e.g. "Since you
    *  were here: 3 amends, 1 rebase". */
   ops_since?: OpSummary[];
+  /** Wall-clock timestamp the viewer last opened this review at.
+   *  Used to flag comments with responses newer than this as having
+   *  unread replies. Absent on the viewer's first ever open. */
+  last_visit_at?: string;
 }
 
 export type OpKind =

@@ -58,6 +58,11 @@
      *  otherwise the default `false` would re-fold the file every
      *  remount. */
     wholeFile?: boolean;
+    /** Timestamp of the viewer's previous open. Threaded to
+     *  `CommentThread` to flag threads with new replies since then. */
+    lastVisitAt?: string | null;
+    /** Currently signed-in author identity. */
+    viewer?: string;
   }
   let {
     repo,
@@ -79,6 +84,8 @@
     onedit,
     onselectpatchset,
     wholeFile = $bindable(false),
+    lastVisitAt = null,
+    viewer = '',
   }: Props = $props();
 
   let collapsed = $state(false);
@@ -719,6 +726,8 @@
         {saving}
         {currentPatchset}
         {editingCommentId}
+        {lastVisitAt}
+        {viewer}
         {onreply}
         {onstatus}
         {ondelete}
@@ -749,6 +758,8 @@
         {saving}
         {currentPatchset}
         {editingCommentId}
+        {lastVisitAt}
+        {viewer}
         {onreply}
         {onstatus}
         {ondelete}
@@ -785,6 +796,8 @@
               {saving}
               {currentPatchset}
               {editingCommentId}
+              {lastVisitAt}
+              {viewer}
               {onreply}
               {onstatus}
               {ondelete}
@@ -849,6 +862,8 @@
               {composing}
               {saving}
               {highlights}
+              {lastVisitAt}
+              {viewer}
               {onstartcompose}
               {onreply}
               {onstatus}
@@ -867,6 +882,8 @@
               {saving}
               {highlights}
               {lineNumberMode}
+              {lastVisitAt}
+              {viewer}
               {onstartcompose}
               {onreply}
               {onstatus}

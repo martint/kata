@@ -14,4 +14,4 @@ pub mod storage;
 
 pub use error::{Error, Result};
 pub use ids::{compute_repo_id, jj_repo_canonical_path};
-pub use storage::{DraftsView, ReviewSummary, Storage};
+pub use storage::{DraftsView, ReviewSummary, ReviewVisit, Storage};

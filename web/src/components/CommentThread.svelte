@@ -38,6 +38,14 @@
      *  which reads like two separate things when in fact one is being
      *  rewritten into the other. */
     editingCommentId?: string | null;
+    /** Wall-clock timestamp the viewer last opened this review at, or
+     *  `null` on their first ever open. Threads with at least one
+     *  response newer than this (and not authored by the viewer) get
+     *  flagged as having unread replies. */
+    lastVisitAt?: string | null;
+    /** Currently signed-in author. A response by this author against
+     *  their own comment doesn't count as "unread to themselves." */
+    viewer?: string;
   }
   const {
     comments,
@@ -50,6 +58,8 @@
     onedit,
     onselectpatchset,
     editingCommentId = null,
+    lastVisitAt = null,
+    viewer = '',
   }: Props = $props();
 
   const visibleComments = $derived(
@@ -93,6 +103,22 @@
       .sort((a, b) => a.created_at.localeCompare(b.created_at));
   }
 
+  /** Does this comment have at least one response that landed after
+   *  the viewer's last open of the review (and that the viewer didn't
+   *  author themselves)? Drives the 'new replies' badge and overrides
+   *  the resolved-collapse so unread threads stay expanded even after
+   *  the responder marked them done. */
+  function hasUnreadReplies(commentId: string): boolean {
+    if (!lastVisitAt) return false;
+    return responses.some(
+      (r) =>
+        r.in_reply_to === commentId &&
+        !r.draft &&
+        r.author !== viewer &&
+        r.created_at > lastVisitAt,
+    );
+  }
+
   async function copyToClipboard(text: string) {
     await copyText(text);
   }
@@ -132,11 +158,18 @@
     {@const label = anchorLabel(c.anchor)}
     {@const state = resolutionFor(c.comment_id, responses)}
     {@const replies = responsesFor(c.comment_id)}
-    {@const collapsed = state !== 'open' && !expanded.has(c.comment_id)}
+    {@const unread = hasUnreadReplies(c.comment_id)}
+    <!-- A resolved thread normally collapses (it's "done"), but if it
+         has replies the viewer hasn't seen yet we keep it expanded so
+         the body and the new response are immediately visible —
+         otherwise the agent's claim of "resolved" would hide its own
+         answer behind a fold. -->
+    {@const collapsed =
+      state !== 'open' && !expanded.has(c.comment_id) && !unread}
     <li
       class="comment {c.draft ? 'draft' : ''} {c.anchor.kind === 'outdated'
         ? 'outdated'
-        : ''} {collapsed ? 'collapsed' : ''}"
+        : ''} {collapsed ? 'collapsed' : ''} {unread ? 'unread' : ''}"
       data-comment-id={c.comment_id}
     >
       <header>
@@ -158,6 +191,9 @@
         {#if label}<span class="badge anchor-{c.anchor.kind}">{label}</span>{/if}
         {#if state !== 'open'}
           <span class="badge resolution-{state}">{state}</span>
+        {/if}
+        {#if unread}
+          <span class="badge new-replies" title="New replies since your last visit">new replies</span>
         {/if}
         <!-- "Added in PS N" jump-button: appears only when the
              comment came from a different patchset than the one
@@ -334,6 +370,15 @@
     border-style: dashed;
   }
 
+  /* Outline a thread with new replies so the reader's eye lands on
+   * it ahead of the surrounding done-and-folded threads. The left
+   * accent is wider than the regular border so it still reads at a
+   * glance after the user scrolls past it. */
+  .comment.unread {
+    border-color: var(--link);
+    box-shadow: inset 3px 0 0 var(--link);
+  }
+
   /* Resolved / won't-fix threads collapse to just their header to
    * stop "done" comments from filling the page. The fold-toggle
    * chevron at the start of the header expands them on demand.
@@ -473,6 +518,12 @@
   .badge.resolution-wont-fix {
     background: var(--bg-elevated);
     color: var(--text-muted);
+  }
+
+  .badge.new-replies {
+    background: var(--link-bg);
+    color: var(--link);
+    border: 1px solid var(--link);
   }
 
   /* "Added in PS N" jump-button. Rendered only when the comment came

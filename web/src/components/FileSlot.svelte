@@ -70,6 +70,12 @@
     ondelete: (comment: CommentView) => Promise<void>;
     onedit: (comment: CommentView) => void;
     onselectpatchset: (n: number, commentId?: string) => void;
+    /** Timestamp of the viewer's previous open of the review. Threaded
+     *  down to `FileDiff` → `CommentThread` so threads with responses
+     *  newer than this get the "new replies" badge and stay expanded. */
+    lastVisitAt?: string | null;
+    /** Currently signed-in author identity. */
+    viewer?: string;
   }
   const {
     repo,
@@ -94,6 +100,8 @@
     ondelete,
     onedit,
     onselectpatchset,
+    lastVisitAt = null,
+    viewer = '',
   }: Props = $props();
 
   let slotEl: HTMLElement | undefined = $state();
@@ -232,6 +240,8 @@
         {compact}
         loadingHunks={loadingHunks && !diffCache.has(cacheKey)}
         bind:wholeFile
+        {lastVisitAt}
+        {viewer}
         {onstartcompose}
         {oncancelcompose}
         {onsubmit}

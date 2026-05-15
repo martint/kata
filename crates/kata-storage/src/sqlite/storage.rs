@@ -36,7 +36,7 @@ use crate::sqlite::serde_enums::{
     action_from_str, action_to_str, flag_from_str, flag_to_str, session_status_to_str,
     side_from_str, side_to_str,
 };
-use crate::storage::{DraftsView, ReviewSummary, Storage};
+use crate::storage::{DraftsView, ReviewSummary, ReviewVisit, Storage};
 
 pub struct SqliteStorage {
     conn: Arc<Mutex<Connection>>,
@@ -1001,22 +1001,35 @@ impl Storage for SqliteStorage {
         repo: &RepoId,
         review: &ReviewId,
         author: &Author,
-    ) -> Result<Option<OpId>> {
+    ) -> Result<Option<ReviewVisit>> {
         ensure_repo_id(repo)?;
         ensure_review_id(review)?;
         ensure_author(author)?;
         let review_str = review.as_str().to_owned();
         let author_str = author.as_str().to_owned();
         self.with_conn(move |conn| {
-            let id: Option<String> = conn
+            let row: Option<(String, String)> = conn
                 .query_row(
-                    "SELECT op_id FROM review_visits
+                    "SELECT op_id, visited_at FROM review_visits
                      WHERE review_id = ?1 AND author = ?2",
                     params![review_str, author_str],
-                    |row| row.get(0),
+                    |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .optional()?;
-            Ok(id.map(OpId::new))
+            let Some((op_id, visited_at)) = row else {
+                return Ok(None);
+            };
+            let visited_at = chrono::DateTime::parse_from_rfc3339(&visited_at)
+                .map(|t| t.with_timezone(&chrono::Utc))
+                .map_err(|_| Error::InvalidId {
+                    label: "review_visits.visited_at".into(),
+                    value: visited_at,
+                    reason: "not a valid RFC 3339 timestamp",
+                })?;
+            Ok(Some(ReviewVisit {
+                op_id: OpId::new(op_id),
+                visited_at,
+            }))
         })
         .await
     }

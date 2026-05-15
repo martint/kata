@@ -433,16 +433,25 @@ impl ReviewService {
         // the current op-id so the *next* visit has a baseline. A failure
         // to read the op-id is treated as "skip the feature for this
         // open" — it's never load-bearing.
+        // Read the previous visit BEFORE recording the new one so we
+        // have a stable baseline for both the op-log "since you were
+        // here" diff (jj operations) and the unread-replies signal on
+        // comments (responses landed after `prev.visited_at`).
+        let prev_visit = if viewer.as_str().is_empty() {
+            None
+        } else {
+            self.storage
+                .last_review_visit(repo, review, viewer)
+                .await
+                .ok()
+                .flatten()
+        };
         let ops_since = match (&current_op_res, viewer.as_str().is_empty()) {
             (Ok(current_op), false) => {
-                let prev = self
-                    .storage
-                    .last_review_visit(repo, review, viewer)
-                    .await
-                    .ok()
-                    .flatten();
-                let list = match prev {
-                    Some(prev) => jj.ops_between(&prev, current_op).await.unwrap_or_default(),
+                let list = match prev_visit.as_ref() {
+                    Some(prev) => {
+                        jj.ops_between(&prev.op_id, current_op).await.unwrap_or_default()
+                    }
                     None => Vec::new(),
                 };
                 let _ = self
@@ -453,6 +462,7 @@ impl ReviewService {
             }
             _ => Vec::new(),
         };
+        let last_visit_at = prev_visit.map(|p| p.visited_at);
 
         let latest = manifest.current();
         let is_stale = match &live_range {
@@ -526,6 +536,7 @@ impl ReviewService {
             is_stale,
             revset_error,
             ops_since,
+            last_visit_at,
         })
     }
 
@@ -1084,6 +1095,14 @@ pub struct ReviewView {
     /// a compact "since you were here" summary when non-empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ops_since: Vec<OpSummary>,
+    /// Wall-clock timestamp the viewer last opened this review at, or
+    /// `None` on their first ever open. The UI compares it against each
+    /// comment's responses to flag threads with new replies since the
+    /// last visit. The recorded baseline advances on every open, so
+    /// "unread" is naturally relative to the *previous* open, not the
+    /// current one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_visit_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// Structured information about a failure to resolve a review's
