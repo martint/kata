@@ -37,9 +37,9 @@ before it lands. Kata embraces that:
 cargo build --release
 
 # Run against one or more workspaces. Each gets its own URL slug.
-./target/release/kata \
+./target/release/kata serve \
   --workspace main=/path/to/repo \
-  --root /var/lib/kata \
+  --data /var/lib/kata \
   --author "Jane Doe <jane@example.com>" \
   --bind 127.0.0.1:7878
 ```
@@ -48,7 +48,7 @@ Open `http://127.0.0.1:7878`, pick a bookmark, type a revset, and the
 new review is ready to comment on.
 
 Every flag mirrors an environment variable (`KATA_WORKSPACE`,
-`KATA_ROOT`, `KATA_AUTHOR`, `KATA_BIND`, `KATA_WEB_DIR`, …) so it drops
+`KATA_DATA`, `KATA_AUTHOR`, `KATA_BIND`, `KATA_WEB_DIR`, …) so it drops
 cleanly into systemd, Docker, or whatever config management you're
 already using. Add more workspaces by repeating `--workspace`; bare
 paths derive the slug from the directory name, or pass `name=path` to
