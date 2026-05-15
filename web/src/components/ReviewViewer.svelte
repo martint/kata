@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
+  import { SvelteMap } from 'svelte/reactivity';
   import { api } from '../lib/api';
   import { subscribe as subscribeEvents } from '../lib/events';
   import type {
@@ -8,6 +9,7 @@
     ComposerTarget,
     DraftCommentInput,
     DraftResponseInput,
+    FileChange,
     Patchset,
     ResponseView,
     ReviewView,
@@ -754,6 +756,14 @@
   /** Files reordered to match the file tree's DFS traversal so the diff
    *  panel reads top-to-bottom the way the sidebar does. */
   const orderedFiles = $derived(sortFilesLikeTree(displayedFiles));
+
+  /** Shared cache of resolved per-file diffs, keyed by
+   *  `${patchset}|${compare}|${path}`. FileSlot virtualizes itself
+   *  out of the DOM once a file is far enough off-screen, so without
+   *  this every scroll-back refetched the same hunks. Scoped to this
+   *  review (the map dies with the component); composite key keeps
+   *  patchset switches from clobbering each other's entries. */
+  const fileDiffCache = new SvelteMap<string, FileChange>();
 
   /** Patchset to thread through to FileSlot/FileDiff for file content,
    *  highlights, and new-comment anchors. In scoped view this points
@@ -1650,6 +1660,7 @@
             'file' in composing &&
             composing.file === f.path)}
           compact={diffsCollapsed}
+          diffCache={fileDiffCache}
           {saving}
           onstartcompose={startCompose}
           oncancelcompose={cancelCompose}

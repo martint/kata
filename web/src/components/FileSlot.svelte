@@ -56,6 +56,12 @@
     /** Render the file with its hunks hidden — only comments and the
      *  file header remain. */
     compact: boolean;
+    /** Shared cache of resolved file diffs keyed by
+     *  `${patchset}|${compare}|${path}`. Lifted up to ReviewViewer
+     *  so cached entries survive this slot virtualizing itself out
+     *  of the DOM — without it, scrolling away from a file and
+     *  back refetched the same hunks. */
+    diffCache: Map<string, FileChange>;
     onstartcompose: (target: ComposerTarget) => void;
     oncancelcompose: () => void;
     onsubmit: (input: import('../lib/types').DraftCommentInput) => Promise<void>;
@@ -79,6 +85,7 @@
     saving,
     forceRender,
     compact,
+    diffCache,
     onstartcompose,
     oncancelcompose,
     onsubmit,
@@ -94,32 +101,21 @@
   let inViewport = $state(false);
   let lastKnownHeight = $state<number | null>(null);
 
-  /** Lazy-fetched diff body. `open_review` ships only the file list
-   *  (path, status, rename info) — hunks come in piecemeal as files
-   *  scroll near the viewport. `resolved` holds the merged
-   *  `FileChange` once the per-file fetch resolves; until then we
-   *  fall back to `file` (which has `hunks: undefined`). */
-  let resolved = $state<FileChange | null>(null);
+  /** Cache key for this slot's (patchset, compare, path) combination.
+   *  Composite so a patchset switch reads from a fresh slot in the
+   *  shared cache rather than overwriting the previous entry. */
+  const cacheKey = $derived(`${patchset.n}|${compareWith ?? ''}|${file.path}`);
+
   let loadingHunks = $state(false);
   let loadError = $state<string | null>(null);
-
-  /** When the patchset or the compare target changes, the same path
-   *  now describes a different delta — our cached `resolved` from a
-   *  previous selection would otherwise stick around and the user
-   *  would see stale hunks. Reset so the fetch effect below re-runs
-   *  against the new endpoints. */
-  $effect(() => {
-    patchset.n;
-    compareWith;
-    resolved = null;
-    loadError = null;
-  });
 
   /** Fires when the file is close enough to be visible OR when the
    *  slot is marked `eagerFetch` (because the file carries one or
    *  more comments and the comment-nav needs the diff in cache to
    *  land reliably). Skip if the initial payload already had hunks
-   *  (binary files, or a smaller endpoint that ships them eagerly).
+   *  (binary files, or a smaller endpoint that ships them eagerly)
+   *  or if a previous fetch already populated the shared cache for
+   *  this (patchset, compare, path).
    *
    *  `!= null` rather than `!== undefined` because the metadata
    *  endpoint serialises `hunks: None` as JSON `null` (not an absent
@@ -127,14 +123,16 @@
    *  the diff would stay stuck on "Diff omitted". */
   $effect(() => {
     if (!shouldRender && !eagerFetch) return;
-    if (resolved !== null || loadingHunks) return;
+    if (loadingHunks) return;
     if (file.hunks != null || file.binary) return;
+    if (diffCache.has(cacheKey)) return;
+    const key = cacheKey;
     loadingHunks = true;
     loadError = null;
     api
       .fileDiff(repo, reviewNumber, file.path, patchset.n, compareWith ?? undefined)
       .then((updated) => {
-        resolved = updated;
+        diffCache.set(key, updated);
       })
       .catch((e: Error) => {
         loadError = e.message;
@@ -144,9 +142,10 @@
       });
   });
 
-  /** What we actually hand to `FileDiff`: the lazy-loaded one if the
-   *  fetch has resolved, otherwise the metadata-only original. */
-  const effectiveFile = $derived(resolved ?? file);
+  /** What we actually hand to `FileDiff`: the cached resolved one if
+   *  a previous fetch (in this slot or another mount of it) put one
+   *  there, otherwise the metadata-only original. */
+  const effectiveFile = $derived(diffCache.get(cacheKey) ?? file);
 
   /** Generous rootMargin so files don't churn mount/unmount during normal
    *  scrolling — we keep ~3 viewport-heights' worth of files alive at a
@@ -225,7 +224,7 @@
         {composing}
         {saving}
         {compact}
-        loadingHunks={loadingHunks && resolved === null}
+        loadingHunks={loadingHunks && !diffCache.has(cacheKey)}
         {onstartcompose}
         {oncancelcompose}
         {onsubmit}
