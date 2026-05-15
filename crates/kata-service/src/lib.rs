@@ -646,8 +646,13 @@ impl ReviewService {
             .change_to_commit(change)
             .await?
             .ok_or_else(|| ServiceError::NotFound(format!("change {change}")))?;
+        // Drive the parent lookup from the resolved commit ID, not the
+        // change ID — commit IDs are immutable and can't be divergent,
+        // so this stays correct even when the change has multiple
+        // visible siblings (and `change_to_commit` already picked one
+        // for us).
         let parent = jj
-            .resolve_endpoint(&format!("{change}-"))
+            .resolve_endpoint(&format!("{tip_commit}-"))
             .await?
             .ok_or_else(|| ServiceError::NotFound(format!("parent of change {change}")))?;
         let diff = build_diff(&**jj, &parent.commit_id, &tip_commit).await?;

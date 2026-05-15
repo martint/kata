@@ -182,11 +182,18 @@ impl JjBackend for JjCli {
     }
 
     async fn change_to_commit(&self, change: &ChangeId) -> Result<Option<CommitId>> {
+        // `latest(change_id(<id>))` picks one commit even when the
+        // change is divergent — multiple visible commits sharing a
+        // change_id, e.g. after `jj op restore` to a state with two
+        // amend chains, or concurrent edits in two workspaces. A
+        // bare `<id>` revset errors out in that case, which kills
+        // any flow that just wants "the commit for this change."
+        let revset = format!("latest(change_id({}))", change.as_str());
         let args = [
             "log",
             "--no-graph",
             "-r",
-            change.as_str(),
+            &revset,
             "-T",
             r#"commit_id ++ "\n""#,
         ];
