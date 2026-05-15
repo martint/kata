@@ -74,6 +74,10 @@
   }: Props = $props();
 
   let collapsed = $state(false);
+  /** When an existing draft is being edited, hide it from the thread so
+   *  the composer below takes its visual slot instead of stacking under
+   *  the original draft bubble. */
+  const editingCommentId = $derived(composing?.editing?.commentId ?? null);
   let sectionEl: HTMLElement | undefined = $state();
   let hunksWrapperEl: HTMLDivElement | undefined = $state();
   let composerOverlayEl: HTMLDivElement | undefined = $state();
@@ -503,6 +507,7 @@
         {responses}
         {saving}
         {currentPatchset}
+        {editingCommentId}
         {onreply}
         {onstatus}
         {ondelete}
@@ -532,6 +537,7 @@
         {responses}
         {saving}
         {currentPatchset}
+        {editingCommentId}
         {onreply}
         {onstatus}
         {ondelete}
@@ -567,6 +573,7 @@
               {responses}
               {saving}
               {currentPatchset}
+              {editingCommentId}
               {onreply}
               {onstatus}
               {ondelete}

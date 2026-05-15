@@ -31,6 +31,13 @@
      *  the comment was originally written against AND scroll to the
      *  comment itself in that view. Optional. */
     onselectpatchset?: (n: number, commentId?: string) => void;
+    /** When the user clicks Edit on a draft, the parent opens a
+     *  composer pre-filled with that draft's body — and passes the
+     *  comment's id here so we hide it from the thread. Without this
+     *  the original draft would still render above the composer,
+     *  which reads like two separate things when in fact one is being
+     *  rewritten into the other. */
+    editingCommentId?: string | null;
   }
   const {
     comments,
@@ -42,7 +49,14 @@
     ondelete,
     onedit,
     onselectpatchset,
+    editingCommentId = null,
   }: Props = $props();
+
+  const visibleComments = $derived(
+    editingCommentId
+      ? comments.filter((c) => c.comment_id !== editingCommentId)
+      : comments,
+  );
 
   let replyingTo: string | null = $state(null);
 
@@ -114,7 +128,7 @@
 </script>
 
 <ul class="thread">
-  {#each comments as c (c.comment_id)}
+  {#each visibleComments as c (c.comment_id)}
     {@const label = anchorLabel(c.anchor)}
     {@const state = resolutionFor(c.comment_id, responses)}
     {@const replies = responsesFor(c.comment_id)}

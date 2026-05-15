@@ -66,6 +66,11 @@
   /** Commit-ids whose body is expanded. Body = lines after the first. */
   let expanded: Set<string> = $state(new Set());
 
+  /** When an existing draft is being edited, hide it from the thread so
+   *  the composer below takes its visual slot instead of stacking under
+   *  the original draft bubble. */
+  const editingCommentId = $derived(composing?.editing?.commentId ?? null);
+
   /** commit_id → number of comments on a file this commit touched.
    *  Doesn't include commit-level threads — those render inline. */
   const countByCommit = $derived.by(() => {
@@ -137,15 +142,11 @@
 
   function isComposingHere(changeId: string): boolean {
     return (
-      composing?.kind === 'commit' &&
-      composing.change_id === changeId &&
-      !composing.editing
+      composing?.kind === 'commit' && composing.change_id === changeId
     );
   }
 
-  const isComposingReviewWide = $derived(
-    composing?.kind === 'review' && !composing.editing,
-  );
+  const isComposingReviewWide = $derived(composing?.kind === 'review');
 </script>
 
 <section class="commits">
@@ -196,6 +197,7 @@
                   {responses}
                   {saving}
                   {currentPatchset}
+                  {editingCommentId}
                   {onreply}
                   {onstatus}
                   {ondelete}
@@ -285,6 +287,7 @@
                     {responses}
                     {saving}
                     {currentPatchset}
+                    {editingCommentId}
                     {onreply}
                     {onstatus}
                     {ondelete}

@@ -82,6 +82,10 @@
   }
 
   const rows = $derived(pair(hunk.lines));
+  /** When an existing draft is being edited, hide it from the thread so
+   *  the composer below takes its visual slot instead of stacking under
+   *  the original draft bubble. */
+  const editingCommentId = $derived(composing?.editing?.commentId ?? null);
   let dragging: { side: Side; start: number; end: number } | null = $state(null);
   let baseSideEl: HTMLDivElement | undefined = $state();
   let tipSideEl: HTMLDivElement | undefined = $state();
@@ -316,6 +320,7 @@
                     {responses}
                     {saving}
                     {currentPatchset}
+                    {editingCommentId}
                     {onreply}
                     {onstatus}
                     {ondelete}
@@ -381,6 +386,7 @@
                     {responses}
                     {saving}
                     {currentPatchset}
+                    {editingCommentId}
                     {onreply}
                     {onstatus}
                     {ondelete}

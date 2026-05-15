@@ -53,6 +53,10 @@
 
   const showBase = $derived(lineNumberMode !== 'tip');
   const showTip = $derived(lineNumberMode !== 'base');
+  /** When an existing draft is being edited, hide it from the thread so
+   *  the composer below takes its visual slot instead of stacking under
+   *  the original draft bubble. */
+  const editingCommentId = $derived(composing?.editing?.commentId ?? null);
   /** Number of line-number gutter columns rendered before the content
    *  column. Used to size the thread's left padding so the comment
    *  body visually starts where the diff content does, even though
@@ -317,6 +321,7 @@
                   {responses}
                   {saving}
                   {currentPatchset}
+                  {editingCommentId}
                   {onreply}
                   {onstatus}
                   {ondelete}
