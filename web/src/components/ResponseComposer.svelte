@@ -61,7 +61,7 @@
     bind:this={textareaEl}
     bind:value={body}
     placeholder="Optional message… (⌘+Enter to submit, Esc to cancel)"
-    rows="3"
+    rows="5"
     onkeydown={onKeydown}
     disabled={saving}
   ></textarea>
@@ -75,23 +75,33 @@
   .composer {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 8px;
     margin-top: 8px;
     background: var(--bg-panel);
     border: 1px solid var(--border);
     border-radius: 6px;
-    padding: 8px 10px;
-    font-size: 12.5px;
+    padding: 10px 12px;
+    font-size: 13px;
+    /* Live inside the parent comment's `.actions` flex row alongside
+     * other buttons — without a basis the form sizes to content (the
+     * select header) and produces a tiny composer. `100%` forces a
+     * wrap to its own row and fills the comment's inner width. */
+    flex: 1 1 100%;
+    box-sizing: border-box;
   }
 
   textarea {
     font: inherit;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    padding: 6px;
+    padding: 8px;
     border: 1px solid var(--border);
-    border-radius: 4px;
+    border-radius: 6px;
     resize: vertical;
-    min-height: 60px;
+    min-height: 100px;
+    /* Default textarea width is ~20em; let it fill the composer's
+     * content box instead. */
+    width: 100%;
+    box-sizing: border-box;
   }
 
   footer {
