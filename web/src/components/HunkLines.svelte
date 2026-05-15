@@ -51,8 +51,11 @@
 
   const showBase = $derived(lineNumberMode !== 'tip');
   const showTip = $derived(lineNumberMode !== 'base');
+  /** Number of line-number gutter columns rendered before the content
+   *  column. Used to size the thread's left padding so the comment
+   *  body visually starts where the diff content does, even though
+   *  the underlying `<td>` spans every column. */
   const lnCols = $derived((showBase ? 1 : 0) + (showTip ? 1 : 0));
-  /** ln cells + the single content cell (which also hosts the `+` button). */
   const colspan = $derived(lnCols + 1);
 
   let dragging: { side: Side; start: number; end: number } | null = $state(null);
@@ -277,7 +280,17 @@
         {#if threads.length > 0}
           <tr class="thread-row">
             <td colspan={colspan} class="thread-cell">
-              <div class="thread-sticky">
+              <!-- Visual indent past the line-number gutter is done
+                   with padding on the sticky wrapper rather than
+                   empty gutter cells: empty cells confused the
+                   sticky-width math (the thread-cell's column width
+                   became the table's content column width, which can
+                   be wider than the viewport) and produced an
+                   awkward filler-coloured gap to the left. -->
+              <div
+                class="thread-sticky"
+                style:padding-left="{lnCols * 48 + 14}px"
+              >
                 <CommentThread
                   comments={threads}
                   {responses}
@@ -456,9 +469,15 @@
   .thread-sticky {
     position: sticky;
     left: 0;
-    width: var(--content-vp-width, 100%);
+    /* `--content-vp-width` is the scroll viewport width (see the
+     * ResizeObserver in FileDiff); the thread stays as wide as
+     * what's actually visible. Trim a few px on the right so the
+     * tint stripe doesn't hug the page edge. `padding-left` is set
+     * inline above to the cumulative gutter width so the thread's
+     * blue stripe lands flush with where the diff content starts. */
+    width: calc(var(--content-vp-width, 100%) - 12px);
     background: var(--link-bg);
-    padding: 8px 12px 8px 14px;
+    padding: 8px 12px;
     border-top: 1px solid var(--border-muted);
     border-bottom: 1px solid var(--border-muted);
     border-left: 3px solid var(--link);

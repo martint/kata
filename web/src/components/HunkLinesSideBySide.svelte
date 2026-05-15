@@ -284,7 +284,10 @@
           {#if leftThreads.length > 0}
             <tr class="sbs-threads">
               <td colspan="2" class="thread-cell">
-                <div class="thread-sticky">
+                <!-- Indent past the side's line-number gutter via
+                     padding rather than an empty cell — see
+                     HunkLines.svelte for the rationale. -->
+                <div class="thread-sticky" style:padding-left="62px">
                   <CommentThread
                     comments={leftThreads}
                     {responses}
@@ -345,7 +348,10 @@
           {#if rightThreads.length > 0}
             <tr class="sbs-threads">
               <td colspan="2" class="thread-cell">
-                <div class="thread-sticky">
+                <!-- Indent past the side's line-number gutter via
+                     padding rather than an empty cell — see
+                     HunkLines.svelte for the rationale. -->
+                <div class="thread-sticky" style:padding-left="62px">
                   <CommentThread
                     comments={rightThreads}
                     {responses}
@@ -517,9 +523,10 @@
   .thread-sticky {
     position: sticky;
     left: 0;
-    width: var(--content-vp-width, 100%);
+    /* See HunkLines.svelte — same indent / right-trim pattern. */
+    width: calc(var(--content-vp-width, 100%) - 12px);
     background: var(--link-bg);
-    padding: 8px 12px 8px 14px;
+    padding: 8px 12px;
     border-top: 1px solid var(--border-muted);
     border-bottom: 1px solid var(--border-muted);
     border-left: 3px solid var(--link);
