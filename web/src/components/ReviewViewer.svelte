@@ -1473,15 +1473,7 @@
       {/snippet}
     </FileTree>
   </aside>
-  {#if treeCollapsed}
-    <button
-      class="tree-reopen"
-      title="Show files"
-      onclick={() => (treeCollapsed = false)}
-    >
-      ▸
-    </button>
-  {:else}
+  {#if !treeCollapsed}
     <div
       class="tree-resizer"
       role="separator"
@@ -1490,6 +1482,9 @@
       onpointerdown={startResize}
     ></div>
   {/if}
+  <!-- When the tree is collapsed there's no in-page re-open
+       affordance — the ☰ button in the top header bar handles
+       toggling, and the main pane gets the full width back. -->
   <div class="main-pane">
     <!-- Sticky bar grouping every comment-level control: lifecycle +
          severity filter chips on the left, prev/next nav and the
@@ -1743,8 +1738,7 @@
       z-index: 24;
     }
 
-    .tree-resizer,
-    .tree-reopen {
+    .tree-resizer {
       display: none;
     }
 
@@ -1753,10 +1747,9 @@
     }
   }
 
-  /* The collapse toggle gets passed into FileTree's header via a snippet,
-   * so this rule needs to apply across component boundaries. */
-  :global(.tree-toggle),
-  .tree-reopen {
+  /* The fold-tree toggle inside the tree-pane header — passed in via a
+   * snippet, so this rule needs to apply across component boundaries. */
+  :global(.tree-toggle) {
     width: 22px;
     height: 22px;
     padding: 0;
@@ -1769,16 +1762,8 @@
     line-height: 18px;
   }
 
-  :global(.tree-toggle:hover),
-  .tree-reopen:hover {
+  :global(.tree-toggle:hover) {
     background: var(--bg-elevated);
-  }
-
-  .tree-reopen {
-    position: sticky;
-    top: calc(var(--app-header-h) + 16px);
-    margin-right: 8px;
-    flex: 0 0 auto;
   }
 
   .tree-resizer {

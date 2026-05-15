@@ -229,9 +229,11 @@ header.app .commit-nav .commit-label {
   font-size: 13px;
 }
 
-/* Hamburger / drawer toggle. Phone-only — see media query below. */
+/* File-tree toggle. Shown on every screen so the reader can fold
+ * the tree out of the way and get the diff edge-to-edge — there's
+ * no longer an in-page chevron taking left-margin space when the
+ * tree is collapsed. */
 header.app .tree-button {
-  display: none;
   font-size: 18px;
   line-height: 1;
   padding: 2px 10px;
@@ -267,9 +269,6 @@ header.app .tree-button {
     font-size: 15px;
   }
 
-  header.app .tree-button {
-    display: inline-block;
-  }
 
   header.app .author {
     display: none;
