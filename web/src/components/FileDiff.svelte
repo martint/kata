@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from 'svelte';
   import { api } from '../lib/api';
   import type {
     CommentView,
@@ -51,8 +52,14 @@
     ondelete: (comment: CommentView) => Promise<void>;
     onedit: (comment: CommentView) => void;
     onselectpatchset: (n: number, commentId?: string) => void;
+    /** Whole-file view toggle. Lifted to `FileSlot` (which always stays
+     *  mounted, even when this component is virtualized out) so the
+     *  user's choice persists when they scroll away and come back —
+     *  otherwise the default `false` would re-fold the file every
+     *  remount. */
+    wholeFile?: boolean;
   }
-  const {
+  let {
     repo,
     file,
     patchset,
@@ -71,6 +78,7 @@
     ondelete,
     onedit,
     onselectpatchset,
+    wholeFile = $bindable(false),
   }: Props = $props();
 
   let collapsed = $state(false);
@@ -343,6 +351,98 @@
     return expansions.get(i) ?? { above: 0, below: 0 };
   }
 
+  /** Toggle whole-file mode while keeping the user anchored to whatever
+   *  they were already looking at:
+   *
+   *  - If a line of this file is currently in the viewport, capture its
+   *    (side, line) and screen-Y; after the toggle, scroll so the same
+   *    line lands at the same Y. (When collapsing to diff-only, the
+   *    line may have been synthetic context that no longer exists —
+   *    fall back to the closest surviving line on the same side.)
+   *  - If the file is entirely above the viewport, every later file
+   *    just shifted by the file's height delta; scroll to undo that so
+   *    the user's visible content stays put.
+   *  - If the file is entirely below the viewport, no adjustment — the
+   *    growth is below where the user is looking. */
+  async function toggleWholeFile() {
+    if (!sectionEl) {
+      wholeFile = !wholeFile;
+      return;
+    }
+    const beforeRect = sectionEl.getBoundingClientRect();
+
+    let anchorSide: string | null = null;
+    let anchorLine: string | null = null;
+    let anchorY = 0;
+    const rows = sectionEl.querySelectorAll<HTMLElement>('[data-side][data-line]');
+    for (const el of rows) {
+      const rect = el.getBoundingClientRect();
+      if (rect.bottom > 0 && rect.top < window.innerHeight) {
+        anchorSide = el.dataset.side ?? null;
+        anchorLine = el.dataset.line ?? null;
+        anchorY = rect.top;
+        break;
+      }
+    }
+
+    wholeFile = !wholeFile;
+    await tick();
+    if (!sectionEl) return;
+
+    if (anchorSide != null && anchorLine != null) {
+      let target = sectionEl.querySelector<HTMLElement>(
+        `[data-side="${anchorSide}"][data-line="${anchorLine}"]`,
+      );
+      if (!target) {
+        const wantLine = parseInt(anchorLine, 10);
+        const survivors = sectionEl.querySelectorAll<HTMLElement>(
+          `[data-side="${anchorSide}"][data-line]`,
+        );
+        let best: HTMLElement | null = null;
+        let bestDelta = Infinity;
+        for (const el of survivors) {
+          const ln = parseInt(el.dataset.line ?? '', 10);
+          if (!Number.isFinite(ln)) continue;
+          const delta = Math.abs(ln - wantLine);
+          if (delta < bestDelta) {
+            bestDelta = delta;
+            best = el;
+          }
+        }
+        target = best;
+      }
+      if (target) {
+        const newY = target.getBoundingClientRect().top;
+        const delta = newY - anchorY;
+        if (delta !== 0) window.scrollBy(0, delta);
+      }
+    } else if (beforeRect.bottom <= 0) {
+      const afterRect = sectionEl.getBoundingClientRect();
+      const heightDelta = afterRect.height - beforeRect.height;
+      if (heightDelta !== 0) window.scrollBy(0, heightDelta);
+    }
+  }
+
+  /** Per-hunk expansion when `wholeFile` is on: expand every hunk to
+   *  the edges of the file and fill the gaps between adjacent hunks
+   *  with the surrounding code. Each gap is attributed to the
+   *  preceding hunk's `below` so we don't double-fill from both sides.
+   *  The first hunk's `above` reaches line 1; the last hunk's `below`
+   *  reaches EOF. */
+  function wholeFileExpansion(i: number): Expansion {
+    const hunks = file.hunks ?? [];
+    const cur = hunks[i];
+    if (!cur?.tip_range || !tipLines) return { above: 0, below: 0 };
+    const above = i === 0 ? cur.tip_range.start - 1 : 0;
+    const next = i < hunks.length - 1 ? hunks[i + 1] : null;
+    const nextStart = next?.tip_range?.start ?? tipLines.length + 1;
+    const below = Math.max(0, nextStart - 1 - cur.tip_range.end);
+    return { above, below };
+  }
+  function effectiveExpansion(i: number): Expansion {
+    return wholeFile ? wholeFileExpansion(i) : expansionFor(i);
+  }
+
   function expand(i: number, direction: 'above' | 'below', amount: number) {
     if (!tipLines) return;
     const next = new Map(expansions);
@@ -354,7 +454,7 @@
   /** Apply the user's expansion settings to a hunk, producing a hunk with
    *  extra context lines prepended/appended (clipped to the file bounds). */
   function withContext(hunk: Hunk, i: number): Hunk {
-    const exp = expansionFor(i);
+    const exp = effectiveExpansion(i);
     if ((exp.above === 0 && exp.below === 0) || !tipLines) return hunk;
 
     const baseStart = hunk.base_range?.start;
@@ -448,7 +548,12 @@
    *
    *  No viewport gate here — `FileSlot` only mounts us when we're near
    *  the viewport, so reaching this effect already implies "worth
-   *  tokenizing." */
+   *  tokenizing."
+   *
+   *  Tip text loading is independent of the language: we want `tipLines`
+   *  populated even for files with unknown extensions so context
+   *  expansion (and the "Whole file" toggle) still works for them.
+   *  Highlighting is the part that needs a recognized language. */
   $effect(() => {
     void themeState.value;
     // Pin the primitive deps so this effect re-runs only on real changes.
@@ -459,7 +564,6 @@
     const tPath = tipPath;
     const bCommit = baseCommit;
     const tCommit = tipCommit;
-    if (lang == null) return;
     let cancelled = false;
     const isCancelled = () => cancelled;
     // Reset on re-run (theme toggle, etc.) so we don't see stale colors.
@@ -474,7 +578,7 @@
         wantTip
           ? api.readFile(repo, tCommit, tPath).catch(() => null)
           : Promise.resolve(null),
-        loadLang(lang),
+        lang != null ? loadLang(lang) : Promise.resolve(null),
       ]);
       if (cancelled) return;
 
@@ -484,14 +588,16 @@
         tipLines = lines;
       }
 
-      await Promise.all([
-        baseText != null
-          ? tokenizeWholeFile(h, baseText, lang, highlightsBase, { isCancelled })
-          : Promise.resolve(),
-        tipText != null
-          ? tokenizeWholeFile(h, tipText, lang, highlightsTip, { isCancelled })
-          : Promise.resolve(),
-      ]);
+      if (lang != null && h != null) {
+        await Promise.all([
+          baseText != null
+            ? tokenizeWholeFile(h, baseText, lang, highlightsBase, { isCancelled })
+            : Promise.resolve(),
+          tipText != null
+            ? tokenizeWholeFile(h, tipText, lang, highlightsTip, { isCancelled })
+            : Promise.resolve(),
+        ]);
+      }
     })();
     return () => {
       cancelled = true;
@@ -532,6 +638,67 @@
     </span>
     {#if file.binary}
       <span class="meta">binary</span>
+    {/if}
+    {#if !compact && canExpand && !collapsed}
+      <!-- Toggle between the default hunks-with-context view and a
+           continuous "whole file" view. Only meaningful when both
+           sides exist (modified/renamed), the diff is actually
+           rendered (not in comments-only mode, not collapsed), and
+           the full tip text has been loaded.
+           The icon switches state with the toggle: outward-pointing
+           arrows when diff-only (click to expand) and inward-pointing
+           arrows when whole-file (click to collapse). -->
+      <button
+        type="button"
+        class="whole-file"
+        class:on={wholeFile}
+        aria-label={wholeFile ? 'Collapse to diff hunks' : 'Expand the whole file'}
+        aria-pressed={wholeFile}
+        title={wholeFile ? 'Collapse to diff hunks' : 'Expand the whole file'}
+        disabled={tipLines == null}
+        onclick={toggleWholeFile}
+      >
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 16 16"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.25"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+          focusable="false"
+        >
+          {#if wholeFile}
+            <!-- Collapse: two boundary lines with the stems running from
+                 each line to the chevron's apex inside, so the arrows
+                 point inward and visually fold shut. Chevrons use a
+                 narrower base and taller rise so each head reads as a
+                 sharp arrow rather than a shallow triangle, and the
+                 apex points stay a few px apart so the two heads
+                 don't look fused. -->
+            <line x1="2" y1="1" x2="14" y2="1" />
+            <line x1="8" y1="1" x2="8" y2="6" />
+            <path d="M6 3 L8 6 L10 3" />
+            <path d="M6 13 L8 10 L10 13" />
+            <line x1="8" y1="10" x2="8" y2="15" />
+            <line x1="2" y1="15" x2="14" y2="15" />
+          {:else}
+            <!-- Expand: a spine line in the middle with stems running
+                 from it outward to the chevron apexes, so the arrows
+                 point outward. Chevrons match the collapse-icon
+                 geometry — a narrow base with the apex pushed to the
+                 viewBox edge — and the stems stop short of the spine
+                 so the arrows aren't fused to it. -->
+            <path d="M6 4 L8 1 L10 4" />
+            <line x1="8" y1="1" x2="8" y2="6" />
+            <line x1="2" y1="8" x2="14" y2="8" />
+            <line x1="8" y1="10" x2="8" y2="15" />
+            <path d="M6 12 L8 15 L10 12" />
+          {/if}
+        </svg>
+      </button>
     {/if}
     <button
       type="button"
@@ -642,7 +809,7 @@
         <div class="hunks" bind:this={hunksEl}>
         {#each file.hunks as _, i (i)}
           {@const eh = withContext(file.hunks[i], i)}
-          {#if canExpand && canExpandAbove(eh)}
+          {#if canExpand && !wholeFile && canExpandAbove(eh)}
             <div class="expand-row above">
               <button onclick={() => expand(i, 'above', STEP)} disabled={tipLines == null}>
                 ↑ Show {STEP} lines above
@@ -685,14 +852,14 @@
               {onselectpatchset}
             />
           {/if}
-          {#if canExpand && canExpandBelow(eh)}
+          {#if canExpand && !wholeFile && canExpandBelow(eh)}
             <div class="expand-row below">
               <button onclick={() => expand(i, 'below', STEP)} disabled={tipLines == null}>
                 ↓ Show {STEP} lines below
               </button>
             </div>
           {/if}
-          {#if i < file.hunks.length - 1}
+          {#if i < file.hunks.length - 1 && !wholeFile}
             <div class="hunk-gap">…</div>
           {/if}
         {/each}
@@ -787,8 +954,40 @@
   /* Keep status badge + the icon button at full size — both are too
    * small to shrink usefully. */
   .file-header .status,
-  .file-comment {
+  .file-comment,
+  .whole-file {
     flex-shrink: 0;
+  }
+
+  .whole-file {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 22px;
+    padding: 0;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-muted);
+    cursor: pointer;
+  }
+
+  .whole-file:hover:not(:disabled) {
+    background: var(--link-bg);
+    color: var(--link);
+    border-color: var(--link);
+  }
+
+  .whole-file.on {
+    background: var(--link-bg);
+    color: var(--link);
+    border-color: var(--link);
+  }
+
+  .whole-file:disabled {
+    opacity: 0.5;
+    cursor: default;
   }
 
   .file-comment {

@@ -101,6 +101,12 @@
   let inViewport = $state(false);
   let lastKnownHeight = $state<number | null>(null);
 
+  /** Whole-file toggle state, kept here rather than inside `FileDiff` so
+   *  it survives this slot virtualizing the inner component out of the
+   *  DOM. Without this, scrolling away from an unfolded file and back
+   *  would silently re-fold it. */
+  let wholeFile = $state(false);
+
   /** Cache key for this slot's (patchset, compare, path) combination.
    *  Composite so a patchset switch reads from a fresh slot in the
    *  shared cache rather than overwriting the previous entry. */
@@ -225,6 +231,7 @@
         {saving}
         {compact}
         loadingHunks={loadingHunks && !diffCache.has(cacheKey)}
+        bind:wholeFile
         {onstartcompose}
         {oncancelcompose}
         {onsubmit}
