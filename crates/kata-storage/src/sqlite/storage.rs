@@ -20,8 +20,8 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use chrono::Utc;
 use kata_core::{
-    Author, ChangeId, Comment, CommentId, CommitId, LineRange, RepoId, RepoManifest, Response,
-    ResponseId, ReviewId, ReviewManifest, RevSet, SCHEMA_VERSION, Session, SessionId,
+    Author, ChangeId, Comment, CommentId, CommitId, LineRange, OpId, RepoId, RepoManifest,
+    Response, ResponseId, ReviewId, ReviewManifest, RevSet, SCHEMA_VERSION, Session, SessionId,
     SessionStatus,
 };
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
@@ -989,6 +989,59 @@ impl Storage for SqliteStorage {
                 comments,
                 responses,
             })
+        })
+        .await
+    }
+
+    async fn last_review_visit(
+        &self,
+        repo: &RepoId,
+        review: &ReviewId,
+        author: &Author,
+    ) -> Result<Option<OpId>> {
+        ensure_repo_id(repo)?;
+        ensure_review_id(review)?;
+        ensure_author(author)?;
+        let review_str = review.as_str().to_owned();
+        let author_str = author.as_str().to_owned();
+        self.with_conn(move |conn| {
+            let id: Option<String> = conn
+                .query_row(
+                    "SELECT op_id FROM review_visits
+                     WHERE review_id = ?1 AND author = ?2",
+                    params![review_str, author_str],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            Ok(id.map(OpId::new))
+        })
+        .await
+    }
+
+    async fn record_review_visit(
+        &self,
+        repo: &RepoId,
+        review: &ReviewId,
+        author: &Author,
+        op_id: &OpId,
+    ) -> Result<()> {
+        ensure_repo_id(repo)?;
+        ensure_review_id(review)?;
+        ensure_author(author)?;
+        let review_str = review.as_str().to_owned();
+        let author_str = author.as_str().to_owned();
+        let op_id_str = op_id.as_str().to_owned();
+        let visited_at = chrono::Utc::now().to_rfc3339();
+        self.with_conn(move |conn| {
+            conn.execute(
+                "INSERT INTO review_visits (review_id, author, op_id, visited_at)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(review_id, author) DO UPDATE SET
+                   op_id = excluded.op_id,
+                   visited_at = excluded.visited_at",
+                params![review_str, author_str, op_id_str, visited_at],
+            )?;
+            Ok(())
         })
         .await
     }

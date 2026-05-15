@@ -3,7 +3,7 @@
 
 use async_trait::async_trait;
 use kata_core::{
-    Author, Comment, CommentId, RepoId, RepoManifest, Response, ResponseId, ReviewId,
+    Author, Comment, CommentId, OpId, RepoId, RepoManifest, Response, ResponseId, ReviewId,
     ReviewManifest, Session, SessionId,
 };
 
@@ -141,4 +141,28 @@ pub trait Storage: Send + Sync {
         review: &ReviewId,
         author: &Author,
     ) -> Result<DraftsView>;
+
+    // ---- per-reviewer visit log ----------------------------------------
+
+    /// Last jj op-id this `author` saw for `review`, set by
+    /// [`Self::record_review_visit`] each time they open it. `None` when
+    /// the reviewer has never opened this review before — the service
+    /// treats that as "no since-you-last-looked list to render."
+    async fn last_review_visit(
+        &self,
+        repo: &RepoId,
+        review: &ReviewId,
+        author: &Author,
+    ) -> Result<Option<OpId>>;
+
+    /// Upsert `author`'s last-seen op-id for `review`. Idempotent — runs
+    /// on every open_review and just overwrites the previous high-water
+    /// mark.
+    async fn record_review_visit(
+        &self,
+        repo: &RepoId,
+        review: &ReviewId,
+        author: &Author,
+        op_id: &OpId,
+    ) -> Result<()>;
 }

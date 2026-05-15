@@ -11,5 +11,6 @@ pub use documents::{
 };
 pub use ids::{
     Author, Bookmark, ChangeId, CommentId, CommitId, CommitInfo, LineRange,
-    LineRangeParseError, RepoId, RepoSummary, ResponseId, ReviewId, RevSet, SessionId, Side,
+    LineRangeParseError, OpId, OpKind, OpSummary, RepoId, RepoSummary, ResponseId, ReviewId,
+    RevSet, SessionId, Side,
 };

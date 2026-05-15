@@ -52,6 +52,48 @@ string_newtype!(SessionId);
 string_newtype!(CommentId);
 string_newtype!(ResponseId);
 string_newtype!(Author);
+string_newtype!(OpId);
+
+/// Categorization of a single entry in `jj op log`. The first word of jj's
+/// operation description usually maps cleanly to one of these kinds; anything
+/// we don't recognize falls under [`OpKind::Other`].
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "kebab-case")]
+pub enum OpKind {
+    /// `jj amend` / `jj squash` into an existing change.
+    Amend,
+    /// `jj rebase`.
+    Rebase,
+    /// `jj abandon`.
+    Abandon,
+    /// `jj describe`.
+    Describe,
+    /// `jj new` — created a new change.
+    New,
+    /// `jj split`.
+    Split,
+    /// `jj squash` that wasn't an in-place amend (commits got combined).
+    Squash,
+    /// `jj restore` working-copy contents.
+    Restore,
+    /// `jj git push` / `jj git fetch`.
+    Git,
+    /// Anything else; carries the operation's leading word for display.
+    Other(String),
+}
+
+/// One entry from a `jj op log` range, summarized for the UI.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct OpSummary {
+    pub op_id: OpId,
+    pub kind: OpKind,
+    /// ISO 8601 with timezone (jj's `time` field, end of the range).
+    pub time: String,
+    /// jj's full operation description, e.g. `amend commit abc123...`.
+    pub description: String,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]

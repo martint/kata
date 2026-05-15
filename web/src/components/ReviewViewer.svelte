@@ -1504,6 +1504,28 @@
   </p>
 </section>
 
+{#if current.ops_since && current.ops_since.length > 0}
+  {@const counts = (() => {
+    const out: Record<string, number> = {};
+    for (const op of current.ops_since!) {
+      const k =
+        typeof op.kind === 'string' ? op.kind : (op.kind.other || 'other');
+      out[k] = (out[k] ?? 0) + 1;
+    }
+    return out;
+  })()}
+  {@const parts = Object.entries(counts)
+    .sort(([, a], [, b]) => b - a)
+    .map(([k, n]) => `${n} ${k}${n === 1 ? '' : 's'}`)}
+  <div class="ops-since-banner" role="status">
+    <strong>Since you were here:</strong>
+    {parts.join(', ')}
+    <span class="muted">
+      ({current.ops_since.length} operation{current.ops_since.length === 1 ? '' : 's'} total)
+    </span>
+  </div>
+{/if}
+
 {#if current.revset_error}
   {@const err = current.revset_error}
   {@const headline = err.message.split('\n')[0] ?? err.message}
@@ -1766,6 +1788,26 @@
    * is inline; the rest of jj's hint output (including the
    * `jj abandon` resolution path) lives on the title attribute so a
    * hover surfaces what to do next. */
+  /* "Since you were here" — the activity summary built from
+   * `current.ops_since`. Sits above the review summary, same slot as
+   * the revset-error banner. Informational (link palette) rather
+   * than warning, since there's nothing to fix. */
+  .ops-since-banner {
+    margin: 12px 0;
+    padding: 8px 12px;
+    background: var(--link-bg);
+    border-left: 3px solid var(--link);
+    border-radius: 4px;
+    color: var(--text);
+    font-size: 13px;
+  }
+
+  .ops-since-banner .muted {
+    color: var(--text-muted);
+    font-size: 12px;
+    margin-left: 4px;
+  }
+
   /* Banner shown when the live revset can't be resolved. Sits above
    * the review summary so the reader sees the problem before they
    * try to act on the diff. For divergent change IDs it lists the

@@ -11,8 +11,8 @@ use std::sync::Arc;
 use chrono::Utc;
 use kata_core::{
     Author, Bookmark, ChangeId, Comment, CommentId, CommitId, CommitInfo, Diff, Flag,
-    LineRange, Patchset, RepoId, RepoSummary, ResolutionAction, Response, ResponseId,
-    ReviewId, ReviewManifest, RevSet, SCHEMA_VERSION, Session, SessionId, Side,
+    LineRange, OpSummary, Patchset, RepoId, RepoSummary, ResolutionAction, Response,
+    ResponseId, ReviewId, ReviewManifest, RevSet, SCHEMA_VERSION, Session, SessionId, Side,
 };
 use kata_jj::{
     AnchorResolution, FileCache, JjBackend, build_diff, build_diff_metadata,
@@ -413,10 +413,11 @@ impl ReviewService {
         // `live_range` uses the live revset and is allowed to fail (e.g.
         // the revset references a change ID that's gone divergent); we
         // fall back to "not stale" rather than failing the whole open.
-        let (diff_res, commits_res, live_res) = tokio::join!(
+        let (diff_res, commits_res, live_res, current_op_res) = tokio::join!(
             build_diff_metadata(&**jj, diff_base, &selected.tip_commit),
             jj.list_commits(&commits_revset),
             jj.resolve_range(&manifest.revset),
+            jj.current_op_id(),
         );
         let diff = diff_res?;
         let commits = commits_res?;
@@ -425,6 +426,33 @@ impl ReviewService {
             Ok(_) => None,
         };
         let live_range = live_res.ok();
+
+        // "Since you were here": diff the current jj op-id against the
+        // op-id we recorded the last time this viewer opened this review.
+        // First visit (`None` from storage) shows no list; we just record
+        // the current op-id so the *next* visit has a baseline. A failure
+        // to read the op-id is treated as "skip the feature for this
+        // open" — it's never load-bearing.
+        let ops_since = match (&current_op_res, viewer.as_str().is_empty()) {
+            (Ok(current_op), false) => {
+                let prev = self
+                    .storage
+                    .last_review_visit(repo, review, viewer)
+                    .await
+                    .ok()
+                    .flatten();
+                let list = match prev {
+                    Some(prev) => jj.ops_between(&prev, current_op).await.unwrap_or_default(),
+                    None => Vec::new(),
+                };
+                let _ = self
+                    .storage
+                    .record_review_visit(repo, review, viewer, current_op)
+                    .await;
+                list
+            }
+            _ => Vec::new(),
+        };
 
         let latest = manifest.current();
         let is_stale = match &live_range {
@@ -497,6 +525,7 @@ impl ReviewService {
             },
             is_stale,
             revset_error,
+            ops_since,
         })
     }
 
@@ -1042,6 +1071,13 @@ pub struct ReviewView {
     /// revset resolves cleanly.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub revset_error: Option<RevsetError>,
+    /// Non-snapshot jj operations that landed in the repo between the
+    /// viewer's previous open of this review and the current one,
+    /// oldest first. Empty on the viewer's first ever open (no
+    /// baseline yet) and when nothing relevant happened. The UI shows
+    /// a compact "since you were here" summary when non-empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ops_since: Vec<OpSummary>,
 }
 
 /// Structured information about a failure to resolve a review's

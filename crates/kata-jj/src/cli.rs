@@ -3,7 +3,10 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use async_trait::async_trait;
-use kata_core::{Bookmark, ChangeId, CommitId, CommitInfo, FileChange, FileStatus, RevSet};
+use kata_core::{
+    Bookmark, ChangeId, CommitId, CommitInfo, FileChange, FileStatus, OpId, OpKind, OpSummary,
+    RevSet,
+};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
@@ -97,6 +100,31 @@ const DIFF_ENTRY_TPL: &str =
 // within the 5th field are joined by `\x1f` (ASCII unit separator) so the
 // list stays parseable when paths contain unusual characters.
 const COMMIT_INFO_TPL: &str = r#"change_id ++ "\t" ++ commit_id ++ "\t" ++ author.email() ++ "\t" ++ author.timestamp().format("%+") ++ "\t" ++ diff.files().map(|f| f.path()).join("\x1f") ++ "\t" ++ description ++ "\0""#;
+
+/// `jj op log` template: id, snapshot-flag (Y/N), end-of-range time,
+/// first-line description, newline-terminated.
+const OP_LOG_TPL: &str = r#"self.id() ++ "\t" ++ if(snapshot, "Y", "N") ++ "\t" ++ time.end().format("%+") ++ "\t" ++ description.first_line() ++ "\n""#;
+
+/// Map jj's operation description to one of the [`OpKind`] buckets. jj's
+/// op descriptions all lead with the command verb (`amend commit X`,
+/// `rebase commit X onto Y`, `git fetch from <remote>`, …) so a single
+/// first-word match is enough for the common cases. Anything we don't
+/// recognise becomes [`OpKind::Other`] with the verb preserved.
+fn classify_op(description: &str) -> OpKind {
+    let first = description.split_whitespace().next().unwrap_or("");
+    match first {
+        "amend" => OpKind::Amend,
+        "rebase" => OpKind::Rebase,
+        "abandon" => OpKind::Abandon,
+        "describe" => OpKind::Describe,
+        "new" => OpKind::New,
+        "split" => OpKind::Split,
+        "squash" => OpKind::Squash,
+        "restore" => OpKind::Restore,
+        "git" => OpKind::Git,
+        _ => OpKind::Other(first.to_string()),
+    }
+}
 
 #[async_trait]
 impl JjBackend for JjCli {
@@ -364,6 +392,114 @@ impl JjBackend for JjCli {
             .run(&["log", "--no-graph", "-r", &expr, "-T", r#""x\n""#])
             .await?;
         Ok(!out.is_empty())
+    }
+
+    async fn current_op_id(&self) -> Result<OpId> {
+        let out = self
+            .run(&[
+                "op",
+                "log",
+                "-n",
+                "1",
+                "--no-graph",
+                "-T",
+                r#"self.id() ++ "\n""#,
+            ])
+            .await?;
+        let text = String::from_utf8(out)
+            .map_err(|e| Error::Parse(format!("op id not utf-8: {e}")))?;
+        let id = text.lines().next().unwrap_or("").trim();
+        if id.is_empty() {
+            return Err(Error::Parse("empty op log".into()));
+        }
+        Ok(OpId::new(id))
+    }
+
+    async fn ops_between(
+        &self,
+        prev: &OpId,
+        current: &OpId,
+    ) -> Result<Vec<OpSummary>> {
+        if prev == current {
+            return Ok(Vec::new());
+        }
+        // jj's op log lacks a `from..to` range filter, so we ask for the
+        // last N entries reachable from `current` (oldest first via
+        // --reversed) and walk forward until we cross `prev`. 200 covers a
+        // very active week of repo activity; if `prev` is older than that,
+        // the resulting list silently caps at 200 — the user just doesn't
+        // see operations from before the window.
+        const WINDOW: &str = "200";
+        let out = self
+            .run(&[
+                "op",
+                "log",
+                "--at-op",
+                current.as_str(),
+                "-n",
+                WINDOW,
+                "--reversed",
+                "--no-graph",
+                "-T",
+                OP_LOG_TPL,
+            ])
+            .await?;
+        let text = String::from_utf8(out)
+            .map_err(|e| Error::Parse(format!("op log not utf-8: {e}")))?;
+        let mut entries = Vec::new();
+        let mut crossed_prev = false;
+        for line in text.split('\n') {
+            if line.is_empty() {
+                continue;
+            }
+            let mut parts = line.splitn(4, '\t');
+            let id = parts.next().unwrap_or("");
+            let is_snapshot = parts.next().unwrap_or("") == "Y";
+            let time = parts.next().unwrap_or("").to_string();
+            let description = parts.next().unwrap_or("").to_string();
+            // Skip everything up to and including `prev`.
+            if !crossed_prev {
+                if id == prev.as_str() {
+                    crossed_prev = true;
+                }
+                continue;
+            }
+            if is_snapshot {
+                continue;
+            }
+            entries.push(OpSummary {
+                op_id: OpId::new(id),
+                kind: classify_op(&description),
+                time,
+                description,
+            });
+        }
+        // If we never saw `prev` in the window, `crossed_prev` is still
+        // false and `entries` is empty — but the gap is real, so fall
+        // back to "everything non-snapshot in the window" so the reader
+        // sees *something*.
+        if !crossed_prev {
+            for line in text.split('\n') {
+                if line.is_empty() {
+                    continue;
+                }
+                let mut parts = line.splitn(4, '\t');
+                let id = parts.next().unwrap_or("");
+                let is_snapshot = parts.next().unwrap_or("") == "Y";
+                let time = parts.next().unwrap_or("").to_string();
+                let description = parts.next().unwrap_or("").to_string();
+                if is_snapshot {
+                    continue;
+                }
+                entries.push(OpSummary {
+                    op_id: OpId::new(id),
+                    kind: classify_op(&description),
+                    time,
+                    description,
+                });
+            }
+        }
+        Ok(entries)
     }
 }
 

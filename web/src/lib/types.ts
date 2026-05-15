@@ -222,6 +222,31 @@ export interface ReviewView {
    *  changes, the commit IDs the reader needs to disambiguate. UI
    *  renders a warning banner. */
   revset_error?: RevsetError;
+  /** Non-snapshot operations from `jj op log` between this viewer's
+   *  previous open of the review and the current one. Empty on first
+   *  open and when nothing changed. UI summarizes as e.g. "Since you
+   *  were here: 3 amends, 1 rebase". */
+  ops_since?: OpSummary[];
+}
+
+export type OpKind =
+  | 'amend'
+  | 'rebase'
+  | 'abandon'
+  | 'describe'
+  | 'new'
+  | 'split'
+  | 'squash'
+  | 'restore'
+  | 'git'
+  | { other: string };
+
+export interface OpSummary {
+  op_id: string;
+  kind: OpKind;
+  /** ISO 8601. */
+  time: string;
+  description: string;
 }
 
 export interface RevsetError {
