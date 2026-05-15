@@ -326,7 +326,7 @@ header.app .ps-picker {
 
 header.app .ps-picker select {
   font: inherit;
-  padding: 1px 4px;
+  padding: 4px 6px;
 }
 
 header.app .review-title .archived-badge {
