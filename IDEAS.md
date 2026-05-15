@@ -118,6 +118,80 @@ installers into one thing — native window, dock icon, system-tray
 refresh affordance, optional `kata://` URL handler. The axum routes
 don't change; it's mostly packaging.
 
+## Surface revset-resolution failures in the UI
+
+`open_review` now tolerates the manifest's revset failing to
+resolve — it opens with `commits = []`, `live_range = None`, and
+no "stale" indicator. The reviewer sees an empty commits panel
+with no explanation. Two adds would close the loop:
+
+- A banner in the review header carrying the actual jj error so
+  the reader can act on it ("Change ID `X` is divergent —
+  disambiguate with `jj abandon` or change the revset").
+- A pill on the review-list row so the reader doesn't have to open
+  the review to discover it's broken.
+
+Plumb the error string through `ReviewView` alongside `is_stale`
+instead of swallowing the `Err` half of `live_res`. The watcher
+keeps skipping silently.
+
+## Op-log-aware "since you last looked"
+
+`.jj/repo/op_heads` records every operation against the repo —
+amend, rebase, abandon, describe, …. A review currently snapshots
+the tip/base each time it opens and treats anything between
+snapshots as opaque ("the tip moved"). If we also capture the op-id
+at each open, the next viewer can show what *kinds* of operations
+the author ran since: "since you were here, 3 amends + a rebase
++ a description edit on commit `X`."
+
+The branch watcher could also subscribe to op-id changes instead
+of polling `resolve_range` per review on every tick — one
+notification per op, scoped to reviews whose revset touches the
+affected commits. Replaces the boolean "is_stale" with a
+structured "what changed and when" timeline.
+
+This is the killer demo for jj-native review: every other VCS
+reconstructs this from reflog or push history; jj makes it cheap
+and structured.
+
+## Conflicts as first-class diff content
+
+jj keeps conflicted commits as live objects with structured conflict
+regions, not as the broken working-copy state git leaves you in. A
+review could lean on that directly:
+
+- Badge commits in the commits panel that landed conflicted ("⚠
+  conflict in `foo.rs`"), so the reviewer doesn't have to check
+  out anything to spot them.
+- Render the conflict regions inline as a special hunk kind,
+  showing the three sides (base, left, right) the way `jj resolve`
+  would.
+
+The data is already in the underlying commit — the diff machinery
+needs to recognize "this side of the diff comes from a conflicted
+region" and emit a different `HunkLine` origin (`Conflict { base,
+left, right }`) that the renderer knows about.
+
+## Reviewer suggestions via `jj absorb`
+
+PR tools force a "thanks, fixing in PS3" round-trip on every
+reviewer suggestion. jj's `absorb` knows how to push a working-copy
+diff back into the right commit in the stack. A "suggested change"
+in Kata could:
+
+- Generate the diff from the reviewer's edit (against the same
+  patchset they're looking at).
+- Send it to the author's workspace as a patch they can run
+  `jj absorb` against (low-trust path), or
+- Apply it directly via `absorb` if the author has opted in
+  (high-trust path, presumably self-review or trusted-team
+  scenarios).
+
+Permission model is the open question — most reviewers don't have
+write access to the author's working copy. Probably ships as the
+patch-handoff variant first, with absorb-directly as an opt-in.
+
 ## Other ideas
 
 _(add new entries above this line as they come up)_
