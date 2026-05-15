@@ -11,7 +11,7 @@ pub enum ServiceError {
     #[error("not found: {0}")]
     NotFound(String),
 
-    #[error("bad request: {0}")]
+    #[error("{0}")]
     BadRequest(String),
 
     #[error("internal error: {0}")]

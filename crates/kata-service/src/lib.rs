@@ -259,16 +259,27 @@ impl ReviewService {
     /// it contains. Used by the new-review form to warn before the
     /// user creates a review with an empty diff (the bookmark IS the
     /// trunk, the range is `nothing..something`, the user fat-fingered
-    /// the syntax, etc.). Returns a parse error verbatim from jj when
-    /// the expression doesn't parse — that's also useful to surface
-    /// inline.
+    /// the syntax, etc.). jj process failures (bad syntax, ambiguous
+    /// prefix, missing revision) come back as `BadRequest` with jj's
+    /// stderr cleaned of its 'Error:' framing — the form surfaces
+    /// the result inline, so the message has to read as user-facing
+    /// rather than process-failure.
     pub async fn preview_revset(
         &self,
         repo: &RepoId,
         expr: &str,
     ) -> ServiceResult<usize> {
         let revset = kata_core::RevSet::new(expr);
-        let commits = self.jj_for(repo)?.list_commits(&revset).await?;
+        let commits = self
+            .jj_for(repo)?
+            .list_commits(&revset)
+            .await
+            .map_err(|e| match e {
+                kata_jj::Error::JjFailed { stderr, .. } => {
+                    ServiceError::BadRequest(clean_jj_stderr(&stderr))
+                }
+                other => ServiceError::Jj(other),
+            })?;
         Ok(commits.len())
     }
 
@@ -1076,4 +1087,13 @@ fn validate_anchor(input: &DraftCommentInput) -> ServiceResult<()> {
         return Err(ServiceError::BadRequest("lines provided without side".into()));
     }
     Ok(())
+}
+
+/// Strip jj's stderr framing so the message reads like user-facing
+/// guidance instead of a CLI dump. jj always prefixes its first line
+/// with `Error: `; the rest (Caused by, hints) is left intact since
+/// those carry useful context for parse failures.
+fn clean_jj_stderr(stderr: &str) -> String {
+    let trimmed = stderr.trim();
+    trimmed.strip_prefix("Error: ").unwrap_or(trimmed).to_string()
 }
