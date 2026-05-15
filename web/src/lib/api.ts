@@ -39,6 +39,29 @@ async function fetchText(path: string): Promise<string> {
   return await res.text();
 }
 
+/** Cache of in-flight + resolved file-content reads keyed by
+ *  `${commit}|${path}`. Commit IDs are immutable (jj/git), so a hit
+ *  is always valid for the tab's lifetime. Storing the Promise (not
+ *  the resolved string) dedupes concurrent fetches for the same
+ *  key — multiple FileDiff mounts of the same file share one
+ *  network round-trip. */
+const readFileCache = new Map<string, Promise<string>>();
+
+function cachedReadFile(repo: string, commit: string, path: string): Promise<string> {
+  const key = `${commit}|${path}`;
+  const hit = readFileCache.get(key);
+  if (hit) return hit;
+  const pending = fetchText(
+    `${repoBase(repo)}/files?commit=${enc(commit)}&path=${enc(path)}`,
+  ).catch((err) => {
+    // Don't poison the cache with a failure — let the next caller retry.
+    readFileCache.delete(key);
+    throw err;
+  });
+  readFileCache.set(key, pending);
+  return pending;
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const init: RequestInit = { method };
   if (body !== undefined) {
@@ -155,8 +178,7 @@ export const api = {
       `${repoBase(repo)}/reviews/${number}/file-diff?${parts.join('&')}`,
     );
   },
-  readFile: (repo: string, commit: string, path: string) =>
-    fetchText(`${repoBase(repo)}/files?commit=${enc(commit)}&path=${enc(path)}`),
+  readFile: cachedReadFile,
 
   startSession: (repo: string, number: number) =>
     request<Session>('POST', `${repoBase(repo)}/reviews/${number}/sessions`),
