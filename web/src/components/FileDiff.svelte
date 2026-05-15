@@ -811,8 +811,31 @@
           {@const eh = withContext(file.hunks[i], i)}
           {#if canExpand && !wholeFile && canExpandAbove(eh)}
             <div class="expand-row above">
-              <button onclick={() => expand(i, 'above', STEP)} disabled={tipLines == null}>
-                ↑ Show {STEP} lines above
+              <button
+                onclick={() => expand(i, 'above', STEP)}
+                disabled={tipLines == null}
+                aria-label="Show {STEP} lines above"
+                title="Show {STEP} lines above"
+              >
+                <!-- "Show above": arrow points up to indicate where the
+                     new context will appear, with a horizontal line
+                     beneath marking the hunk's current top. -->
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.25"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                  focusable="false"
+                >
+                  <path d="M6 4 L8 1 L10 4" />
+                  <line x1="8" y1="1" x2="8" y2="13" />
+                  <line x1="2" y1="13" x2="14" y2="13" />
+                </svg>
               </button>
             </div>
           {/if}
@@ -854,8 +877,31 @@
           {/if}
           {#if canExpand && !wholeFile && canExpandBelow(eh)}
             <div class="expand-row below">
-              <button onclick={() => expand(i, 'below', STEP)} disabled={tipLines == null}>
-                ↓ Show {STEP} lines below
+              <button
+                onclick={() => expand(i, 'below', STEP)}
+                disabled={tipLines == null}
+                aria-label="Show {STEP} lines below"
+                title="Show {STEP} lines below"
+              >
+                <!-- "Show below": horizontal line at the hunk's current
+                     bottom with an arrow pointing down into the lines
+                     that would appear next. -->
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.25"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                  focusable="false"
+                >
+                  <line x1="2" y1="3" x2="14" y2="3" />
+                  <line x1="8" y1="3" x2="8" y2="15" />
+                  <path d="M6 12 L8 15 L10 12" />
+                </svg>
               </button>
             </div>
           {/if}
@@ -1135,26 +1181,29 @@
   }
 
   .expand-row {
-    background: var(--bg-panel);
-    border-top: 1px solid var(--border-muted);
-    border-bottom: 1px solid var(--border-muted);
+    /* No background or borders — the old strong-blue text on a panel
+     * fill drew the eye away from the diff content. The icon-only
+     * button is enough of a target on its own. */
     padding: 2px 12px;
     text-align: left;
   }
 
   .expand-row button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     background: transparent;
     border: none;
-    color: var(--link);
+    /* Subdued by default; lights up to --link on hover so the affordance
+     * is still discoverable without competing with the diff. */
+    color: var(--text-faint);
     cursor: pointer;
-    font: inherit;
-    font-family: ui-monospace, monospace;
-    font-size: 11px;
     padding: 2px 6px;
     border-radius: 3px;
   }
 
-  .expand-row button:hover {
+  .expand-row button:hover:not(:disabled) {
+    color: var(--link);
     background: var(--link-bg);
   }
 
