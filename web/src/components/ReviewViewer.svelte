@@ -17,6 +17,7 @@
   import { sortFilesLikeTree } from '../lib/tree';
   import { setTokenizationPaused } from '../lib/highlight.svelte';
   import { resolutionFor } from '../lib/resolution';
+  import Chevron from './Chevron.svelte';
   import CommentComposer from './CommentComposer.svelte';
   import CommentThread from './CommentThread.svelte';
   import CommitsPanel from './CommitsPanel.svelte';
@@ -1564,7 +1565,7 @@
     aria-expanded={!treeCollapsed}
     title={treeCollapsed ? 'Show file tree' : 'Hide file tree'}
     onclick={() => (treeCollapsed = !treeCollapsed)}
-  >{treeCollapsed ? '›' : '‹'}</button>
+  ><Chevron dir={treeCollapsed ? 'right' : 'left'} size={12} /></button>
   <div class="main-pane">
     <!-- Sticky bar grouping every comment-level control: lifecycle +
          severity filter chips on the left, prev/next nav and the

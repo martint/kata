@@ -8,6 +8,7 @@
     ReviewView,
     WhoAmI,
   } from './lib/types';
+  import Chevron from './components/Chevron.svelte';
   import ReviewList from './components/ReviewList.svelte';
   import ReviewViewer, { type ReviewToolbarState } from './components/ReviewViewer.svelte';
 
@@ -269,7 +270,7 @@
             onclick={commits.prev}
             title="Previous commit"
             aria-label="Previous commit"
-          >‹</button>
+          ><Chevron dir="left" /></button>
           <span class="position">
             {commits.position === 0 ? 'All' : commits.position}/{commits.total}
           </span>
@@ -277,7 +278,7 @@
             onclick={commits.next}
             title="Next commit"
             aria-label="Next commit"
-          >›</button>
+          ><Chevron dir="right" /></button>
           <span class="commit-label">{commits.label}</span>
         </div>
       {/if}
@@ -295,7 +296,7 @@
             onclick={drafts.prev}
             title="Previous draft"
             aria-label="Previous draft"
-          >‹</button>
+          ><Chevron dir="left" /></button>
           <span class="draft-count" aria-live="polite">
             {drafts.position || '–'}/<strong>{drafts.count}</strong>
             <span class="lbl">draft{drafts.count === 1 ? '' : 's'}</span>
@@ -305,7 +306,7 @@
             onclick={drafts.next}
             title="Next draft"
             aria-label="Next draft"
-          >›</button>
+          ><Chevron dir="right" /></button>
         </div>
         <button onclick={drafts.discard} disabled={drafts.saving}>Discard</button>
         <button class="primary" onclick={drafts.publish} disabled={drafts.saving}>
@@ -385,7 +386,7 @@
             onclick={c.prev}
             title="Previous comment"
             aria-label="Previous comment"
-          >‹</button>
+          ><Chevron dir="left" /></button>
           <span class="position" aria-live="polite">
             {c.position || '–'}/{c.total}
           </span>
@@ -394,7 +395,7 @@
             onclick={c.next}
             title="Next comment"
             aria-label="Next comment"
-          >›</button>
+          ><Chevron dir="right" /></button>
         </div>
       {/if}
       {#if toolbar.filter && toolbar.filter.hiddenCount > 0}

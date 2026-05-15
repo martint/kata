@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { FileChange } from '../lib/types';
+  import Chevron from './Chevron.svelte';
   import FileTreeNode from './FileTreeNode.svelte';
   import type { TreeNode } from '../lib/tree';
   import { buildTree, filterTree } from '../lib/tree';
@@ -52,9 +53,13 @@
     </span>
     {#if navTotal > 0 && onprev && onnext}
       <span class="file-nav">
-        <button type="button" title="Previous file" onclick={onprev}>‹</button>
+        <button type="button" title="Previous file" onclick={onprev}>
+          <Chevron dir="left" />
+        </button>
         <span class="position">{navPosition || '-'}/{navTotal}</span>
-        <button type="button" title="Next file" onclick={onnext}>›</button>
+        <button type="button" title="Next file" onclick={onnext}>
+          <Chevron dir="right" />
+        </button>
       </span>
     {/if}
   </header>
@@ -141,12 +146,14 @@
   }
 
   .file-nav button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     background: transparent;
     border: 1px solid transparent;
     color: var(--text);
-    padding: 0 4px;
+    padding: 2px 4px;
     line-height: 1;
-    font-size: 13px;
     cursor: pointer;
     border-radius: 3px;
   }

@@ -168,8 +168,10 @@ header.app .draft-nav {
 }
 
 header.app .draft-nav button {
-  padding: 2px 8px;
-  font-size: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 8px;
   line-height: 1;
 }
 
@@ -202,8 +204,10 @@ header.app .commit-nav {
 }
 
 header.app .commit-nav button {
-  padding: 2px 8px;
-  font-size: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 8px;
   line-height: 1;
   flex: 0 0 auto;
 }
@@ -434,8 +438,10 @@ header.app .comment-nav {
 }
 
 header.app .comment-nav button {
-  padding: 2px 8px;
-  font-size: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 8px;
   line-height: 1;
 }
 
