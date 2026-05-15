@@ -20,7 +20,7 @@ export class ApiError extends Error {
     public status: number,
     public detail: string,
   ) {
-    super(`api ${status}: ${detail}`);
+    super(detail);
   }
 }
 
