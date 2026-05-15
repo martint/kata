@@ -136,11 +136,14 @@
 
   /** See `HunkLines.svelte` — same idea, but indexed on the side
    *  this column renders so a multi-line range tints every covered
-   *  row, not just the one the thread attaches to. */
+   *  row, not just the one the thread attaches to. Outdated anchors
+   *  are skipped (their range points at content that has since
+   *  changed); those threads render at the file level. */
   const commentedLines = $derived.by(() => {
     const set = new Set<string>();
     for (const c of comments) {
       if (!c.side) continue;
+      if (c.anchor.kind === 'outdated') continue;
       const effective =
         c.anchor.kind === 'moved' || c.anchor.kind === 'drifted'
           ? c.anchor.new_lines

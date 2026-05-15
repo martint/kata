@@ -132,11 +132,18 @@
    *  the thread (rendered below the last line) is talking about — a
    *  five-line range otherwise looks just like a thread attached to
    *  one line. The thread is still anchored to `effective.end`; this
-   *  just decorates the rest of the range. */
+   *  just decorates the rest of the range.
+   *
+   *  Outdated anchors are skipped: their `c.lines` points at a range
+   *  whose content has since changed, so tinting the *new* content
+   *  there would imply the comment is about lines it isn't. Those
+   *  threads render at the file level instead — see the
+   *  orphan-threads block in `FileDiff.svelte`. */
   const commentedLines = $derived.by(() => {
     const set = new Set<string>();
     for (const c of comments) {
       if (!c.side) continue;
+      if (c.anchor.kind === 'outdated') continue;
       const effective =
         c.anchor.kind === 'moved' || c.anchor.kind === 'drifted'
           ? c.anchor.new_lines
