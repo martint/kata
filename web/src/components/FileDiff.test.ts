@@ -153,6 +153,49 @@ describe('FileDiff', () => {
     },
   );
 
+  test('renders the diff hunks by default (showDiffs=true, showComments=true)', () => {
+    const { container } = renderFileDiff();
+    // Hunks live inside .hunks-wrapper; the comments-only flat list
+    // would render .compact-line-list instead.
+    expect(container.querySelector('.hunks-wrapper')).not.toBeNull();
+    expect(container.querySelector('.compact-line-list')).toBeNull();
+  });
+
+  test('comments-only mode (showDiffs=false) renders the flat list instead of hunks', () => {
+    const f = file({
+      hunks: null as unknown as undefined,
+      added: 0,
+      removed: 0,
+    });
+    const { container } = renderFileDiff({ showDiffs: false, file: f });
+    expect(container.querySelector('.hunks-wrapper')).toBeNull();
+    // With no line comments the list is empty but the placeholder
+    // muted message shows.
+    expect(container.querySelector('.compact-line-list, p.placeholder')).not.toBeNull();
+  });
+
+  test('diffs-only mode (showComments=false) hides the file-comment button', () => {
+    const { container } = renderFileDiff({ showComments: false });
+    expect(container.querySelector('button.file-comment')).toBeNull();
+  });
+
+  test('diffs+comments mode shows the file-comment button in the header', () => {
+    const { container } = renderFileDiff();
+    expect(container.querySelector('button.file-comment')).not.toBeNull();
+  });
+
+  test("doesn't render the whole-file toggle in comments-only mode", () => {
+    const { container } = renderFileDiff({ showDiffs: false });
+    expect(container.querySelector('button.whole-file')).toBeNull();
+  });
+
+  test('renders the whole-file toggle for modified files when diffs are on', () => {
+    const { container } = renderFileDiff();
+    // The button is gated on `canExpand` which is true for `modified`
+    // and `renamed` statuses. Our fixture file is `modified`.
+    expect(container.querySelector('button.whole-file')).not.toBeNull();
+  });
+
   test('still reads the tip blob from patchset.tip_commit in compare mode', async () => {
     // The bug was base-side only; the tip side already lined up
     // because the diff's tip IS `patchset.tip_commit` regardless of
