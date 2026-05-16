@@ -183,51 +183,61 @@ Wait for the demand signal before building — most reviews probably
 don't hit this, and the divergence banner + `jj abandon` workflow
 covers the common case.
 
-## Patchset-compare should show intent, not snapshot
+## Patchset-compare: two complementary views
 
 The compare branch in `open_review` runs `build_diff_metadata(PS_a.tip,
-PS_b.tip)` — a raw tree-vs-tree diff between the two snapshots. When
-the author rewrites *intermediate* commits between the two patchsets
-(an amend, a split, a squash, content moved between commits), the
-redistribution surfaces in the cumulative diff as lines that aren't
-in any reachable commit's per-commit diff. Reviewers see those lines
-as "phantom" — they're correct in the snapshot sense, but they don't
-match the user's mental model of "the diff is the sum of the per-
-commit diffs in the visible patchset."
+PS_b.tip)` — a raw tree-vs-tree diff between the two snapshots. That
+result is mathematically correct, but readers ask two different
+questions about it that the single view conflates:
 
-Concrete repro: review 5 ("named-args"), PS1→PS2 on
-`ParametricAggregationImplementation.java`. PS1's `wpty` introduced
-the new method with `/** ... */` javadoc; PS2's `wpty` (same change
-ID, different commit ID) introduces it with `///` slash-doc. The
-PS1→PS2 cumulative diff shows the javadoc removed and the slash-doc
-added — both legitimate from a tree-state perspective, but the
-removed javadoc is invisible in any PS2 commit's per-commit diff
-because PS2's commits don't have it. (Interdiff doesn't help here:
-both patches share the same base, so interdiff reduces to the
-snapshot diff.)
+1. **"What changed about *this patchset* between rounds?"** —
+   treat PS_a as ground truth, show every file/line difference between
+   PS_a.tip and PS_b.tip. Useful for sweeping the agent's response to
+   your comments and verifying the edits match what you asked for.
+   The current behaviour, and the workflow most people will reach for
+   first.
+2. **"How did *each commit* evolve between rounds?"** — for every
+   change-id that appears in both PS_a and PS_b, an interdiff between
+   PS_a's version of that commit and PS_b's. Lets the reader zoom
+   into a single commit: "what did the agent rewrite about commit X."
+   `git range-diff` and the mailing-list `interdiff` tool serve the
+   same workflow.
 
-The right fix is **per-commit evolution view**. In compare mode:
+The second view also disambiguates the cases where the cumulative
+diff feels misleading: cross-file method moves (a `getArgumentNames`
+goes from `FunctionMetadata.java` to `Signature.java` and the
+cumulative view shows the move as 28 lines removed in one file with
+no semantic link to the additions in the other), style changes
+(javadoc → slash-doc that read as remove+add), or wholesale
+restructures the agent made beyond what was requested. None of these
+are diff-algorithm bugs — they're real changes shown without
+attribution. The per-commit view pins each delta to the commit (and
+implicitly the agent's task) that made it.
 
-- Walk the union of change IDs across PS_a and PS_b. Mark each as
-  `same` (matching commit IDs), `changed` (same change ID, different
-  commit ID), `added-in-PS_b` (no PS_a counterpart), or
-  `removed-from-PS_a` (no PS_b counterpart — abandoned during the
-  rewrite).
-- Surface the markers inline in the commits panel.
-- Clicking a `changed` commit shows its inter-version diff (PS_a's
-  version vs PS_b's), which is the right answer for "what did the
-  author change in this commit between rounds." jj's
-  `commit.inter_diff()` template method does the per-commit case
-  natively.
-- The current cumulative tree diff stays as a secondary "compare
-  trees" view for the cases where the snapshot answer is the right
-  one.
+**Shape:**
 
-Service-side shape: new `compare_patchsets(repo, review, ps_a, ps_b)`
-returning per-change-id pair status and per-pair inter-diffs.
-Probably a separate endpoint rather than overloading
-`open_review`'s `compare` query param so the wire format can grow
-independently.
+- New service endpoint `compare_patchsets(repo, review, ps_a, ps_b)`
+  returning both shapes in one round trip:
+  - The cumulative `tree(PS_a.tip)` vs `tree(PS_b.tip)` file/hunk
+    diff. (Should be base-aware: if `PS_a.base != PS_b.base`,
+    reproject one onto the other's base — jj's in-memory rebase
+    makes this cheap — so upstream rebase noise doesn't appear as
+    "agent edits." Today every review in the corpus has stable
+    bases, but this matters once that stops being true.)
+  - Per-change-id pair list with each entry marked `same` (matching
+    commit IDs), `changed` (same change ID, different commit ID),
+    `added-in-PS_b`, or `removed-from-PS_a`. For `changed` entries,
+    include the inter-version diff (jj's `commit.inter_diff()`
+    template handles this natively).
+- UI: the cumulative diff stays the default landing view (matches
+  the current compare-mode mental model). The commits panel grows
+  the per-change-id markers; clicking a `changed` commit swaps the
+  main panel to that commit's inter-version diff. Both views are
+  derived from one server response, so switching is instant.
+- Keep `open_review`'s `compare` query param for backward compat,
+  but route the new richer response through the dedicated endpoint
+  so the wire format can grow without dragging the open-review
+  payload with it.
 
 ## Two-phase comment resolution: claim vs. acknowledgement
 
