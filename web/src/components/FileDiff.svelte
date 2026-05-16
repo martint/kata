@@ -44,6 +44,14 @@
      *  +comment buttons, and the file-comment button in the header.
      *  When `false`, the diff is shown without any of these. */
     showComments?: boolean;
+    /** Base-side width fraction for the side-by-side renderer. 0.5
+     *  by default (even split). Threaded down to every
+     *  HunkLinesSideBySide instance so the page's SBS split is
+     *  uniform. */
+    sbsSplit?: number;
+    /** Drag handler for the SBS divider. The setter sees ratios
+     *  already constrained by the parent (clamp + snap). */
+    setSbsSplit?: (next: number) => void;
     /** True while `FileSlot` is fetching the per-file diff. We render a
      *  "Loading…" placeholder instead of "Diff omitted" so the user
      *  gets feedback rather than confusing them into thinking the
@@ -80,6 +88,8 @@
     saving,
     showDiffs = true,
     showComments = true,
+    sbsSplit = 0.5,
+    setSbsSplit = () => {},
     loadingHunks = false,
     onstartcompose,
     oncancelcompose,
@@ -875,6 +885,8 @@
               {lastVisitAt}
               {viewer}
               {showComments}
+              {sbsSplit}
+              {setSbsSplit}
               {onstartcompose}
               {onreply}
               {onstatus}

@@ -60,6 +60,13 @@
      *  threads, and the +comment buttons. When `false` the diff is
      *  rendered without any comment UI. */
     showComments: boolean;
+    /** Fraction of width the base (left) side takes in the
+     *  side-by-side view. Shared across the page so dragging any
+     *  divider rebalances every SBS hunk. 0.5 = even split. */
+    sbsSplit: number;
+    /** Setter the SBS divider calls during a drag (already clamped
+     *  + snap-aware in `ReviewViewer`). */
+    setSbsSplit: (next: number) => void;
     /** Shared cache of resolved file diffs keyed by
      *  `${patchset}|${compare}|${path}`. Lifted up to ReviewViewer
      *  so cached entries survive this slot virtualizing itself out
@@ -96,6 +103,8 @@
     forceRender,
     showDiffs,
     showComments,
+    sbsSplit,
+    setSbsSplit,
     diffCache,
     onstartcompose,
     oncancelcompose,
@@ -245,6 +254,8 @@
         {saving}
         {showDiffs}
         {showComments}
+        {sbsSplit}
+        {setSbsSplit}
         loadingHunks={loadingHunks && !diffCache.has(cacheKey)}
         bind:wholeFile
         {lastVisitAt}

@@ -37,6 +37,12 @@
      *  +comment buttons. When `false` the diff renders without any
      *  comment UI (diffs-only mode). */
     showComments?: boolean;
+    /** Base-side width fraction (0..1). The tip side takes the rest.
+     *  Default 0.5 (even split). Shared with every other SBS hunk on
+     *  the page so dragging this hunk's divider rebalances them all. */
+    sbsSplit?: number;
+    /** Drag callback for the divider. The parent clamps + snaps. */
+    setSbsSplit?: (next: number) => void;
   }
   const {
     hunk,
@@ -56,6 +62,8 @@
     lastVisitAt = null,
     viewer = '',
     showComments = true,
+    sbsSplit = 0.5,
+    setSbsSplit = () => {},
   }: Props = $props();
 
   type PairedRow =
@@ -103,7 +111,45 @@
   let tipSideEl: HTMLDivElement | undefined = $state();
   let baseTableEl: HTMLTableElement | undefined = $state();
   let tipTableEl: HTMLTableElement | undefined = $state();
+  let pairEl: HTMLDivElement | undefined = $state();
+  let dividerDragging = $state(false);
   let dragSelected: HTMLElement[] = [];
+
+  /** Drag the gutter between the base and tip sides. Pointer X within
+   *  `pairEl` becomes the new base-side fraction; the parent clamps
+   *  and snaps. `setPointerCapture` lets the drag continue smoothly
+   *  even when the pointer leaves the 1-px-wide divider, and the
+   *  bound listeners are scoped to this pointer id so concurrent
+   *  drags on other dividers don't interfere. */
+  function onDividerDown(e: PointerEvent) {
+    if (!pairEl) return;
+    e.preventDefault();
+    const target = e.currentTarget as HTMLElement;
+    target.setPointerCapture(e.pointerId);
+    dividerDragging = true;
+    const rect = pairEl.getBoundingClientRect();
+    const onMove = (ev: PointerEvent) => {
+      if (ev.pointerId !== e.pointerId) return;
+      setSbsSplit((ev.clientX - rect.left) / rect.width);
+    };
+    const onUp = (ev: PointerEvent) => {
+      if (ev.pointerId !== e.pointerId) return;
+      target.removeEventListener('pointermove', onMove);
+      target.removeEventListener('pointerup', onUp);
+      target.removeEventListener('pointercancel', onUp);
+      dividerDragging = false;
+    };
+    target.addEventListener('pointermove', onMove);
+    target.addEventListener('pointerup', onUp);
+    target.addEventListener('pointercancel', onUp);
+  }
+
+  /** Double-click resets to the standard even split. The snap-to-middle
+   *  behaviour during drag already makes the centre easy to land on,
+   *  but this is the one-click escape hatch. */
+  function onDividerDblClick() {
+    setSbsSplit(0.5);
+  }
 
   /** Set --content-vp-width on each side so sticky thread blocks know how
    *  wide to be when content scrolls horizontally beneath them. */
@@ -275,8 +321,12 @@
   }
 </script>
 
-<div class="sbs-pair">
-  <div class="sbs-side base" bind:this={baseSideEl}>
+<div class="sbs-pair" bind:this={pairEl}>
+  <div
+    class="sbs-side base"
+    bind:this={baseSideEl}
+    style:flex-basis="calc({sbsSplit * 100}% - 0.5px)"
+  >
     <table class="hunk-half" bind:this={baseTableEl}>
       <colgroup>
         <col class="col-ln" />
@@ -350,7 +400,25 @@
       </tbody>
     </table>
   </div>
-  <div class="sbs-side tip" bind:this={tipSideEl}>
+  <div
+    class="sbs-divider"
+    class:dragging={dividerDragging}
+    role="separator"
+    aria-orientation="vertical"
+    aria-label="Drag to resize the side-by-side split (double-click to reset)"
+    aria-valuenow={Math.round(sbsSplit * 100)}
+    aria-valuemin={15}
+    aria-valuemax={85}
+    onpointerdown={onDividerDown}
+    ondblclick={onDividerDblClick}
+  >
+    <div class="sbs-divider-handle" aria-hidden="true"></div>
+  </div>
+  <div
+    class="sbs-side tip"
+    bind:this={tipSideEl}
+    style:flex-basis="calc({(1 - sbsSplit) * 100}% - 0.5px)"
+  >
     <table class="hunk-half" bind:this={tipTableEl}>
       <colgroup>
         <col class="col-ln" />
@@ -428,14 +496,41 @@
   }
 
   .sbs-side {
-    flex: 1 1 50%;
+    /* flex-basis is set inline from the shared `sbsSplit` ratio
+     * (parent decides the split, every SBS hunk on the page agrees).
+     * grow:0 / shrink:1 lets the side respect its basis while still
+     * collapsing under a narrow viewport. */
+    flex: 0 1 auto;
     min-width: 0;
     overflow-x: auto;
     overscroll-behavior-x: contain;
   }
 
-  .sbs-side.base {
-    border-right: 1px solid var(--border);
+  /* Visual divider between the two sides. The 1-px line is the
+   * `.sbs-divider` itself; the wider `.sbs-divider-handle` sits on
+   * top via absolute positioning, giving the user a generous hit
+   * area without adding any visible bulk. */
+  .sbs-divider {
+    flex: 0 0 1px;
+    background: var(--border);
+    align-self: stretch;
+    position: relative;
+    user-select: none;
+    touch-action: none;
+  }
+
+  .sbs-divider.dragging,
+  .sbs-divider:hover {
+    background: var(--link);
+  }
+
+  .sbs-divider-handle {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: -3px;
+    right: -3px;
+    cursor: col-resize;
   }
 
   .hunk-half {
