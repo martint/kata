@@ -454,10 +454,19 @@ impl ReviewService {
                     }
                     None => Vec::new(),
                 };
-                let _ = self
+                if let Err(e) = self
                     .storage
                     .record_review_visit(repo, review, viewer, current_op)
-                    .await;
+                    .await
+                {
+                    // Recording the baseline is best-effort — losing it
+                    // just means the next open shows an empty
+                    // "since you were here" list instead of failing the
+                    // open. But silently swallowing the error is what
+                    // hid a broken FK in this code path for weeks, so
+                    // log it loudly.
+                    tracing::warn!(error = ?e, "failed to record review visit");
+                }
                 list
             }
             _ => Vec::new(),

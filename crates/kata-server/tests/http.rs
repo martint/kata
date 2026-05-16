@@ -601,3 +601,116 @@ async fn open_review_in_compare_mode_reports_compared_patchset_diff_metadata() {
     assert!(plain_added >= compare_added);
     assert!(plain_removed >= compare_removed);
 }
+
+#[tokio::test]
+async fn first_open_records_a_visit_baseline_with_no_history() {
+    // On the very first open for a given (review, viewer) pair the
+    // service records the current jj op as the baseline but cannot
+    // produce a "since you were here" list yet — so `last_visit_at`
+    // is null and `ops_since` is empty.
+    let h = Harness::new().await;
+    let (_, created) = h
+        .json(
+            "POST",
+            "/api/repos/main/reviews",
+            Some(json!({
+                "name": "feature",
+                "revset": "@-..feature",
+                "bookmark": "feature",
+                "created_by": "alice@example.com",
+            })),
+        )
+        .await;
+    let review_url = format!(
+        "/api/repos/main/reviews/{}",
+        created["number"].as_u64().unwrap()
+    );
+
+    let (status, view) = h.json("GET", &review_url, None).await;
+    assert_eq!(status, StatusCode::OK);
+    // Both fields are `#[serde(skip_serializing_if = ...)]`, so on a
+    // truly-empty first open they're missing from the JSON entirely.
+    // `Value::Null` is what indexing a missing key returns, which is
+    // what we expect here.
+    assert!(view["last_visit_at"].is_null());
+    assert!(view["ops_since"].is_null());
+}
+
+#[tokio::test]
+async fn second_open_reports_last_visit_at_and_ops_landed_since() {
+    // Open the review once to set a baseline, perform a jj operation
+    // (a `describe` against the bookmark tip), then open again — the
+    // second open must surface a non-null `last_visit_at` and the
+    // intervening op in `ops_since`.
+    let h = Harness::new().await;
+    let (_, created) = h
+        .json(
+            "POST",
+            "/api/repos/main/reviews",
+            Some(json!({
+                "name": "feature",
+                "revset": "@-..feature",
+                "bookmark": "feature",
+                "created_by": "alice@example.com",
+            })),
+        )
+        .await;
+    let review_url = format!(
+        "/api/repos/main/reviews/{}",
+        created["number"].as_u64().unwrap()
+    );
+
+    // Baseline visit.
+    let (_, first) = h.json("GET", &review_url, None).await;
+    assert!(first["last_visit_at"].is_null());
+
+    // Intervening jj op: rewrite the bookmark's description.
+    run_jj(
+        &h.workspace_path,
+        &["describe", "-r", "feature", "-m", "tweak (edited)"],
+    );
+
+    let (_, second) = h.json("GET", &review_url, None).await;
+    assert!(
+        second["last_visit_at"].is_string(),
+        "expected last_visit_at to be set on second open, got {:?}",
+        second["last_visit_at"],
+    );
+    let ops = second["ops_since"].as_array().unwrap();
+    assert!(
+        !ops.is_empty(),
+        "expected ops_since to contain the intervening describe, got empty",
+    );
+}
+
+#[tokio::test]
+async fn ops_since_stays_empty_when_nothing_happened_between_visits() {
+    // Two back-to-back opens with no jj activity in between: the
+    // second open should see `last_visit_at` populated (so the UI
+    // knows there was a prior visit) but `ops_since` empty — there
+    // is genuinely nothing to surface.
+    let h = Harness::new().await;
+    let (_, created) = h
+        .json(
+            "POST",
+            "/api/repos/main/reviews",
+            Some(json!({
+                "name": "feature",
+                "revset": "@-..feature",
+                "bookmark": "feature",
+                "created_by": "alice@example.com",
+            })),
+        )
+        .await;
+    let review_url = format!(
+        "/api/repos/main/reviews/{}",
+        created["number"].as_u64().unwrap()
+    );
+
+    let (_, _) = h.json("GET", &review_url, None).await;
+    let (_, second) = h.json("GET", &review_url, None).await;
+    assert!(second["last_visit_at"].is_string());
+    // `ops_since` is `#[serde(skip_serializing_if = "Vec::is_empty")]`,
+    // so an empty list is omitted entirely — index returns Null.
+    assert!(second["ops_since"].is_null());
+}
