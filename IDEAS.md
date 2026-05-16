@@ -229,6 +229,59 @@ Probably a separate endpoint rather than overloading
 `open_review`'s `compare` query param so the wire format can grow
 independently.
 
+## Two-phase comment resolution: claim vs. acknowledgement
+
+The current model treats "resolved" as a single-actor decision: a
+responder marks the thread done and the UI immediately folds it.
+The unread-replies marker (committed) softens this — threads with
+responses newer than the viewer's last visit stay expanded even
+when resolved — but it doesn't model the actual handshake: the
+responder *claims* the work is done, and the comment author then
+either *accepts* or *reopens*. Once the viewer reloads, the
+unread marker clears whether they actually read the response or
+just scrolled past it.
+
+Real fix: split the resolution state into two fields.
+
+- `resolved` stays where it is — a response action set by anyone
+  who thinks the issue is addressed.
+- `acknowledged_at` (or similar) is set by the *comment author*
+  when they sign off on the resolution. Until then, the thread
+  stays expanded with a "needs your review" badge regardless of
+  resolution state. The author can either acknowledge (folds) or
+  reopen (resolution clears, thread stays expanded).
+
+Once this lands, the existing "next unread" comment-nav can
+upgrade from a derived timestamp predicate to a real persistent
+queue: anything `resolved && !acknowledged` is in your inbox
+until you act on it.
+
+One new response action (`acknowledge`), one schema field, and a
+small storage migration. The UI surface mostly already exists —
+the unread-marker rendering paths just key off
+`!acknowledged && state !== 'open'` instead of the timestamp
+comparison.
+
+## A "review responses" view-mode toggle
+
+A top-bar chip that puts the viewer into a focused "go through
+what changed since I was last here" mode: expand every comment
+with responses newer than `last_visit_at`, hide the rest, and
+gate the comment-nav `< >` buttons to walk only that subset.
+Click again to return to the normal view.
+
+Doesn't change the data model — it's a derived filter layered on
+top of the unread-replies signal that already exists. Suits the
+specific workflow of "I asked an agent to address a batch, now
+I'm reviewing what it did". The current always-on visible badge
++ auto-expand handles the steady-state case; this mode is for
+when the viewer is deliberately sweeping a backlog.
+
+Worth picking up if the steady-state markers turn out to be
+noisy on long-running reviews, or if the two-phase-acknowledgement
+work above lands and we want a quick "show me what I haven't
+acknowledged yet" affordance.
+
 ## Other ideas
 
 _(add new entries above this line as they come up)_
