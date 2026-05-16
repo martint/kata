@@ -6,11 +6,21 @@
 //! elements from a previous test's render.
 
 import '@testing-library/jest-dom/vitest';
-import { afterEach } from 'vitest';
+import { afterEach, beforeEach } from 'vitest';
 import { cleanup } from '@testing-library/svelte';
 
 afterEach(() => {
   cleanup();
+});
+
+// Reset localStorage between tests so a toggle-flipped persisted
+// preference from one test doesn't bleed into the next (e.g. the
+// compare-mode "hide unchanged" toggle in CommitsPanel writes to
+// `kata:compare:hide-same`).
+beforeEach(() => {
+  if (typeof localStorage !== 'undefined') {
+    localStorage.clear();
+  }
 });
 
 // jsdom doesn't ship `ResizeObserver` or `IntersectionObserver`, but a

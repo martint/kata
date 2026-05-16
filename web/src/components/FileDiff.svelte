@@ -52,6 +52,10 @@
      *  +comment buttons, and the file-comment button in the header.
      *  When `false`, the diff is shown without any of these. */
     showComments?: boolean;
+    /** Gate for the `+ comment` affordances only — existing threads
+     *  still render when false. See FileSlot's prop doc for the
+     *  per-commit-compare design reason. */
+    commentsWriteable?: boolean;
     /** Base-side width fraction for the side-by-side renderer. 0.5
      *  by default (even split). Threaded down to every
      *  HunkLinesSideBySide instance so the page's SBS split is
@@ -97,6 +101,7 @@
     saving,
     showDiffs = true,
     showComments = true,
+    commentsWriteable = true,
     sbsSplit = 0.5,
     setSbsSplit = () => {},
     loadingHunks = false,
@@ -738,7 +743,7 @@
         </svg>
       </button>
     {/if}
-    {#if showComments}
+    {#if showComments && commentsWriteable}
       <button
         type="button"
         class="file-comment"
@@ -900,6 +905,7 @@
               {lastVisitAt}
               {viewer}
               {showComments}
+              {commentsWriteable}
               {sbsSplit}
               {setSbsSplit}
               {onstartcompose}
@@ -923,6 +929,7 @@
               {lastVisitAt}
               {viewer}
               {showComments}
+              {commentsWriteable}
               {onstartcompose}
               {onreply}
               {onstatus}

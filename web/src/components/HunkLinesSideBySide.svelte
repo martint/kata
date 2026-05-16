@@ -37,6 +37,11 @@
      *  +comment buttons. When `false` the diff renders without any
      *  comment UI (diffs-only mode). */
     showComments?: boolean;
+    /** Gate for the gutter `+ comment` buttons only — inline threads
+     *  for existing comments still render when false. Defaults to
+     *  true to preserve call-sites. See FileSlot's prop doc for the
+     *  per-commit-compare design reason. */
+    commentsWriteable?: boolean;
     /** Base-side width fraction (0..1). The tip side takes the rest.
      *  Default 0.5 (even split). Shared with every other SBS hunk on
      *  the page so dragging this hunk's divider rebalances them all. */
@@ -62,6 +67,7 @@
     lastVisitAt = null,
     viewer = '',
     showComments = true,
+    commentsWriteable = true,
     sbsSplit = 0.5,
     setSbsSplit = () => {},
   }: Props = $props();
@@ -347,7 +353,7 @@
               <!-- "+" button lives in the sticky gutter cell, not the
                    content cell, so it stays visible during horizontal
                    scroll of long lines. -->
-              {#if row.left?.base_line != null && showComments}
+              {#if row.left?.base_line != null && showComments && commentsWriteable}
                 <button
                   type="button"
                   class="add-comment"
@@ -433,7 +439,7 @@
               data-side="tip"
               data-line={rightLine ?? ''}
             >
-              {#if row.right?.tip_line != null && showComments}
+              {#if row.right?.tip_line != null && showComments && commentsWriteable}
                 <button
                   type="button"
                   class="add-comment"

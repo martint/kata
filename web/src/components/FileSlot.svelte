@@ -38,6 +38,18 @@
      *  layer reads the right "base" file (the compared patchset's
      *  tip, not `patchset.base_commit`). */
     compareBaseCommit: string | null;
+    /** Patchset-compare v2: when set, this slot renders the per-commit
+     *  interdiff for the given commit pair. Overrides the patchset-
+     *  scoped fetch path (`/file-diff`) with the generic commit-pair
+     *  endpoint (`/diff?from=&to=&path=`).
+     *
+     *  `useRebase` flips the backend semantic: true for `changed`
+     *  pair rows (rebase-based interdiff, libjj path) so
+     *  downstream-of-rewrite commits don't inherit cumulative
+     *  deltas; false for added/removed (plain parent..commit). */
+    interdiffEndpoints?:
+      | { from: string; to: string; useRebase: boolean }
+      | null;
     /** Fetch the per-file diff up front, regardless of whether the
      *  slot is in the viewport. Set for files that have at least one
      *  comment — the comment-nav `< >` buttons need to land on those
@@ -65,6 +77,15 @@
      *  threads, and the +comment buttons. When `false` the diff is
      *  rendered without any comment UI. */
     showComments: boolean;
+    /** Gate for new-comment affordances (the `+ comment` buttons in
+     *  the gutter / file header). Independent of `showComments`:
+     *  existing threads still render when `false`, only the controls
+     *  to add new comments are suppressed. Set false in per-commit
+     *  compare view when the `to` patchset isn't the current one
+     *  (Decision 2 of the comments-in-compare design — a new comment
+     *  there would immediately read as stale in any non-compare
+     *  view). Defaults to true to preserve old call-sites. */
+    commentsWriteable?: boolean;
     /** Fraction of width the base (left) side takes in the
      *  side-by-side view. Shared across the page so dragging any
      *  divider rebalances every SBS hunk. 0.5 = even split. */
@@ -100,6 +121,7 @@
     patchset,
     compareWith,
     compareBaseCommit,
+    interdiffEndpoints = null,
     eagerFetch,
     comments,
     responses,
@@ -109,6 +131,7 @@
     forceRender,
     showDiffs,
     showComments,
+    commentsWriteable = true,
     sbsSplit,
     setSbsSplit,
     diffCache,
@@ -135,10 +158,16 @@
    *  would silently re-fold it. */
   let wholeFile = $state(false);
 
-  /** Cache key for this slot's (patchset, compare, path) combination.
-   *  Composite so a patchset switch reads from a fresh slot in the
-   *  shared cache rather than overwriting the previous entry. */
-  const cacheKey = $derived(`${patchset.n}|${compareWith ?? ''}|${file.path}`);
+  /** Cache key for this slot's (patchset, compare, path) — or for the
+   *  v2 per-commit interdiff, `(from_commit, to_commit, path)`. The
+   *  two flows write into the same shared cache; the key namespaces
+   *  them so a switch from one mode to the other doesn't reuse the
+   *  wrong entry. */
+  const cacheKey = $derived(
+    interdiffEndpoints
+      ? `interdiff|${interdiffEndpoints.useRebase ? 'r' : 'p'}|${interdiffEndpoints.from}|${interdiffEndpoints.to}|${file.path}`
+      : `${patchset.n}|${compareWith ?? ''}|${file.path}`,
+  );
 
   let loadingHunks = $state(false);
   let loadError = $state<string | null>(null);
@@ -163,8 +192,35 @@
     const key = cacheKey;
     loadingHunks = true;
     loadError = null;
-    api
-      .fileDiff(repo, reviewNumber, file.path, patchset.n, compareWith ?? undefined)
+    const fetcher = interdiffEndpoints
+      ? api
+          .diffCommits(
+            repo,
+            interdiffEndpoints.from,
+            interdiffEndpoints.to,
+            file.path,
+            interdiffEndpoints.useRebase,
+          )
+          .then((res) => {
+            // The generic /diff endpoint returns a discriminated union;
+            // for a single-file fetch we want the `file` arm.
+            if (res.kind !== 'file') {
+              throw new Error('expected file-shape result from /diff');
+            }
+            // Strip the discriminator so the cached value matches the
+            // FileChange shape the rest of the UI expects.
+            const { kind: _kind, ...rest } = res;
+            void _kind;
+            return rest as FileChange;
+          })
+      : api.fileDiff(
+          repo,
+          reviewNumber,
+          file.path,
+          patchset.n,
+          compareWith ?? undefined,
+        );
+    fetcher
       .then((updated) => {
         diffCache.set(key, updated);
       })
@@ -261,6 +317,7 @@
         {saving}
         {showDiffs}
         {showComments}
+        {commentsWriteable}
         {sbsSplit}
         {setSbsSplit}
         loadingHunks={loadingHunks && !diffCache.has(cacheKey)}

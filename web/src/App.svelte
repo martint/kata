@@ -22,6 +22,7 @@
         view: ReviewView;
         initialPatchset: number | undefined;
         initialCompareWith: number | undefined;
+        initialCommit: string | undefined;
       };
 
   // Synchronously decide the initial screen based on the URL, BEFORE the
@@ -75,23 +76,32 @@
     number: number,
     patchset?: number,
     compareWith?: number | null,
+    commit?: string | null,
   ): string {
     const base = `/r/${encodeURIComponent(repo)}/${number}`;
     const parts: string[] = [];
     if (patchset !== undefined) parts.push(`ps=${patchset}`);
     if (compareWith != null) parts.push(`cmp=${compareWith}`);
+    // `commit` only carries meaning in compare mode (it selects a
+    // change-id from the pair list); leave it off otherwise so URLs
+    // don't grow stale params.
+    if (commit != null && compareWith != null) {
+      parts.push(`commit=${encodeURIComponent(commit)}`);
+    }
     return parts.length > 0 ? `${base}?${parts.join('&')}` : base;
   }
 
-  /** Parse `/r/<repo>/<number>` (with optional `?ps=N`, `?cmp=M`).
-   *  Returns null when the URL is the review list (or when `<number>`
-   *  isn't a positive integer — those URLs are treated as not-a-review). */
+  /** Parse `/r/<repo>/<number>` (with optional `?ps=N`, `?cmp=M`,
+   *  `?commit=<id>`). Returns null when the URL is the review list
+   *  (or when `<number>` isn't a positive integer — those URLs are
+   *  treated as not-a-review). */
   function parseUrl():
     | {
         repo: string;
         number: number;
         patchset: number | undefined;
         compareWith: number | undefined;
+        commit: string | undefined;
       }
     | null {
     const m = location.pathname.match(/^\/r\/([^/]+)\/(\d+)$/);
@@ -103,11 +113,13 @@
       const n = Number(raw);
       return Number.isFinite(n) ? n : undefined;
     };
+    const commit = params.get('commit') ?? undefined;
     return {
       repo: decodeURIComponent(m[1]),
       number: Number(m[2]),
       patchset: readNum('ps'),
       compareWith: readNum('cmp'),
+      commit,
     };
   }
 
@@ -132,6 +144,7 @@
     number: number,
     patchset: number | undefined,
     compareWith: number | undefined,
+    commit: string | undefined,
   ) {
     loading = true;
     error = null;
@@ -143,6 +156,7 @@
         view,
         initialPatchset: patchset,
         initialCompareWith: compareWith,
+        initialCommit: commit,
       };
     } catch (e) {
       error = (e as Error).message;
@@ -159,19 +173,20 @@
     if (location.pathname + location.search !== path) {
       history.pushState({}, '', path);
     }
-    await showReview(repo, number, undefined, undefined);
+    await showReview(repo, number, undefined, undefined, undefined);
   }
 
-  /** Called when the viewer changes patchset or compare target via the
-   *  dropdowns. Sync the URL so the link is shareable without pushing
-   *  a new history entry. */
-  function onViewChange(n: number, compare: number | null) {
+  /** Called when the viewer changes patchset, compare target, or the
+   *  selected compare-commit. Sync the URL so the link is shareable
+   *  without pushing a new history entry. */
+  function onViewChange(n: number, compare: number | null, commit: string | null) {
     if (screen.kind !== 'review') return;
     const path = pathForReview(
       screen.repo,
       screen.view.manifest.number,
       n,
       compare,
+      commit,
     );
     if (location.pathname + location.search !== path) {
       history.replaceState({}, '', path);
@@ -200,7 +215,13 @@
         return;
       }
       repo = parsed.repo;
-      await showReview(parsed.repo, parsed.number, parsed.patchset, parsed.compareWith);
+      await showReview(
+        parsed.repo,
+        parsed.number,
+        parsed.patchset,
+        parsed.compareWith,
+        parsed.commit,
+      );
     } else {
       screen = { kind: 'list' };
       if (!repo && repos[0]) repo = repos[0].name;
@@ -522,6 +543,7 @@
       viewer={whoami?.author ?? ''}
       initialPatchset={screen.initialPatchset}
       initialCompareWith={screen.initialCompareWith}
+      initialCommit={screen.initialCommit}
       onviewchange={onViewChange}
       ontoolbarchange={(t) => (toolbar = t)}
     />

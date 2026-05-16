@@ -41,6 +41,11 @@
      *  +comment buttons. When `false` the diff renders without any
      *  comment UI (diffs-only mode). */
     showComments?: boolean;
+    /** Gate for the gutter `+ comment` buttons only — inline threads
+     *  for existing comments still render when false. Defaults to
+     *  true to preserve call-sites that don't care about the
+     *  per-commit-compare writeability gate. */
+    commentsWriteable?: boolean;
   }
   const {
     hunk,
@@ -61,6 +66,7 @@
     lastVisitAt = null,
     viewer = '',
     showComments = true,
+    commentsWriteable = true,
   }: Props = $props();
 
   const showBase = $derived(lineNumberMode !== 'tip');
@@ -269,7 +275,7 @@
             <!-- "+" button lives in the gutter cell (not the content
                  cell) so it stays visible while long lines scroll
                  horizontally — the gutter is `position: sticky`. -->
-            {#if a && !showTip && showComments}
+            {#if a && !showTip && showComments && commentsWriteable}
               <button
                 type="button"
                 class="add-comment"
@@ -288,7 +294,7 @@
             data-side={a?.side ?? ''}
             data-line={a?.line ?? ''}
           >
-            {#if a && showComments}
+            {#if a && showComments && commentsWriteable}
               <button
                 type="button"
                 class="add-comment"

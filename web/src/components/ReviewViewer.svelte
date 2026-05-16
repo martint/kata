@@ -11,6 +11,8 @@
     DraftResponseInput,
     FileChange,
     Patchset,
+    PatchsetCompareView,
+    PatchsetPair,
     ResponseView,
     ReviewView,
   } from '../lib/types';
@@ -130,10 +132,21 @@
      *  compare mode showing the patchset[compare] → patchset[ps]
      *  delta. Undefined for the normal base..tip view. */
     initialCompareWith?: number;
-    /** Fires when the user picks a different patchset or compare target.
-     *  Reports both so App.svelte can keep the URL (`?ps=&cmp=`) in
-     *  sync. `compare === null` means leaving compare mode. */
-    onviewchange?: (patchset: number, compare: number | null) => void;
+    /** Compare-mode commit selection: when set together with
+     *  `initialCompareWith`, the viewer opens the per-commit interdiff
+     *  for this change-id from the pair list. Ignored outside compare
+     *  mode. Undefined means "cumulative view across all commits". */
+    initialCommit?: string;
+    /** Fires when the user picks a different patchset, compare target,
+     *  or per-commit compare selection. Reports all three so App.svelte
+     *  can keep the URL (`?ps=&cmp=&commit=`) in sync. `compare === null`
+     *  means leaving compare mode; `commit === null` means switching
+     *  back to the cumulative view inside compare mode. */
+    onviewchange?: (
+      patchset: number,
+      compare: number | null,
+      commit: string | null,
+    ) => void;
     /** Reports toolbar state up to the app shell so the publish / discard
      *  controls and the diff-collapse toggle can live in the always-visible
      *  top bar instead of scrolling away with the page. */
@@ -145,6 +158,7 @@
     viewer,
     initialPatchset,
     initialCompareWith,
+    initialCommit,
     onviewchange,
     ontoolbarchange,
   }: Props = $props();
@@ -718,10 +732,14 @@
           }
         : null,
       commits:
-        current.commits.length > 0
+        commitNavEntries.length > 0
           ? {
-              total: current.commits.length,
-              position: commitNavIndex + 1, // 1..N, 0 for "All"
+              // In compare mode `total` is the count of clickable pair
+              // rows (today: `changed`-status pairs); outside compare
+              // mode it's the patchset's commit count. The control's
+              // 1..N / 0-for-sentinel contract is unchanged.
+              total: commitNavEntries.length,
+              position: commitNavIndex + 1,
               label: commitNavLabel,
               prev: commitNavPrev,
               next: commitNavNext,
@@ -803,7 +821,25 @@
   let scopedChangeId: string | null = $state(null);
   let scopedDiff = $state<CommitDiffView | null>(null);
 
+  // ---- Patchset-compare v2 (per-commit interdiff) -------------------
+  // Cached pair-list + cumulative summary for the active compare. Fetched
+  // whenever `compareWith` flips to a new patchset; null outside compare
+  // mode or while a fetch is in flight.
+  let compareView = $state<PatchsetCompareView | null>(null);
+  // Which change-id from `compareView.pairs` the user clicked into for the
+  // per-commit interdiff view. Null = cumulative landing view.
+  // svelte-ignore state_referenced_locally
+  let selectedCompareCommit: string | null = $state(initialCommit ?? null);
+  // The file list backing the per-commit interdiff view. Set after the
+  // `diff_commits` fetch completes; null in cumulative mode or while
+  // loading. We only store the file-level metadata here — hunks ship
+  // lazily through the existing FileSlot flow (which now needs to be
+  // taught to fetch via `diff_commits` instead of `file_diff` when an
+  // interdiff endpoint pair is in effect; see `compareEndpoints` below).
+  let compareInterdiffFiles = $state<FileChange[] | null>(null);
+
   const displayedFiles = $derived.by(() => {
+    if (compareInterdiffFiles) return compareInterdiffFiles;
     const sd = scopedDiff;
     return sd ? sd.files : current.diff.files;
   });
@@ -820,10 +856,34 @@
   const fileDiffCache = new SvelteMap<string, FileChange>();
 
   /** Patchset to thread through to FileSlot/FileDiff for file content,
-   *  highlights, and new-comment anchors. In scoped view this points
-   *  at the clicked commit and its parent; otherwise at the review's
-   *  current patchset. */
+   *  highlights, and new-comment anchors.
+   *
+   *  Three modes:
+   *  - Per-commit compare view: points at the selected pair's
+   *    endpoints so anchors resolve against those commits — file-level
+   *    and line-level new comments end up anchored to `to_commit`
+   *    (per Decision 3 of the comments-in-compare design).
+   *  - Per-commit scoped view (old `commit_diff` path): points at the
+   *    clicked commit and its parent.
+   *  - Otherwise: the review's selected patchset endpoints. */
   const viewingFor = $derived.by<Patchset>(() => {
+    const pair = selectedComparePair;
+    const ep = interdiffEndpoints;
+    if (pair && ep) {
+      // Use the pair's change_id on both sides — we don't have the
+      // parent's change_id for added/removed without an extra jj
+      // round-trip, and anchor_change_id is mostly informational
+      // (the load-bearing field for the anchor system is
+      // anchor_commit_id, which we set correctly). The to-side
+      // commit is what Decision 3 says new comments anchor against.
+      return {
+        ...viewing,
+        base_change: pair.change_id,
+        base_commit: ep.from,
+        tip_change: pair.change_id,
+        tip_commit: ep.to,
+      };
+    }
     const sd = scopedDiff;
     if (!sd) return viewing;
     return {
@@ -833,6 +893,33 @@
       tip_change: sd.tip_change,
       tip_commit: sd.tip_commit,
     };
+  });
+
+  /** True when new comments should be allowed in the current view.
+   *  Per Decision 2 of the comments-in-compare design: per-commit
+   *  compare view only allows new comments when the `to` patchset is
+   *  the review's current one — otherwise the comment would anchor
+   *  to a non-current commit and immediately read as "drifted" /
+   *  "outdated" in the normal review view. Cumulative compare and
+   *  non-compare views never gate writes here. */
+  const commentsWriteable = $derived.by<boolean>(() => {
+    if (!selectedComparePair) return true;
+    return selectedPatchset === current.manifest.current_patchset;
+  });
+
+  /** Comments scoped to the active per-commit pair. Filters
+   *  `visibleComments` down to those whose `anchor_commit_id` matches
+   *  one side of the displayed pair (Decision 1 = option c). Outside
+   *  per-commit compare view this is just `visibleComments` — no
+   *  filtering. The CommitsPanel still receives the unfiltered list
+   *  for its commit-level / review-wide threads. */
+  const visibleCommentsForFiles = $derived.by<CommentView[]>(() => {
+    const pair = selectedComparePair;
+    if (!pair) return visibleComments;
+    const sides = new Set<string>();
+    if (pair.from_commit) sides.add(pair.from_commit);
+    if (pair.to_commit) sides.add(pair.to_commit);
+    return visibleComments.filter((c) => sides.has(c.anchor_commit_id));
   });
 
   /** Tip commit of the patchset being compared against, or `null`
@@ -936,50 +1023,256 @@
     }
   }
 
-  /** Where the currently scoped commit sits in `current.commits`.
-   *  -1 = "All commits", otherwise the 0-based index. The toolbar's
-   *  prev/next bounce through -1 between the ends, so the user can
-   *  always step back to the whole-review view without leaving the
-   *  keyboard. */
-  const commitNavIndex = $derived.by(() => {
-    if (scopedChangeId === null) return -1;
-    return current.commits.findIndex((c) => c.change_id === scopedChangeId);
-  });
-  const commitNavLabel = $derived.by(() => {
-    if (commitNavIndex < 0) return 'All commits';
-    const c = current.commits[commitNavIndex];
-    if (!c) return 'All commits';
-    const short = c.change_id.slice(0, 8);
-    const subject = c.description_first_line.trim() || '(no description)';
-    // Truncate so the top bar stays a single line on narrower screens.
-    const trimmed = subject.length > 60 ? `${subject.slice(0, 57)}…` : subject;
-    return `${short} · ${trimmed}`;
-  });
-  function selectCommitByIndex(i: number) {
-    if (i < 0) {
-      void selectCommit(null);
+  // ---- Patchset-compare v2 fetch logic ------------------------------
+  // (1) Fetch the pair-list summary whenever the active compare pair
+  //     changes. `compareView` then drives the CommitsPanel's
+  //     per-change-id badges.
+  // (2) When the user clicks a `changed` pair (selectedCompareCommit
+  //     set), fetch the interdiff between PS_a's and PS_b's versions
+  //     of that change-id and stash the file list.
+  //
+  // Errors from either fetch land in `compareError` (separate from the
+  // global `error`) so the side panel can show a dedicated banner —
+  // silently falling back to the normal commits panel hid real
+  // failures during prototype dogfooding.
+  let compareLoadKey = $state(''); // memo so we don't refetch needlessly
+  let compareError: string | null = $state(null);
+  $effect(() => {
+    if (compareWith == null) {
+      compareView = null;
+      compareError = null;
       return;
     }
-    const c = current.commits[i];
-    if (c) void selectCommit(c.change_id);
+    const key = `${selectedPatchset}|${compareWith}`;
+    if (key === compareLoadKey) return;
+    compareLoadKey = key;
+    compareError = null;
+    const reviewNumber = current.manifest.number;
+    void api
+      .comparePatchsets(repo, reviewNumber, compareWith, selectedPatchset)
+      .then((cv) => {
+        // Drop stale responses if the user re-selected in the meantime.
+        if (compareLoadKey !== key) return;
+        compareView = cv;
+        compareError = null;
+      })
+      .catch((e: Error) => {
+        if (compareLoadKey !== key) return;
+        compareError = e.message;
+        compareView = null;
+      });
+  });
+
+  /** Pair object for the selected per-commit compare row (if any). */
+  const selectedComparePair = $derived.by<PatchsetPair | null>(() => {
+    if (!compareView || !selectedCompareCommit) return null;
+    return compareView.pairs.find((p) => p.change_id === selectedCompareCommit) ?? null;
+  });
+
+  /** Endpoint pair the FileSlot grid fetches against when we're in
+   *  the per-commit compare view. Three cases:
+   *  - `changed`: (from_commit, to_commit) — needs the rebase-based
+   *    interdiff (set `useRebase` true) so downstream-of-rewrite
+   *    commits don't all show the same inherited cumulative delta.
+   *  - `added-in-to`: (parent_commit, to_commit) — the commit's own
+   *    parent..commit diff. Plain commit-to-commit; no rebase.
+   *  - `removed-from-from`: (parent_commit, from_commit) — same
+   *    shape, for the dropped commit's content. No rebase.
+   *  Returns null for `same` (nothing to render) and as a fallback if
+   *  the required commits are missing. */
+  const interdiffEndpoints = $derived.by<
+    { from: string; to: string; useRebase: boolean } | null
+  >(() => {
+    const pair = selectedComparePair;
+    if (!pair) return null;
+    switch (pair.status) {
+      case 'changed':
+        return pair.from_commit && pair.to_commit
+          ? { from: pair.from_commit, to: pair.to_commit, useRebase: true }
+          : null;
+      case 'added-in-to':
+        return pair.parent_commit && pair.to_commit
+          ? {
+              from: pair.parent_commit,
+              to: pair.to_commit,
+              useRebase: false,
+            }
+          : null;
+      case 'removed-from-from':
+        return pair.parent_commit && pair.from_commit
+          ? {
+              from: pair.parent_commit,
+              to: pair.from_commit,
+              useRebase: false,
+            }
+          : null;
+      case 'same':
+        return null;
+    }
+  });
+
+  // Fetch the file list backing the per-commit interdiff whenever the
+  // endpoint pair changes. The per-file hunks ship lazily via FileSlot's
+  // own fetch (which now goes through `/diff` thanks to the
+  // `interdiffEndpoints` prop).
+  let interdiffLoadKey = $state('');
+  $effect(() => {
+    const ep = interdiffEndpoints;
+    if (!ep) {
+      compareInterdiffFiles = null;
+      interdiffLoadKey = '';
+      return;
+    }
+    const key = `${ep.from}|${ep.to}`;
+    if (key === interdiffLoadKey) return;
+    interdiffLoadKey = key;
+    loadingDiff = true;
+    loadingDiffLabel = `interdiff ${selectedCompareCommit?.slice(0, 12) ?? ''}`;
+    void api
+      .diffCommits(repo, ep.from, ep.to, undefined, ep.useRebase)
+      .then((res) => {
+        if (interdiffLoadKey !== key) return;
+        if (res.kind !== 'diff') {
+          throw new Error('expected diff-shape result from /diff (no path)');
+        }
+        compareInterdiffFiles = res.files;
+      })
+      .catch((e: Error) => {
+        if (interdiffLoadKey !== key) return;
+        compareError = `Loading interdiff failed: ${e.message}`;
+        compareInterdiffFiles = null;
+      })
+      .finally(() => {
+        if (interdiffLoadKey !== key) return;
+        loadingDiff = false;
+      });
+  });
+
+  /** Pick a per-commit compare row (or null to drop back to the
+   *  cumulative view). Called by CommitsPanel in compare mode. */
+  function selectCompareCommit(changeId: string | null) {
+    if (changeId === selectedCompareCommit) return;
+    selectedCompareCommit = changeId;
+    onviewchange?.(selectedPatchset, compareWith, changeId);
+  }
+
+  /** Walkable entries for the top-bar `< >` commit nav.
+   *
+   *  Outside compare mode this is every commit in the selected
+   *  patchset (the `current.commits` list). In compare mode it's the
+   *  clickable pair-list entries from `compareView.pairs` — today only
+   *  `status === 'changed'`, since `added`/`removed` don't yet have an
+   *  interdiff endpoint pair in the prototype. The two modes share
+   *  one shape so the nav buttons / label / wraparound logic below
+   *  can stay mode-agnostic. */
+  type CommitNavEntry = { changeId: string; label: string };
+  // Match the CommitsPanel's clickability rule: a pair is walkable
+  // iff it has the commit-ids the interdiff endpoint pair needs.
+  // Keep this in sync with the corresponding rule in CommitsPanel
+  // (status-specific availability check on parent_commit / from /
+  // to_commit) — both decide the same thing from the same data.
+  function pairIsClickable(p: PatchsetPair): boolean {
+    switch (p.status) {
+      case 'changed':
+        return !!p.from_commit && !!p.to_commit;
+      case 'added-in-to':
+        return !!p.parent_commit && !!p.to_commit;
+      case 'removed-from-from':
+        return !!p.parent_commit && !!p.from_commit;
+      case 'same':
+        return false;
+    }
+  }
+  const commitNavEntries = $derived.by<CommitNavEntry[]>(() => {
+    if (compareView) {
+      return compareView.pairs
+        .filter(pairIsClickable)
+        .map((p) => {
+          const subject =
+            (p.to_description ?? p.from_description ?? '').trim() ||
+            '(no description)';
+          const trimmed =
+            subject.length > 60 ? `${subject.slice(0, 57)}…` : subject;
+          const badge =
+            p.status === 'changed'
+              ? '~'
+              : p.status === 'added-in-to'
+                ? '+'
+                : '−';
+          return {
+            changeId: p.change_id,
+            label: `${badge} ${p.change_id.slice(0, 8)} · ${trimmed}`,
+          };
+        });
+    }
+    return current.commits.map((c) => {
+      const subject = c.description_first_line.trim() || '(no description)';
+      const trimmed =
+        subject.length > 60 ? `${subject.slice(0, 57)}…` : subject;
+      return {
+        changeId: c.change_id,
+        label: `${c.change_id.slice(0, 8)} · ${trimmed}`,
+      };
+    });
+  });
+
+  /** Which entry the nav considers active. Pulls from the matching
+   *  selection state — `selectedCompareCommit` in compare mode,
+   *  `scopedChangeId` otherwise — so the two flows never disagree
+   *  with the top-bar label. */
+  const commitNavSelectedId = $derived.by<string | null>(() =>
+    compareView ? selectedCompareCommit : scopedChangeId,
+  );
+
+  /** Where the active entry sits in `commitNavEntries`. -1 = the
+   *  "All commits" / "Cumulative" sentinel; the prev/next buttons
+   *  bounce through -1 between the ends so the user can always step
+   *  back to the unscoped view without leaving the keyboard. */
+  const commitNavIndex = $derived.by(() => {
+    const id = commitNavSelectedId;
+    if (id === null) return -1;
+    return commitNavEntries.findIndex((e) => e.changeId === id);
+  });
+  const commitNavLabel = $derived.by(() => {
+    const defaultLabel = compareView ? 'Cumulative' : 'All commits';
+    if (commitNavIndex < 0) return defaultLabel;
+    return commitNavEntries[commitNavIndex]?.label ?? defaultLabel;
+  });
+
+  /** Route a nav-button click to the right setter based on which mode
+   *  we're in. In compare mode this drives the pair-list selection
+   *  (and the URL's `&commit=` param) — same setter the side panel
+   *  uses, so both controls stay in sync. */
+  function applyNavSelection(changeId: string | null) {
+    if (compareView) {
+      selectCompareCommit(changeId);
+    } else {
+      void selectCommit(changeId);
+    }
+  }
+  function selectCommitByIndex(i: number) {
+    if (i < 0) {
+      applyNavSelection(null);
+      return;
+    }
+    const e = commitNavEntries[i];
+    if (e) applyNavSelection(e.changeId);
   }
   function commitNavPrev() {
-    if (current.commits.length === 0) return;
+    if (commitNavEntries.length === 0) return;
     if (commitNavIndex < 0) {
-      // From "All" → last commit.
-      selectCommitByIndex(current.commits.length - 1);
+      selectCommitByIndex(commitNavEntries.length - 1);
     } else if (commitNavIndex === 0) {
-      // Wrap to "All".
       selectCommitByIndex(-1);
     } else {
       selectCommitByIndex(commitNavIndex - 1);
     }
   }
   function commitNavNext() {
-    if (current.commits.length === 0) return;
+    if (commitNavEntries.length === 0) return;
     if (commitNavIndex < 0) {
       selectCommitByIndex(0);
-    } else if (commitNavIndex === current.commits.length - 1) {
+    } else if (commitNavIndex === commitNavEntries.length - 1) {
       selectCommitByIndex(-1);
     } else {
       selectCommitByIndex(commitNavIndex + 1);
@@ -1137,7 +1430,9 @@
       // Discarding the per-commit scope: it was tied to the previous PS.
       scopedChangeId = null;
       scopedDiff = null;
-      onviewchange?.(n, nextCompare);
+      selectedCompareCommit = null;
+      compareInterdiffFiles = null;
+      onviewchange?.(n, nextCompare, null);
     } catch (e) {
       error = (e as Error).message;
     } finally {
@@ -1188,7 +1483,9 @@
       compareWith = n;
       scopedChangeId = null;
       scopedDiff = null;
-      onviewchange?.(selectedPatchset, n);
+      selectedCompareCommit = null;
+      compareInterdiffFiles = null;
+      onviewchange?.(selectedPatchset, n, null);
     } catch (e) {
       error = (e as Error).message;
     } finally {
@@ -1688,12 +1985,12 @@
          comments-only toggle on the right. These now render in the
          second row of `header.app` (see App.svelte); the viewer
          emits their state through ontoolbarchange. -->
-    <!-- Hidden in compare mode: the commits panel scopes the file diff
-         to base..commit for a single commit, which has no meaning
-         between two patchsets — and per-commit comment counts would
-         mix the from/to patchset comments confusingly. The selectors
-         above are enough to switch back to a single-patchset view. -->
-    {#if compareWith === null}
+    <!-- In normal mode, the commits panel scopes the file diff to
+         base..commit for a single commit. In compare mode, the same
+         panel renders the v2 pair list (one row per change-id with a
+         status badge) — clicking a 'changed' pair swaps the files
+         panel to the per-commit interdiff. CommitsPanel branches
+         internally on whether `compareView` is set. -->
       <CommitsPanel
         commits={current.commits}
         comments={visibleComments}
@@ -1705,6 +2002,11 @@
         {saving}
         lastVisitAt={current.last_visit_at ?? null}
         {viewer}
+        {compareView}
+        {compareError}
+        selectedCompareChange={selectedCompareCommit}
+        onselectcomparecommit={selectCompareCommit}
+        {commentsWriteable}
         onselect={selectCommit}
         onstartcompose={startCompose}
         oncancelcompose={cancelCompose}
@@ -1715,7 +2017,6 @@
         onedit={startEdit}
         onselectpatchset={jumpToPatchset}
       />
-    {/if}
 
     {#if loadingDiff}
       <div class="diff-loading" role="status" aria-live="polite">
@@ -1724,6 +2025,50 @@
       </div>
     {/if}
 
+    {#if compareView}
+      <!-- Mode breadcrumb: tells the reader which compare view the
+           files panel is currently showing (cumulative diff between
+           the two patchsets vs. a single commit's interdiff), with a
+           one-click escape back to the cumulative view. Only renders
+           in compare mode; non-compare reviews use the normal commits
+           panel for this. -->
+      <div class="compare-breadcrumb" role="status">
+        <span class="label">Showing:</span>
+        {#if selectedComparePair}
+          {@const p = selectedComparePair}
+          {@const badge =
+            p.status === 'changed'
+              ? '~'
+              : p.status === 'added-in-to'
+                ? '+'
+                : p.status === 'removed-from-from'
+                  ? '−'
+                  : '='}
+          <span class="crumb">
+            <strong>{badge} {p.change_id.slice(0, 8)}</strong>
+            <span class="truncate"
+              >· {p.to_description ?? p.from_description ?? '(no description)'}</span
+            >
+          </span>
+          <button
+            type="button"
+            class="back-link"
+            onclick={() => selectCompareCommit(null)}
+            title="Back to cumulative view"
+          >
+            ← cumulative
+          </button>
+        {:else}
+          <span class="crumb">
+            <strong>Cumulative</strong>
+            <span class="truncate"
+              >· PS{compareView.from.n} → PS{compareView.to.n}
+              ({compareView.cumulative.files.length} files)</span
+            >
+          </span>
+        {/if}
+      </div>
+    {/if}
 
 {#if orderedFiles.length === 0}
       <p class="muted">No files changed.</p>
@@ -1743,8 +2088,10 @@
           patchset={viewingFor}
           {compareWith}
           {compareBaseCommit}
+          interdiffEndpoints={interdiffEndpoints}
+          {commentsWriteable}
           eagerFetch={filesWithComments.has(f.path)}
-          comments={visibleComments}
+          comments={visibleCommentsForFiles}
           responses={allResponses}
           currentPatchset={selectedPatchset}
           composing={composing &&
@@ -2108,4 +2455,49 @@
     to { transform: rotate(360deg); }
   }
 
+  /* Patchset-compare v2 mode breadcrumb. Lives above the files panel
+     in compare mode, tells the reader which compare-mode view the
+     panel is showing, and provides a one-click escape back to the
+     cumulative view. */
+  .compare-breadcrumb {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 8px 12px;
+    margin: 12px 0;
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 13px;
+  }
+  .compare-breadcrumb .label {
+    color: var(--muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .compare-breadcrumb .crumb {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    min-width: 0;
+    flex: 1;
+  }
+  .compare-breadcrumb .truncate {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--muted);
+  }
+  .compare-breadcrumb .back-link {
+    background: transparent;
+    border: none;
+    color: var(--link, #1f6feb);
+    cursor: pointer;
+    font: inherit;
+    padding: 0;
+  }
+  .compare-breadcrumb .back-link:hover {
+    text-decoration: underline;
+  }
 </style>
