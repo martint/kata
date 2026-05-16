@@ -406,3 +406,198 @@ async fn archive_round_trip_and_blocks_new_sessions() {
     let (status, _) = h.json("POST", &format!("{review_url}/sessions"), None).await;
     assert_eq!(status, StatusCode::OK);
 }
+
+/// `refresh_review` should record the moved bookmark as a new patchset
+/// rather than just rewriting the current one. Locks in the contract
+/// the comment-anchoring story relies on (comments stay anchored to
+/// the patchset they were authored against — that only works if each
+/// round is a distinct entry in the manifest).
+#[tokio::test]
+async fn refresh_review_appends_a_new_patchset_when_the_tip_moves() {
+    let h = Harness::new().await;
+    let (_, created) = h
+        .json(
+            "POST",
+            "/api/repos/main/reviews",
+            Some(json!({
+                "name": "feature",
+                "revset": "@-..feature",
+                "bookmark": "feature",
+                "created_by": "alice@example.com",
+            })),
+        )
+        .await;
+    let review_url = format!(
+        "/api/repos/main/reviews/{}",
+        created["number"].as_u64().unwrap()
+    );
+
+    // Amend the feature commit so the bookmark points at a new commit
+    // ID. Refresh should pick that up and create PS2.
+    std::fs::write(h.workspace_path.join("a.txt"), "one\nTwo\nThree\n").unwrap();
+    run_jj(&h.workspace_path, &["bookmark", "set", "feature", "-r", "@"]);
+
+    let (status, manifest) = h
+        .json("POST", &format!("{review_url}/refresh"), None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let patchsets = manifest["patchsets"].as_array().unwrap();
+    assert_eq!(patchsets.len(), 2);
+    assert_eq!(manifest["current_patchset"], 2);
+    assert_ne!(patchsets[0]["tip_commit"], patchsets[1]["tip_commit"]);
+}
+
+/// Compare-mode regression: `GET /file-diff?ps=N&compare=M` must
+/// return hunks computed against patchset M's tip (not patchset N's
+/// base). The frontend's syntax-highlight pass indexes
+/// `highlightsBase` by line numbers from this side of the diff — if
+/// the backend returned the wrong base, removed-side rows would
+/// render with HTML pulled from a file that has nothing to do with
+/// the diff (a real bug the UI hit on the named-args review at one
+/// point).
+#[tokio::test]
+async fn file_diff_in_compare_mode_uses_compared_patchset_tip_as_base() {
+    let h = Harness::new().await;
+    let (_, created) = h
+        .json(
+            "POST",
+            "/api/repos/main/reviews",
+            Some(json!({
+                "name": "feature",
+                "revset": "@-..feature",
+                "bookmark": "feature",
+                "created_by": "alice@example.com",
+            })),
+        )
+        .await;
+    let review_url = format!(
+        "/api/repos/main/reviews/{}",
+        created["number"].as_u64().unwrap()
+    );
+
+    // PS1 ships `TWO` on line 2 (set up by the harness). Amend so PS2
+    // has `Two` on line 2 and `Three` on line 3 — that way the
+    // PS1→PS2 compare diff has a clear, easy-to-assert shape.
+    std::fs::write(h.workspace_path.join("a.txt"), "one\nTwo\nThree\n").unwrap();
+    run_jj(&h.workspace_path, &["bookmark", "set", "feature", "-r", "@"]);
+    let (status, manifest) = h
+        .json("POST", &format!("{review_url}/refresh"), None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let ps1_tip = manifest["patchsets"][0]["tip_commit"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let ps2_tip = manifest["patchsets"][1]["tip_commit"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(ps1_tip, ps2_tip);
+
+    // Compare PS2 (selected) against PS1 (compare-with).
+    let (status, change) = h
+        .json(
+            "GET",
+            &format!("{review_url}/file-diff?path=a.txt&ps=2&compare=1"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let hunks = change["hunks"].as_array().expect("hunks");
+    assert_eq!(hunks.len(), 1, "one hunk for the case-flip changes");
+    let lines = hunks[0]["lines"].as_array().unwrap();
+    // Walk the hunk and collect (origin, base_line, tip_line, content)
+    // tuples for the removed/added rows so the assertions read in
+    // diff order.
+    let removed: Vec<(u64, String)> = lines
+        .iter()
+        .filter(|l| l["origin"] == "removed")
+        .map(|l| {
+            (
+                l["base_line"].as_u64().unwrap(),
+                l["content"].as_str().unwrap().trim_end().to_owned(),
+            )
+        })
+        .collect();
+    let added: Vec<(u64, String)> = lines
+        .iter()
+        .filter(|l| l["origin"] == "added")
+        .map(|l| {
+            (
+                l["tip_line"].as_u64().unwrap(),
+                l["content"].as_str().unwrap().trim_end().to_owned(),
+            )
+        })
+        .collect();
+    // The removed-side content must match PS1.tip's lines, not the
+    // bookmark's base. PS1.tip had `TWO` + `three`; PS2.tip has
+    // `Two` + `Three`. If the backend mistakenly diffed against
+    // PS2's base, we'd see different removed-side content (and
+    // different counts).
+    assert_eq!(
+        removed,
+        vec![(2, "TWO".to_string()), (3, "three".to_string())],
+        "removed rows should index into PS1.tip and carry its content"
+    );
+    assert_eq!(
+        added,
+        vec![(2, "Two".to_string()), (3, "Three".to_string())],
+        "added rows should index into PS2.tip and carry its content"
+    );
+}
+
+/// `open_review`'s `compare` query parameter feeds the same compare
+/// pipeline as `file-diff`. Make sure its metadata response (the
+/// file list with per-file +/- counts) reflects the compared-patchset
+/// diff, not the patchset-base diff.
+#[tokio::test]
+async fn open_review_in_compare_mode_reports_compared_patchset_diff_metadata() {
+    let h = Harness::new().await;
+    let (_, created) = h
+        .json(
+            "POST",
+            "/api/repos/main/reviews",
+            Some(json!({
+                "name": "feature",
+                "revset": "@-..feature",
+                "bookmark": "feature",
+                "created_by": "alice@example.com",
+            })),
+        )
+        .await;
+    let review_url = format!(
+        "/api/repos/main/reviews/{}",
+        created["number"].as_u64().unwrap()
+    );
+    std::fs::write(h.workspace_path.join("a.txt"), "one\nTwo\nThree\n").unwrap();
+    run_jj(&h.workspace_path, &["bookmark", "set", "feature", "-r", "@"]);
+    let (_, _) = h
+        .json("POST", &format!("{review_url}/refresh"), None)
+        .await;
+
+    // Non-compare PS2 view: a.txt has 3 changes from the base
+    // (one→one, two→Two, three→Three — actually just the case flips
+    // on lines 2/3, so 2 additions + 2 removals against the
+    // single-line-mid-case bookmark base).
+    let (_, view) = h.json("GET", &format!("{review_url}?ps=2"), None).await;
+    let plain_added = view["diff"]["files"][0]["added"].as_u64().unwrap();
+    let plain_removed = view["diff"]["files"][0]["removed"].as_u64().unwrap();
+
+    // Compare against PS1: PS1.tip had `TWO` + `three`, PS2.tip has
+    // `Two` + `Three`. That's a 2-line case-flip — strictly smaller
+    // than the bookmark-base diff (which also flips line 2 from
+    // `two` to whatever).
+    let (_, compare_view) = h
+        .json("GET", &format!("{review_url}?ps=2&compare=1"), None)
+        .await;
+    let compare_added = compare_view["diff"]["files"][0]["added"].as_u64().unwrap();
+    let compare_removed = compare_view["diff"]["files"][0]["removed"].as_u64().unwrap();
+    assert_eq!(compare_added, 2);
+    assert_eq!(compare_removed, 2);
+    // The plain view counts should be at least as large as compare's
+    // (the bookmark base differs from PS1.tip too), and at minimum
+    // different — if compare were silently falling back to the
+    // plain view, both would be identical.
+    assert!(plain_added >= compare_added);
+    assert!(plain_removed >= compare_removed);
+}
