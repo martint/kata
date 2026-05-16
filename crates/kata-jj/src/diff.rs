@@ -209,7 +209,7 @@ pub async fn build_diff<B: JjBackend + ?Sized>(
 /// it keeps one parser for the per-line shape, and means anything that
 /// goes wrong here surfaces with the same diagnostics as everything
 /// else.
-fn histogram_hunks(base: &str, tip: &str, path: &str) -> Result<Vec<Hunk>> {
+pub(crate) fn histogram_hunks(base: &str, tip: &str, path: &str) -> Result<Vec<Hunk>> {
     let input = InternedInput::new(base, tip);
     let unified = diff(Algorithm::Histogram, &input, UnifiedDiffBuilder::new(&input));
     if unified.is_empty() {

@@ -714,3 +714,453 @@ async fn ops_since_stays_empty_when_nothing_happened_between_visits() {
     // so an empty list is omitted entirely — index returns Null.
     assert!(second["ops_since"].is_null());
 }
+
+#[tokio::test]
+async fn compare_patchsets_returns_pair_list_and_cumulative_diff() {
+    // End-to-end smoke for the patchset-compare v2 endpoint. We don't
+    // exhaustively cover the bucketing logic here (`compare_tests` in
+    // kata-service does that as unit tests against the helper) — this
+    // is just "the route exists, JSON shape is what the frontend
+    // expects, and the cumulative diff matches what `?compare=` would
+    // have returned via open_review".
+    let h = Harness::new().await;
+    let (_, created) = h
+        .json(
+            "POST",
+            "/api/repos/main/reviews",
+            Some(json!({
+                "name": "feature",
+                "revset": "@-..feature",
+                "bookmark": "feature",
+                "created_by": "alice@example.com",
+            })),
+        )
+        .await;
+    let review_url = format!(
+        "/api/repos/main/reviews/{}",
+        created["number"].as_u64().unwrap()
+    );
+    // Build PS2 by amending the bookmark tip.
+    std::fs::write(h.workspace_path.join("a.txt"), "one\nTwo\nThree\n").unwrap();
+    run_jj(&h.workspace_path, &["bookmark", "set", "feature", "-r", "@"]);
+    let (_, _) = h
+        .json("POST", &format!("{review_url}/refresh"), None)
+        .await;
+
+    let (status, view) = h
+        .json("GET", &format!("{review_url}/compare?from=1&to=2"), None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(view["from"]["n"], 1);
+    assert_eq!(view["to"]["n"], 2);
+    // Same base for both patchsets in the harness setup, so the
+    // mismatch flag is false.
+    assert_eq!(view["compare_base_mismatch"], false);
+    // The single feature commit appears in both patchsets — same
+    // change-id, different commit-id (we rewrote the tip).
+    let pairs = view["pairs"].as_array().unwrap();
+    assert_eq!(pairs.len(), 1);
+    assert_eq!(pairs[0]["status"], "changed");
+    assert!(pairs[0]["from_commit"].is_string());
+    assert!(pairs[0]["to_commit"].is_string());
+    assert_ne!(pairs[0]["from_commit"], pairs[0]["to_commit"]);
+
+    // Cumulative diff covers the single file the rewrite touched.
+    let files = view["cumulative"]["files"].as_array().unwrap();
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0]["path"], "a.txt");
+}
+
+#[tokio::test]
+async fn compare_patchsets_rejects_self_comparison() {
+    let h = Harness::new().await;
+    let (_, created) = h
+        .json(
+            "POST",
+            "/api/repos/main/reviews",
+            Some(json!({
+                "name": "feature",
+                "revset": "@-..feature",
+                "bookmark": "feature",
+                "created_by": "alice@example.com",
+            })),
+        )
+        .await;
+    let review_url = format!(
+        "/api/repos/main/reviews/{}",
+        created["number"].as_u64().unwrap()
+    );
+    let (status, _) = h
+        .json("GET", &format!("{review_url}/compare?from=1&to=1"), None)
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn compare_patchsets_populates_parent_commit_for_one_sided_pairs() {
+    // Construct a PS1 with two commits and a PS2 that drops the top
+    // commit. The dropped commit becomes a `removed-from-from` pair,
+    // and the service must stamp its `parent_commit` so the UI can
+    // render the dropped commit's own diff against its parent. The
+    // surviving commit is `same` and shouldn't have a parent attached.
+    let h = Harness::new().await;
+
+    // The harness starts on `feature` (a single commit). Stack one
+    // more commit on top and re-point the bookmark to it; that's PS1.
+    run_jj(&h.workspace_path, &["new", "-m", "top of stack"]);
+    std::fs::write(h.workspace_path.join("b.txt"), "alpha\n").unwrap();
+    run_jj(&h.workspace_path, &["bookmark", "set", "feature", "-r", "@"]);
+
+    let (_, created) = h
+        .json(
+            "POST",
+            "/api/repos/main/reviews",
+            Some(json!({
+                "name": "feature",
+                "revset": "@--..feature",
+                "bookmark": "feature",
+                "created_by": "alice@example.com",
+            })),
+        )
+        .await;
+    let review_url = format!(
+        "/api/repos/main/reviews/{}",
+        created["number"].as_u64().unwrap()
+    );
+
+    // Drop the top commit → bookmark moves back to its parent → PS2
+    // contains only the bottom commit. `--allow-backwards` because
+    // jj refuses to retreat a bookmark by default.
+    run_jj(
+        &h.workspace_path,
+        &["bookmark", "set", "feature", "-r", "@-", "--allow-backwards"],
+    );
+    let (_, _) = h
+        .json("POST", &format!("{review_url}/refresh"), None)
+        .await;
+
+    let (status, view) = h
+        .json("GET", &format!("{review_url}/compare?from=1&to=2"), None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let pairs = view["pairs"].as_array().unwrap();
+    // The pair list should have at least one `removed-from-from` and
+    // one `same`. (Depending on how jj resolves the revsets there
+    // could be more, but those two have to be present.)
+    let removed = pairs
+        .iter()
+        .find(|p| p["status"] == "removed-from-from")
+        .expect("expected a removed-from-from pair");
+    let same = pairs.iter().find(|p| p["status"] == "same");
+
+    // Removed-side: parent_commit must be populated so the UI can
+    // render the commit's own diff against its parent.
+    assert!(
+        removed["parent_commit"].is_string(),
+        "removed pair should have parent_commit populated, got {removed:?}",
+    );
+    // Same-side: nothing for the UI to fetch, so parent_commit should
+    // be absent from the response (skip_serializing_if elides it).
+    if let Some(same) = same {
+        assert!(
+            same["parent_commit"].is_null(),
+            "same pair should not have parent_commit, got {same:?}",
+        );
+    }
+}
+
+#[tokio::test]
+async fn diff_commits_returns_metadata_without_path_and_file_with_path() {
+    // The generic commit-pair diff endpoint backs the per-commit
+    // interdiff view. Verify both shapes: no `path` returns file-level
+    // metadata; a `path` returns the hunks for that one file.
+    let h = Harness::new().await;
+    let (_, created) = h
+        .json(
+            "POST",
+            "/api/repos/main/reviews",
+            Some(json!({
+                "name": "feature",
+                "revset": "@-..feature",
+                "bookmark": "feature",
+                "created_by": "alice@example.com",
+            })),
+        )
+        .await;
+    let (_, view) = h
+        .json(
+            "GET",
+            &format!(
+                "/api/repos/main/reviews/{}",
+                created["number"].as_u64().unwrap()
+            ),
+            None,
+        )
+        .await;
+    let current_n = view["manifest"]["current_patchset"].as_u64().unwrap();
+    let ps = view["manifest"]["patchsets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["n"].as_u64() == Some(current_n))
+        .unwrap();
+    let base = ps["base_commit"].as_str().unwrap();
+    let tip = ps["tip_commit"].as_str().unwrap();
+
+    let metadata_uri = format!("/api/repos/main/diff?from={base}&to={tip}");
+    let (status, meta) = h.json("GET", &metadata_uri, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(meta["kind"], "diff");
+    let files = meta["files"].as_array().unwrap();
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0]["path"], "a.txt");
+    // No hunks at the metadata level — they ship lazily.
+    assert!(files[0]["hunks"].is_null());
+
+    let file_uri = format!("/api/repos/main/diff?from={base}&to={tip}&path=a.txt");
+    let (status, file) = h.json("GET", &file_uri, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(file["kind"], "file");
+    assert_eq!(file["path"], "a.txt");
+    // Hunks now populated.
+    assert!(file["hunks"].as_array().unwrap().len() > 0);
+}
+
+/// Regression test for the libjj rebased-interdiff path. Builds a
+/// 2-commit stack, rewrites the BOTTOM commit's content between
+/// patchsets, and verifies:
+///
+/// - The top commit's pair classification is `changed` (commit-id
+///   differs because its parent changed), but the libjj-computed
+///   `diff_counts.file_count` is 0 — the commit didn't contribute
+///   new changes itself.
+/// - The literal `/diff` (no `interdiff` flag) for the top pair
+///   returns a non-empty file list — it's a tree-vs-tree diff that
+///   includes the inherited downstream delta.
+/// - The libjj `/diff?interdiff=true` for the same pair returns 0
+///   files — the rebase-based interdiff correctly identifies the
+///   commit as a pure rebase.
+///
+/// This is the exact bug the libjj integration was added to fix
+/// (review #1 PS4→PS5 in the trino corpus): downstream-of-rewrite
+/// commits all reported identical large diffs via the naive path.
+#[tokio::test]
+async fn libjj_interdiff_returns_zero_for_pure_rebase_pairs() {
+    let h = Harness::new().await;
+
+    // Stack a second commit on top of `tweak`. PS1 = (tweak, top).
+    run_jj(&h.workspace_path, &["new", "-m", "top of stack"]);
+    std::fs::write(h.workspace_path.join("b.txt"), "alpha\n").unwrap();
+    run_jj(&h.workspace_path, &["bookmark", "set", "feature", "-r", "@"]);
+
+    let (_, created) = h
+        .json(
+            "POST",
+            "/api/repos/main/reviews",
+            Some(json!({
+                "name": "feature",
+                "revset": "@--..feature",
+                "bookmark": "feature",
+                "created_by": "alice@example.com",
+            })),
+        )
+        .await;
+    let review_url = format!(
+        "/api/repos/main/reviews/{}",
+        created["number"].as_u64().unwrap()
+    );
+
+    // Rewrite the BOTTOM commit (`tweak`, currently `feature-`) by
+    // editing it and changing a.txt. jj auto-rebases the top commit
+    // onto the rewritten bottom, giving it a new commit-id.
+    run_jj(&h.workspace_path, &["edit", "feature-"]);
+    std::fs::write(
+        h.workspace_path.join("a.txt"),
+        "one\nREWRITTEN-TWO\nthree\n",
+    )
+    .unwrap();
+    // Move @ to the rebased top, then point the bookmark there. The
+    // rebased top is @+ (the auto-rebased child of the rewritten
+    // bottom). `--allow-backwards` because the bookmark was at the
+    // now-abandoned original top.
+    run_jj(&h.workspace_path, &["edit", "@+"]);
+    run_jj(
+        &h.workspace_path,
+        &["bookmark", "set", "feature", "-r", "@", "--allow-backwards"],
+    );
+    let (_, _) = h
+        .json("POST", &format!("{review_url}/refresh"), None)
+        .await;
+
+    // /compare returns the pair list with libjj-computed
+    // diff_counts for `changed` rows. Two pairs: the bottom
+    // (real content change) and the top (pure rebase).
+    let (status, view) = h
+        .json("GET", &format!("{review_url}/compare?from=1&to=2"), None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let pairs = view["pairs"].as_array().unwrap();
+    let changed: Vec<_> = pairs
+        .iter()
+        .filter(|p| p["status"] == "changed")
+        .collect();
+    assert_eq!(
+        changed.len(),
+        2,
+        "expected 2 changed pairs, got {pairs:?}"
+    );
+
+    // Identify which pair is which by description.
+    let bottom_pair = changed
+        .iter()
+        .find(|p| {
+            p["to_description"].as_str() == Some("tweak")
+                || p["from_description"].as_str() == Some("tweak")
+        })
+        .expect("expected a pair with the `tweak` description");
+    let top_pair = changed
+        .iter()
+        .find(|p| {
+            p["to_description"].as_str() == Some("top of stack")
+                || p["from_description"].as_str() == Some("top of stack")
+        })
+        .expect("expected a pair with the `top of stack` description");
+
+    let bottom_counts = &bottom_pair["diff_counts"];
+    let top_counts = &top_pair["diff_counts"];
+    assert!(
+        bottom_counts["file_count"].as_u64().unwrap() > 0,
+        "bottom pair (real edit) should have non-zero file_count, got {bottom_counts:?}",
+    );
+    assert_eq!(
+        top_counts["file_count"].as_u64().unwrap(),
+        0,
+        "top pair (pure rebase) should have zero file_count via libjj, got {top_counts:?}",
+    );
+
+    // Cross-check at the /diff route: literal commit-to-commit diff
+    // for the top pair shows the inherited delta...
+    let top_from = top_pair["from_commit"].as_str().unwrap();
+    let top_to = top_pair["to_commit"].as_str().unwrap();
+    let (_, literal) = h
+        .json(
+            "GET",
+            &format!("/api/repos/main/diff?from={top_from}&to={top_to}"),
+            None,
+        )
+        .await;
+    let literal_files = literal["files"].as_array().unwrap();
+    assert!(
+        !literal_files.is_empty(),
+        "literal diff(from, to) for the top pair should be non-empty (includes inherited rewrite), got {literal:?}",
+    );
+
+    // ...while the libjj-routed `?interdiff=true` correctly returns
+    // an empty file list for the same pair.
+    let (_, interdiff) = h
+        .json(
+            "GET",
+            &format!(
+                "/api/repos/main/diff?from={top_from}&to={top_to}&interdiff=true"
+            ),
+            None,
+        )
+        .await;
+    assert_eq!(interdiff["kind"], "diff");
+    let interdiff_files = interdiff["files"].as_array().unwrap();
+    assert!(
+        interdiff_files.is_empty(),
+        "libjj interdiff for the top pair (pure rebase) should be empty, got {interdiff:?}",
+    );
+}
+
+/// Companion to the rebased-only test: confirms the libjj path
+/// produces a *non-empty* diff for the pair whose content actually
+/// changed, matching the literal diff but not necessarily equal to
+/// it (the literal includes inherited downstream changes, the
+/// rebased path doesn't — but for the bottom-of-stack pair there's
+/// nothing inherited, so they should look similar).
+#[tokio::test]
+async fn libjj_interdiff_matches_real_edit_at_bottom_of_stack() {
+    let h = Harness::new().await;
+    run_jj(&h.workspace_path, &["new", "-m", "top of stack"]);
+    std::fs::write(h.workspace_path.join("b.txt"), "alpha\n").unwrap();
+    run_jj(&h.workspace_path, &["bookmark", "set", "feature", "-r", "@"]);
+
+    let (_, created) = h
+        .json(
+            "POST",
+            "/api/repos/main/reviews",
+            Some(json!({
+                "name": "feature",
+                "revset": "@--..feature",
+                "bookmark": "feature",
+                "created_by": "alice@example.com",
+            })),
+        )
+        .await;
+    let review_url = format!(
+        "/api/repos/main/reviews/{}",
+        created["number"].as_u64().unwrap()
+    );
+
+    run_jj(&h.workspace_path, &["edit", "feature-"]);
+    std::fs::write(
+        h.workspace_path.join("a.txt"),
+        "one\nREWRITTEN-TWO\nthree\n",
+    )
+    .unwrap();
+    run_jj(&h.workspace_path, &["edit", "@+"]);
+    run_jj(
+        &h.workspace_path,
+        &["bookmark", "set", "feature", "-r", "@", "--allow-backwards"],
+    );
+    let (_, _) = h
+        .json("POST", &format!("{review_url}/refresh"), None)
+        .await;
+
+    let (_, view) = h
+        .json("GET", &format!("{review_url}/compare?from=1&to=2"), None)
+        .await;
+    let bottom_pair = view["pairs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| {
+            p["status"] == "changed"
+                && p["to_description"].as_str() == Some("tweak")
+        })
+        .expect("expected a changed pair for the bottom commit");
+    let from = bottom_pair["from_commit"].as_str().unwrap();
+    let to = bottom_pair["to_commit"].as_str().unwrap();
+
+    let (_, interdiff) = h
+        .json(
+            "GET",
+            &format!("/api/repos/main/diff?from={from}&to={to}&interdiff=true"),
+            None,
+        )
+        .await;
+    let files = interdiff["files"].as_array().unwrap();
+    assert_eq!(
+        files.len(),
+        1,
+        "bottom-pair interdiff should touch exactly a.txt, got {interdiff:?}",
+    );
+    assert_eq!(files[0]["path"], "a.txt");
+
+    // Per-file hunks via the libjj path: requesting `path=a.txt`
+    // routes through compute_rebased_file_hunks which populates
+    // the `hunks` array.
+    let (_, file) = h
+        .json(
+            "GET",
+            &format!(
+                "/api/repos/main/diff?from={from}&to={to}&interdiff=true&path=a.txt"
+            ),
+            None,
+        )
+        .await;
+    assert_eq!(file["kind"], "file");
+    assert!(file["hunks"].as_array().unwrap().len() > 0);
+}

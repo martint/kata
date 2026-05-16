@@ -2,6 +2,6 @@
 //! The implementation lives in [`kata_service`].
 
 pub use kata_service::{
-    AnchorView, CommentView, CommitDiffView, CreateReviewParams, DraftCommentInput,
-    DraftResponseInput, DraftsView, ResponseView, ReviewService, ReviewView,
+    AnchorView, CommentView, CommitDiffView, CreateReviewParams, DiffCommitsResult,
+    DraftCommentInput, DraftResponseInput, DraftsView, ResponseView, ReviewService, ReviewView,
 };

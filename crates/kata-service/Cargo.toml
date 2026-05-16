@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 async-trait = { workspace = true }
 chrono = { workspace = true }
+futures = { workspace = true }
 kata-core = { workspace = true }
 kata-jj = { workspace = true }
 kata-storage = { workspace = true }

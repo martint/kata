@@ -73,6 +73,14 @@ fn api_routes() -> Router<AppState> {
             get(reviews::file_diff),
         )
         .route(
+            "/api/repos/{repo_name}/reviews/{review_number}/compare",
+            get(reviews::compare_patchsets),
+        )
+        .route(
+            "/api/repos/{repo_name}/diff",
+            get(reviews::diff_commits),
+        )
+        .route(
             "/api/repos/{repo_name}/reviews/{review_number}/sessions",
             post(sessions::start_session),
         )

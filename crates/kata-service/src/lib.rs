@@ -10,8 +10,9 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use kata_core::{
-    Author, Bookmark, ChangeId, Comment, CommentId, CommitId, CommitInfo, Diff, Flag,
-    LineRange, OpSummary, Patchset, RepoId, RepoSummary, ResolutionAction, Response,
+    Author, Bookmark, ChangeId, ChangeStatus, Comment, CommentId, CommitId, CommitInfo, Diff,
+    Flag, LineRange, OpSummary, PairDiffCounts, Patchset, PatchsetCompareView,
+    PatchsetEndpoints, PatchsetPair, RepoId, RepoSummary, ResolutionAction, Response,
     ResponseId, ReviewId, ReviewManifest, RevSet, SCHEMA_VERSION, Session, SessionId, Side,
 };
 use kata_jj::{
@@ -44,6 +45,231 @@ fn anchor_read_keys(comment: &Comment, viewing: &Patchset) -> Vec<(CommitId, Str
         (comment.anchor_commit_id.clone(), path.clone()),
         (current, path.clone()),
     ]
+}
+
+/// Pair two patchsets' commit lists by jj `change_id`, classifying each
+/// pair as Same / Changed / AddedInTo / RemovedFromFrom and emitting one
+/// [`PatchsetPair`] per change-id that appears in either side.
+///
+/// Output order: pairs that exist in the *to* patchset first, in the
+/// order `to_commits` lists them (topological, oldest first), then the
+/// `RemovedFromFrom` pairs at the end. This keeps the typical reader
+/// flow ("what does the new round look like?") at the top of the panel
+/// and pushes dropped commits — usually fewer, less interesting at a
+/// glance — to the bottom.
+fn pair_patchset_commits(
+    from_commits: &[CommitInfo],
+    to_commits: &[CommitInfo],
+) -> Vec<PatchsetPair> {
+    use std::collections::HashMap;
+    let from_by_change: HashMap<&ChangeId, &CommitInfo> = from_commits
+        .iter()
+        .map(|c| (&c.change_id, c))
+        .collect();
+    let to_by_change: HashMap<&ChangeId, &CommitInfo> =
+        to_commits.iter().map(|c| (&c.change_id, c)).collect();
+
+    let mut out: Vec<PatchsetPair> = Vec::with_capacity(to_commits.len());
+    for to_c in to_commits {
+        let from = from_by_change.get(&to_c.change_id).copied();
+        let status = match from {
+            None => ChangeStatus::AddedInTo,
+            Some(f) if f.commit_id == to_c.commit_id => ChangeStatus::Same,
+            Some(_) => ChangeStatus::Changed,
+        };
+        out.push(PatchsetPair {
+            change_id: to_c.change_id.clone(),
+            status,
+            from_commit: from.map(|c| c.commit_id.clone()),
+            to_commit: Some(to_c.commit_id.clone()),
+            from_description: from.map(|c| c.description_first_line.clone()),
+            to_description: Some(to_c.description_first_line.clone()),
+            parent_commit: None,
+            diff_counts: None,
+        });
+    }
+    for from_c in from_commits {
+        if to_by_change.contains_key(&from_c.change_id) {
+            continue;
+        }
+        out.push(PatchsetPair {
+            change_id: from_c.change_id.clone(),
+            status: ChangeStatus::RemovedFromFrom,
+            from_commit: Some(from_c.commit_id.clone()),
+            to_commit: None,
+            from_description: Some(from_c.description_first_line.clone()),
+            to_description: None,
+            parent_commit: None,
+            diff_counts: None,
+        });
+    }
+    out
+}
+
+/// Resolve the (base, tip) commit pair the UI would diff for a given
+/// pair-row's "click here for details" action. Mirrors the frontend's
+/// `interdiffEndpoints` derivation so the diff-count chip in the
+/// side panel matches the diff the user lands on when they click.
+/// `None` for `Same` (nothing to count) and as a fallback when the
+/// row is missing the commit-ids it needs.
+fn effective_endpoints(p: &PatchsetPair) -> Option<(CommitId, CommitId)> {
+    match p.status {
+        ChangeStatus::Changed => match (&p.from_commit, &p.to_commit) {
+            (Some(f), Some(t)) => Some((f.clone(), t.clone())),
+            _ => None,
+        },
+        ChangeStatus::AddedInTo => match (&p.parent_commit, &p.to_commit) {
+            (Some(f), Some(t)) => Some((f.clone(), t.clone())),
+            _ => None,
+        },
+        ChangeStatus::RemovedFromFrom => match (&p.parent_commit, &p.from_commit) {
+            (Some(f), Some(t)) => Some((f.clone(), t.clone())),
+            _ => None,
+        },
+        ChangeStatus::Same => None,
+    }
+}
+
+/// Stamp `diff_counts` on every pair that has an effective endpoint
+/// pair. Runs `build_diff_metadata` per pair in parallel; the cost
+/// per pair is one `jj diff -T template` + per-file blob reads for
+/// line counts, same as `build_diff_metadata` everywhere else.
+/// Failures leave the field as `None` so the UI just omits the chip
+/// rather than failing the whole compare response.
+async fn compute_pair_diff_counts<B: JjBackend + ?Sized>(
+    backend: &B,
+    workspace_path: Option<&std::path::Path>,
+    pairs: &mut [PatchsetPair],
+) {
+    // Split the pairs into two work queues:
+    // - one-sided (added/removed) → cheap CLI build_diff_metadata
+    //   on (parent..commit). Counts the commit's own contribution.
+    // - changed → libjj rebase-based interdiff. The literal
+    //   diff(from, to) is wrong for downstream-of-rewrite commits
+    //   (it bakes in inherited changes), so we route those through
+    //   the in-memory rebase path when a workspace path is available.
+    //   Falls back to the CLI path when no workspace is set (test
+    //   harness or backends that don't carry a path).
+    let mut cli_lookups: Vec<(usize, CommitId, CommitId)> = Vec::new();
+    let mut interdiff_lookups: Vec<(usize, CommitId, CommitId)> = Vec::new();
+    for (i, p) in pairs.iter().enumerate() {
+        let Some((f, t)) = effective_endpoints(p) else { continue };
+        match p.status {
+            ChangeStatus::Changed if workspace_path.is_some() => {
+                interdiff_lookups.push((i, f, t));
+            }
+            _ => cli_lookups.push((i, f, t)),
+        }
+    }
+
+    // CLI path: parallel.
+    if !cli_lookups.is_empty() {
+        let futs = cli_lookups
+            .iter()
+            .map(|(_, f, t)| build_diff_metadata(backend, f, t));
+        let results = futures::future::join_all(futs).await;
+        for ((i, _, _), res) in cli_lookups.into_iter().zip(results.into_iter()) {
+            if let Ok(diff) = res {
+                apply_diff_counts(&mut pairs[i], &diff);
+            }
+        }
+    }
+
+    // libjj path: each call wraps a blocking jj-lib invocation in
+    // spawn_blocking. Run them in parallel via try_join_all so
+    // multiple Changed pairs don't serialise. The rebase machinery
+    // is per-commit; nothing shared across pairs that could
+    // benefit from batching.
+    if let Some(workspace_path) = workspace_path {
+        let workspace_path = workspace_path.to_path_buf();
+        let futs = interdiff_lookups.iter().map(|(_, f, t)| {
+            let wp = workspace_path.clone();
+            let from = f.clone();
+            let to = t.clone();
+            tokio::task::spawn_blocking(move || -> kata_jj::Result<kata_core::Diff> {
+                let handle = kata_jj::libjj::open_repo(&wp)?;
+                handle.compute_rebased_diff(&from, &to)
+            })
+        });
+        let results = futures::future::join_all(futs).await;
+        for ((i, _, _), res) in interdiff_lookups.into_iter().zip(results.into_iter()) {
+            // Outer Result = JoinError; inner = kata_jj::Result.
+            // Both failure modes leave diff_counts=None (chip omitted).
+            match res {
+                Ok(Ok(diff)) => apply_diff_counts(&mut pairs[i], &diff),
+                Ok(Err(e)) => {
+                    tracing::warn!(error = ?e, "libjj rebased interdiff failed");
+                }
+                Err(e) => {
+                    tracing::warn!(error = ?e, "libjj rebased interdiff task panicked");
+                }
+            }
+        }
+    }
+}
+
+fn apply_diff_counts(pair: &mut PatchsetPair, diff: &kata_core::Diff) {
+    let added = diff.files.iter().map(|f| f.added).sum();
+    let removed = diff.files.iter().map(|f| f.removed).sum();
+    pair.diff_counts = Some(PairDiffCounts {
+        file_count: diff.files.len() as u32,
+        added,
+        removed,
+    });
+}
+
+/// Resolve and stamp `parent_commit` on every one-sided pair (the
+/// `AddedInTo` / `RemovedFromFrom` entries) so the UI can render their
+/// `parent..commit` diff when the user clicks the row. Two-sided
+/// pairs (`Same` / `Changed`) don't need a parent — their endpoint
+/// pair is already determined by the two commit-ids they carry. A
+/// failed parent lookup (e.g. a root commit, or a transient jj
+/// error) leaves the field as `None`; the renderer treats those rows
+/// as inert in that case rather than failing the whole compare
+/// response.
+async fn resolve_parents_for_one_sided<B: JjBackend + ?Sized>(
+    backend: &B,
+    pairs: &mut [PatchsetPair],
+) {
+    // Collect indices + the commit whose parent we need so we can
+    // launch them all in parallel and apply the results in one pass.
+    let lookups: Vec<(usize, CommitId)> = pairs
+        .iter()
+        .enumerate()
+        .filter_map(|(i, p)| {
+            let commit = match p.status {
+                ChangeStatus::AddedInTo => p.to_commit.as_ref(),
+                ChangeStatus::RemovedFromFrom => p.from_commit.as_ref(),
+                _ => return None,
+            };
+            commit.map(|c| (i, c.clone()))
+        })
+        .collect();
+    if lookups.is_empty() {
+        return;
+    }
+    // Build the revset strings up-front so each future borrows owned
+    // data rather than a temporary `format!()` allocation that would
+    // drop at the end of the map closure.
+    let revsets: Vec<String> =
+        lookups.iter().map(|(_, c)| format!("{c}-")).collect();
+    let futures = revsets.iter().map(|r| backend.resolve_endpoint(r));
+    let results = futures::future::join_all(futures).await;
+    for ((i, _), res) in lookups.into_iter().zip(results.into_iter()) {
+        if let Ok(Some(parent)) = res {
+            pairs[i].parent_commit = Some(parent.commit_id);
+        }
+    }
+}
+
+/// Result of [`ReviewService::diff_commits`]: either the file-level
+/// metadata for a whole commit-pair diff or the hunks for a single
+/// file within it, depending on whether a `path` was supplied.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum DiffCommitsResult {
+    Diff(Diff),
+    File(kata_core::FileChange),
 }
 
 /// Internal per-repo entry: friendly name + canonical path + a jj backend
@@ -697,6 +923,189 @@ impl ReviewService {
         })
     }
 
+    /// Build the patchset-compare v2 view: the cumulative tree-vs-tree
+    /// diff between two patchsets (same shape as today's compare-mode
+    /// in `open_review`) plus a per-change-id pair list that lets the
+    /// UI attribute every diff to a specific commit.
+    ///
+    /// Pairing is by jj `change_id`: a `change_id` present in both
+    /// patchsets is `Same` (matching commit-ids) or `Changed` (the
+    /// author rewrote it). One-sided change-ids become
+    /// `AddedInTo` / `RemovedFromFrom`. The UI uses these statuses to
+    /// pick interaction (clickable vs inert) and to fetch the right
+    /// per-commit interdiff on demand.
+    ///
+    /// Per-commit interdiff *content* is **not** included here — the
+    /// pair list ships only commit-ids + first-line descriptions. The
+    /// frontend fetches the actual file diff for a `Changed` row via
+    /// [`Self::diff_commits`].
+    pub async fn compare_patchsets(
+        &self,
+        repo: &RepoId,
+        review: &ReviewId,
+        from_n: u32,
+        to_n: u32,
+    ) -> ServiceResult<PatchsetCompareView> {
+        if from_n == to_n {
+            return Err(ServiceError::BadRequest(format!(
+                "cannot compare patchset {from_n} with itself"
+            )));
+        }
+        let jj = self.jj_for(repo)?;
+        let manifest = self.storage.open_review(repo, review).await?;
+        let from_ps = manifest
+            .patchset(from_n)
+            .ok_or_else(|| ServiceError::NotFound(format!("patchset {from_n}")))?
+            .clone();
+        let to_ps = manifest
+            .patchset(to_n)
+            .ok_or_else(|| ServiceError::NotFound(format!("patchset {to_n}")))?
+            .clone();
+
+        // List both patchsets' commits and compute the cumulative diff
+        // metadata in parallel — three independent jj calls, one
+        // round-trip cost.
+        let from_revset =
+            RevSet::new(format!("{}..{}", from_ps.base_commit, from_ps.tip_commit));
+        let to_revset =
+            RevSet::new(format!("{}..{}", to_ps.base_commit, to_ps.tip_commit));
+        let (from_commits_res, to_commits_res, cumulative_res) = tokio::join!(
+            jj.list_commits(&from_revset),
+            jj.list_commits(&to_revset),
+            build_diff_metadata(&**jj, &from_ps.tip_commit, &to_ps.tip_commit),
+        );
+        let from_commits = from_commits_res?;
+        let to_commits = to_commits_res?;
+        let cumulative = cumulative_res?;
+
+        let mut pairs = pair_patchset_commits(&from_commits, &to_commits);
+        // For AddedInTo / RemovedFromFrom rows: resolve the parent of
+        // the present-side commit so the UI can render the commit's
+        // own parent..commit diff when clicked. Two-sided rows
+        // (Same / Changed) skip this — they already carry both
+        // endpoints. Failures leave parent_commit=None; the row falls
+        // back to inert rather than the whole response erroring.
+        resolve_parents_for_one_sided(&**jj, &mut pairs).await;
+        // Then compute per-pair diff counts in parallel so the side
+        // panel can show "3 files +7 −15" inline. Sequential after
+        // parent resolution because added/removed pairs use the
+        // resolved parent as one endpoint.
+        let workspace_path = std::path::PathBuf::from(&self.entry(repo)?.summary.canonical_path)
+            .parent()
+            .and_then(|p| p.parent())
+            .map(|p| p.to_path_buf());
+        compute_pair_diff_counts(&**jj, workspace_path.as_deref(), &mut pairs).await;
+
+        let compare_base_mismatch = from_ps.base_commit != to_ps.base_commit;
+        Ok(PatchsetCompareView {
+            from: PatchsetEndpoints {
+                n: from_n,
+                base_commit: from_ps.base_commit,
+                tip_commit: from_ps.tip_commit,
+            },
+            to: PatchsetEndpoints {
+                n: to_n,
+                base_commit: to_ps.base_commit,
+                tip_commit: to_ps.tip_commit,
+            },
+            compare_base_mismatch,
+            cumulative,
+            pairs,
+        })
+    }
+
+    /// Rebase-based interdiff between two commits (libjj path).
+    /// Computes `diff(rebase(from_commit onto to_commit-), to_commit)`
+    /// in-memory without touching the user's workspace. Use this for
+    /// `Changed` pair rows in the patchset-compare v2 view; the
+    /// naive [`Self::diff_commits`] gives wrong results when the
+    /// stack has been rewritten because it bakes inherited downstream
+    /// changes into every commit's reported diff.
+    ///
+    /// Runs inside `spawn_blocking` because jj-lib is synchronous and
+    /// the operation involves file I/O against the jj store.
+    pub async fn interdiff_commits(
+        &self,
+        repo: &RepoId,
+        from: &CommitId,
+        to: &CommitId,
+        path: Option<&str>,
+    ) -> ServiceResult<DiffCommitsResult> {
+        let entry = self.entry(repo)?;
+        // The canonical path stored at registration is `.jj/repo`;
+        // the workspace root jj-lib expects is the directory two
+        // levels up. Computed each call — cheap and avoids
+        // long-lived cached state that could go stale across jj
+        // operations.
+        let workspace_path = std::path::PathBuf::from(&entry.summary.canonical_path)
+            .parent()
+            .and_then(|p| p.parent())
+            .ok_or_else(|| {
+                ServiceError::BadRequest(format!(
+                    "cannot derive workspace path from {}",
+                    entry.summary.canonical_path
+                ))
+            })?
+            .to_path_buf();
+        let from = from.clone();
+        let to = to.clone();
+        let path = path.map(|s| s.to_owned());
+        tokio::task::spawn_blocking(move || -> kata_jj::Result<DiffCommitsResult> {
+            let handle = kata_jj::libjj::open_repo(&workspace_path)?;
+            match path {
+                None => {
+                    let diff = handle.compute_rebased_diff(&from, &to)?;
+                    Ok(DiffCommitsResult::Diff(diff))
+                }
+                Some(p) => {
+                    let file = handle.compute_rebased_file_hunks(&from, &to, &p)?;
+                    Ok(DiffCommitsResult::File(file))
+                }
+            }
+        })
+        .await
+        .map_err(|e| ServiceError::Internal(format!("interdiff task join: {e}")))?
+        .map_err(ServiceError::from)
+    }
+
+    /// Generic commit-pair diff. Without `path`: file-level metadata
+    /// for the entire diff. With `path`: full hunks for that single
+    /// file (same shape as [`Self::file_diff`] but addressed by
+    /// commit-id, not patchset-id).
+    ///
+    /// This is the per-commit interdiff source for the patchset-compare
+    /// v2 view; it's also useful in any context where the UI already
+    /// knows two commit-ids and wants the diff between them without
+    /// dragging in patchset bookkeeping.
+    pub async fn diff_commits(
+        &self,
+        repo: &RepoId,
+        from: &CommitId,
+        to: &CommitId,
+        path: Option<&str>,
+    ) -> ServiceResult<DiffCommitsResult> {
+        let jj = self.jj_for(repo)?;
+        match path {
+            None => {
+                let diff = build_diff_metadata(&**jj, from, to).await?;
+                Ok(DiffCommitsResult::Diff(diff))
+            }
+            Some(p) => {
+                let files = jj.changed_files(from, to).await?;
+                let target = files
+                    .into_iter()
+                    .find(|f| f.path == p)
+                    .ok_or_else(|| {
+                        ServiceError::NotFound(format!(
+                            "file {p:?} in diff {from}..{to}"
+                        ))
+                    })?;
+                let updated = compute_one_file_hunks(&**jj, from, to, target).await?;
+                Ok(DiffCommitsResult::File(updated))
+            }
+        }
+    }
+
     /// Re-resolve the revset. If the tip has moved since the current
     /// patchset was recorded, append a new patchset and make it current.
     /// Optionally also replace the summary in the same call — only the
@@ -1220,5 +1629,133 @@ async fn build_revset_error(jj: &dyn JjBackend, err: &kata_jj::Error) -> RevsetE
     RevsetError {
         message: clean_jj_stderr(stderr),
         divergent_commit_ids,
+    }
+}
+
+#[cfg(test)]
+mod compare_tests {
+    use super::*;
+
+    fn ci(change: &str, commit: &str, desc: &str) -> CommitInfo {
+        CommitInfo {
+            change_id: ChangeId::new(change),
+            commit_id: CommitId::new(commit),
+            author_email: "a@example.com".into(),
+            author_timestamp: "2026-05-16T00:00:00Z".into(),
+            description_first_line: desc.into(),
+            description: desc.into(),
+            changed_files: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn pairs_same_when_change_and_commit_ids_both_match() {
+        let from = vec![ci("ch1", "co1", "tweak the thing")];
+        let to = vec![ci("ch1", "co1", "tweak the thing")];
+        let pairs = pair_patchset_commits(&from, &to);
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].status, ChangeStatus::Same);
+        assert_eq!(pairs[0].from_commit.as_ref().unwrap().as_str(), "co1");
+        assert_eq!(pairs[0].to_commit.as_ref().unwrap().as_str(), "co1");
+    }
+
+    #[test]
+    fn pairs_changed_when_change_matches_but_commit_differs() {
+        // Same change-id, different commit-id == the author rewrote it.
+        let from = vec![ci("ch1", "co-old", "tweak v1")];
+        let to = vec![ci("ch1", "co-new", "tweak v2")];
+        let pairs = pair_patchset_commits(&from, &to);
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].status, ChangeStatus::Changed);
+        assert_eq!(pairs[0].from_commit.as_ref().unwrap().as_str(), "co-old");
+        assert_eq!(pairs[0].to_commit.as_ref().unwrap().as_str(), "co-new");
+        // Descriptions populated from both sides.
+        assert_eq!(pairs[0].from_description.as_deref(), Some("tweak v1"));
+        assert_eq!(pairs[0].to_description.as_deref(), Some("tweak v2"));
+    }
+
+    #[test]
+    fn pairs_added_in_to_when_change_id_only_in_to_patchset() {
+        let from: Vec<CommitInfo> = vec![];
+        let to = vec![ci("ch1", "co1", "brand new commit")];
+        let pairs = pair_patchset_commits(&from, &to);
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].status, ChangeStatus::AddedInTo);
+        assert!(pairs[0].from_commit.is_none());
+        assert!(pairs[0].from_description.is_none());
+        assert_eq!(pairs[0].to_commit.as_ref().unwrap().as_str(), "co1");
+    }
+
+    #[test]
+    fn pairs_removed_from_from_when_change_id_only_in_from_patchset() {
+        let from = vec![ci("ch1", "co1", "dropped")];
+        let to: Vec<CommitInfo> = vec![];
+        let pairs = pair_patchset_commits(&from, &to);
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].status, ChangeStatus::RemovedFromFrom);
+        assert_eq!(pairs[0].from_commit.as_ref().unwrap().as_str(), "co1");
+        assert!(pairs[0].to_commit.is_none());
+        assert!(pairs[0].to_description.is_none());
+    }
+
+    #[test]
+    fn output_orders_to_side_first_then_removed_at_end() {
+        // The UI surface wants "what's in PS_b" up top (the typical
+        // workflow), then the dropped-from-PS_a leftovers at the bottom.
+        let from = vec![
+            ci("ch-keep", "co1", "still there"),
+            ci("ch-gone", "co-gone", "vanished"),
+        ];
+        let to = vec![
+            ci("ch-new", "co-new", "fresh"),
+            ci("ch-keep", "co1", "still there"),
+        ];
+        let pairs = pair_patchset_commits(&from, &to);
+        let statuses: Vec<ChangeStatus> = pairs.iter().map(|p| p.status).collect();
+        // to-list order, then the removed entry trailing.
+        assert_eq!(
+            statuses,
+            vec![
+                ChangeStatus::AddedInTo,
+                ChangeStatus::Same,
+                ChangeStatus::RemovedFromFrom,
+            ],
+        );
+    }
+
+    #[test]
+    fn mixed_scenario_buckets_each_change_id_independently() {
+        // Realistic case: PS_a has three commits, agent rewrites one
+        // (changed), drops one (removed), keeps one as-is (same), then
+        // adds a fourth (added).
+        let from = vec![
+            ci("ch-same", "co-same", "context unchanged"),
+            ci("ch-rewrite", "co-rewrite-v1", "first try"),
+            ci("ch-drop", "co-drop", "abandoned in v2"),
+        ];
+        let to = vec![
+            ci("ch-rewrite", "co-rewrite-v2", "second try"),
+            ci("ch-same", "co-same", "context unchanged"),
+            ci("ch-new", "co-new", "agent added this"),
+        ];
+        let pairs = pair_patchset_commits(&from, &to);
+        let by_change: std::collections::HashMap<&str, ChangeStatus> = pairs
+            .iter()
+            .map(|p| (p.change_id.as_str(), p.status))
+            .collect();
+        assert_eq!(by_change.get("ch-same").copied(), Some(ChangeStatus::Same));
+        assert_eq!(
+            by_change.get("ch-rewrite").copied(),
+            Some(ChangeStatus::Changed)
+        );
+        assert_eq!(
+            by_change.get("ch-new").copied(),
+            Some(ChangeStatus::AddedInTo)
+        );
+        assert_eq!(
+            by_change.get("ch-drop").copied(),
+            Some(ChangeStatus::RemovedFromFrom)
+        );
+        assert_eq!(pairs.len(), 4);
     }
 }

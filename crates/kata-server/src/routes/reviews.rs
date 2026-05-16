@@ -1,12 +1,14 @@
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use kata_core::{Author, Bookmark, ChangeId, CommitId, RepoSummary, ReviewManifest};
+use kata_core::{
+    Author, Bookmark, ChangeId, CommitId, PatchsetCompareView, RepoSummary, ReviewManifest,
+};
 use kata_storage::ReviewSummary;
 use serde::{Deserialize, Serialize};
 
 use crate::error::AppResult;
 use crate::routes::author::ViewerAuthor;
-use crate::service::{CommitDiffView, CreateReviewParams, ReviewView};
+use crate::service::{CommitDiffView, CreateReviewParams, DiffCommitsResult, ReviewView};
 use crate::state::AppState;
 
 #[derive(Debug, Serialize)]
@@ -209,6 +211,65 @@ pub async fn file_diff(
             .file_diff(&repo, &review_id, &q.path, q.ps, q.compare)
             .await?,
     ))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ComparePatchsetsQuery {
+    pub from: u32,
+    pub to: u32,
+}
+
+pub async fn compare_patchsets(
+    State(state): State<AppState>,
+    Path((repo_name, review_number)): Path<(String, u32)>,
+    Query(q): Query<ComparePatchsetsQuery>,
+) -> AppResult<Json<PatchsetCompareView>> {
+    let repo = state.service.resolve_repo(&repo_name)?;
+    let review_id = state.service.resolve_review_number(&repo, review_number).await?;
+    Ok(Json(
+        state
+            .service
+            .compare_patchsets(&repo, &review_id, q.from, q.to)
+            .await?,
+    ))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DiffCommitsQuery {
+    pub from: CommitId,
+    pub to: CommitId,
+    /// Omit for file-level metadata; supply to fetch the hunks for one
+    /// file within the (from, to) diff.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// When true, compute a *rebase-based interdiff* instead of the
+    /// literal tree-vs-tree diff: rebase `from` onto `to`'s parent
+    /// in-memory via jj-lib, then diff the rebased tree against
+    /// `to`. Used by the patchset-compare v2 view for `Changed`
+    /// pair rows so downstream-of-rewrite commits don't all appear
+    /// to carry the same inherited delta.
+    #[serde(default)]
+    pub interdiff: bool,
+}
+
+pub async fn diff_commits(
+    State(state): State<AppState>,
+    Path(repo_name): Path<String>,
+    Query(q): Query<DiffCommitsQuery>,
+) -> AppResult<Json<DiffCommitsResult>> {
+    let repo = state.service.resolve_repo(&repo_name)?;
+    let result = if q.interdiff {
+        state
+            .service
+            .interdiff_commits(&repo, &q.from, &q.to, q.path.as_deref())
+            .await?
+    } else {
+        state
+            .service
+            .diff_commits(&repo, &q.from, &q.to, q.path.as_deref())
+            .await?
+    };
+    Ok(Json(result))
 }
 
 #[derive(Debug, Deserialize)]

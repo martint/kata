@@ -292,6 +292,25 @@ noisy on long-running reviews, or if the two-phase-acknowledgement
 work above lands and we want a quick "show me what I haven't
 acknowledged yet" affordance.
 
+## Base-aware reprojection for patchset-compare
+
+The v2 compare view detects `compare_base_mismatch` (the two patchsets
+descend from different base commits) and surfaces a banner. The
+cumulative diff and each per-commit interdiff still reflect upstream
+movement on top of author edits, which is misleading when the reader
+asks "what did the agent change."
+
+A real fix reprojects the *from* side onto the *to* base before
+diffing: rebase `from.tip` onto `to.base`, then diff the result
+against `to.tip`. Same operation `compute_rebased_diff` in
+`kata-jj::libjj` already does at the per-commit level — extending it
+to "rebase a whole patchset's tip" is a few lines on top of the
+existing `merge_trees` helper. The per-pair diff_counts and the
+cumulative diff would then both be reprojection-clean.
+
+Today every review in the corpus has stable bases, so the banner is
+enough. Lands when someone actually hits the case.
+
 ## Other ideas
 
 _(add new entries above this line as they come up)_

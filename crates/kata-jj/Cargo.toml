@@ -7,7 +7,9 @@ license.workspace = true
 
 [dependencies]
 async-trait = { workspace = true }
+futures = { workspace = true }
 imara-diff = { workspace = true }
+jj-lib = "0.41"
 kata-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

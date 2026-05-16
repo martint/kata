@@ -9,6 +9,7 @@ pub mod backend;
 pub mod cli;
 pub mod diff;
 pub mod error;
+pub mod libjj;
 
 pub use anchor::{AnchorResolution, FileCache, resolve_anchor};
 pub use backend::{Endpoint, JjBackend, ReviewRange};
