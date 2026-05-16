@@ -533,17 +533,20 @@
     background-image: linear-gradient(var(--selection-tint), var(--selection-tint));
   }
 
+  /* Centered on the gutter/diff boundary so it never overlaps the
+   * line number to its left. See HunkLines.svelte for the
+   * unified-mode variant. */
   .add-comment {
     position: absolute;
-    left: 2px;
+    right: -9px;
     top: 50%;
     transform: translateY(-50%);
     width: 18px;
     height: 18px;
     padding: 0;
-    border: 1px solid transparent;
+    border: 1px solid var(--border);
     border-radius: 4px;
-    background: transparent;
+    background: var(--bg-elevated);
     color: var(--link);
     font-weight: 600;
     font-size: 12px;

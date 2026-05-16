@@ -465,21 +465,25 @@
     word-break: normal;
   }
 
-  /* "+" sits inside the sticky `.ln` cell so it scrolls vertically with
+  /* "+" sits inside the sticky `.ln` cell — it scrolls vertically with
    * the row but stays pinned to the left edge during horizontal scroll.
-   * The cell is text-align: right (for the line number); we position the
-   * button absolutely at the left so the two don't fight over space. */
+   * Center the button on the gutter/diff boundary (the cell's right
+   * border) so it never collides with the right-aligned line number on
+   * its left, and overlaps only the diff cell's left padding (no
+   * actual code) on its right. The .ln cell carries a stacking context
+   * via `position: sticky`, so the button reliably paints above the
+   * adjacent .content cell without any explicit z-index. */
   .add-comment {
     position: absolute;
-    left: 2px;
+    right: -9px;
     top: 50%;
     transform: translateY(-50%);
     width: 18px;
     height: 18px;
     padding: 0;
-    border: 1px solid transparent;
+    border: 1px solid var(--border);
     border-radius: 4px;
-    background: transparent;
+    background: var(--bg-elevated);
     color: var(--link);
     font-weight: 600;
     font-size: 12px;
