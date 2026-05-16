@@ -189,6 +189,38 @@
     localStorage.setItem(VIEW_KEY, viewMode);
   });
 
+  // --- Side-by-side split -------------------------------------------------
+  // Fraction of width occupied by the base (left) side in the SBS view —
+  // the tip side gets the rest. Shared across every SBS hunk on the page
+  // so dragging one divider rebalances them all. 0.5 = even split;
+  // SBS_SNAP keeps the drag soft-locked to the middle when the user is
+  // close, so resetting to standard takes no precision.
+  const SBS_SPLIT_KEY = 'kata:sbsSplit';
+  const SBS_MIN = 0.15;
+  const SBS_MAX = 0.85;
+  const SBS_SNAP = 0.03;
+  function readSbsSplit(): number {
+    if (typeof localStorage === 'undefined') return 0.5;
+    try {
+      const raw = localStorage.getItem(SBS_SPLIT_KEY);
+      if (!raw) return 0.5;
+      const v = parseFloat(raw);
+      if (!Number.isFinite(v)) return 0.5;
+      return Math.max(SBS_MIN, Math.min(SBS_MAX, v));
+    } catch {
+      return 0.5;
+    }
+  }
+  let sbsSplit = $state(readSbsSplit());
+  $effect(() => {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(SBS_SPLIT_KEY, String(sbsSplit));
+  });
+  function setSbsSplit(next: number) {
+    const clamped = Math.max(SBS_MIN, Math.min(SBS_MAX, next));
+    sbsSplit = Math.abs(clamped - 0.5) < SBS_SNAP ? 0.5 : clamped;
+  }
+
   // --- Comment filter -------------------------------------------------
   // Two independent dimensions: lifecycle (draft / open / resolved) and
   // severity (must-do / suggestion / question) — bucket types are declared
@@ -802,6 +834,19 @@
       tip_commit: sd.tip_commit,
     };
   });
+
+  /** Tip commit of the patchset being compared against, or `null`
+   *  outside compare mode. Threaded into `FileSlot` → `FileDiff` so
+   *  the per-file highlight pass reads from the same file the diff's
+   *  `base_line` numbers index into. Without this, removed-side
+   *  rows in compare mode render with HTML pulled from
+   *  `patchset.base_commit`'s file instead — line content reads as
+   *  wildly unrelated to the actual diff. */
+  const compareBaseCommit = $derived(
+    compareWith != null
+      ? (current.manifest.patchsets.find((p) => p.n === compareWith)?.tip_commit ?? null)
+      : null,
+  );
 
   // Sidebar layout state, persisted to localStorage.
   const TREE_WIDTH_KEY = 'kata:treeWidth';
@@ -1697,6 +1742,7 @@
           file={f}
           patchset={viewingFor}
           {compareWith}
+          {compareBaseCommit}
           eagerFetch={filesWithComments.has(f.path)}
           comments={visibleComments}
           responses={allResponses}
@@ -1711,6 +1757,8 @@
             composing.file === f.path)}
           {showDiffs}
           {showComments}
+          {sbsSplit}
+          {setSbsSplit}
           diffCache={fileDiffCache}
           {saving}
           lastVisitAt={current.last_visit_at ?? null}

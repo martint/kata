@@ -33,6 +33,11 @@
      *  hunks must be fetched with the same `compare` query so they
      *  match the metadata response. */
     compareWith: number | null;
+    /** Tip commit of the compare-with patchset, or `null` outside
+     *  compare mode. Forwarded to `FileDiff` so the highlighting
+     *  layer reads the right "base" file (the compared patchset's
+     *  tip, not `patchset.base_commit`). */
+    compareBaseCommit: string | null;
     /** Fetch the per-file diff up front, regardless of whether the
      *  slot is in the viewport. Set for files that have at least one
      *  comment — the comment-nav `< >` buttons need to land on those
@@ -94,6 +99,7 @@
     file,
     patchset,
     compareWith,
+    compareBaseCommit,
     eagerFetch,
     comments,
     responses,
@@ -247,6 +253,7 @@
         {repo}
         file={effectiveFile}
         {patchset}
+        {compareBaseCommit}
         {comments}
         {responses}
         {currentPatchset}

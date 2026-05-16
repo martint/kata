@@ -31,6 +31,14 @@
     file: FileChange;
     /** The patchset whose endpoints back the displayed diff. */
     patchset: Patchset;
+    /** Tip commit of the patchset the viewer is comparing against, or
+     *  `null` for the normal (base..tip) view. When set, the actual
+     *  diff base is this commit rather than `patchset.base_commit` —
+     *  used here so `highlightsBase` is built from the same commit
+     *  the hunks' `base_line` numbers index into, otherwise removed-
+     *  side lines would render with HTML pulled from the wrong file
+     *  and show wildly unrelated content. */
+    compareBaseCommit?: string | null;
     comments: CommentView[];
     responses: ResponseView[];
     currentPatchset: number;
@@ -81,6 +89,7 @@
     repo,
     file,
     patchset,
+    compareBaseCommit = null,
     comments,
     responses,
     currentPatchset,
@@ -561,7 +570,13 @@
    *  object that still points at the same path/status (e.g. when toggling
    *  the commit-scoped view). Avoids the highlight flash on every click. */
   const tipPath = $derived(file.path);
-  const baseCommit = $derived(patchset.base_commit);
+  // In compare mode the diff base is the *other* patchset's tip, not
+  // `patchset.base_commit`. Use it for the highlight pass so
+  // `highlightsBase` is indexed by line numbers from the same file the
+  // hunks' `base_line` values reference; otherwise the renderer pulls
+  // HTML from the wrong file and removed-side rows display unrelated
+  // content (e.g. a `{` where the diff hunk says `/**`).
+  const baseCommit = $derived(compareBaseCommit ?? patchset.base_commit);
   const tipCommit = $derived(patchset.tip_commit);
   const fileLang = $derived(langForPath(file.path));
 
