@@ -92,10 +92,13 @@
       prev: () => void;
       next: () => void;
     } | null;
-    /** Comments-only toggle (collapses every file's diff to just its
-     *  comments). `null` if the review has nothing to show in compact
-     *  mode (no comments, no files). */
-    diffs: { collapsed: boolean; toggle: () => void } | null;
+    /** Three-mode view selector: `both`, `diffs` (hide comments), or
+     *  `comments` (hide diffs — old "compact" mode). `null` if the
+     *  review has nothing meaningful to show in any of the modes. */
+    view: {
+      mode: 'both' | 'diffs' | 'comments';
+      set: (m: 'both' | 'diffs' | 'comments') => void;
+    } | null;
     /** Patchset selector + compare-with selector. `null` for reviews
      *  with only one patchset (nothing to switch between). Lives in
      *  the row-2 header next to the title — the dropdowns are the
@@ -163,9 +166,28 @@
   let saving = $state(false);
   let error: string | null = $state(null);
 
-  /** When true the file diffs collapse to comments-only mode. State lives
-   *  here so the top-bar toggle stays in sync with the viewport. */
-  let diffsCollapsed = $state(false);
+  // --- View mode ------------------------------------------------------
+  // Three mutually-exclusive display modes: diffs + comments (default),
+  // diffs only (hide comment threads), and comments only (the old
+  // "compact" mode that hides the diff hunks and lists comments flat).
+  // The state is the enum; the two booleans `showDiffs` / `showComments`
+  // are derived from it so downstream components can keep their simple
+  // boolean props without learning the enum.
+  type ViewMode = 'both' | 'diffs' | 'comments';
+  const VIEW_KEY = 'kata:viewMode';
+  function readViewMode(): ViewMode {
+    if (typeof localStorage === 'undefined') return 'both';
+    const raw = localStorage.getItem(VIEW_KEY);
+    if (raw === 'both' || raw === 'diffs' || raw === 'comments') return raw;
+    return 'both';
+  }
+  let viewMode = $state<ViewMode>(readViewMode());
+  const showDiffs = $derived(viewMode !== 'comments');
+  const showComments = $derived(viewMode !== 'diffs');
+  $effect(() => {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(VIEW_KEY, viewMode);
+  });
 
   // --- Comment filter -------------------------------------------------
   // Two independent dimensions: lifecycle (draft / open / resolved) and
@@ -242,21 +264,22 @@
       (c) => filterStatus[statusBucket(c, allResponses)] && filterFlag[c.flag],
     ),
   );
-  async function toggleDiffs() {
-    diffsCollapsed = !diffsCollapsed;
-    // Toggling the view re-renders the whole file list, which scrolls
-    // the page back to the top. If the user was reading a specific
-    // comment (reached via prev/next), re-anchor on it after the
-    // layout has flushed so they don't lose their place.
-    if (navCommentId) {
-      const target = orderedComments.find(
-        (c) => c.comment_id === navCommentId,
-      );
-      if (target) {
-        await tick();
-        void scrollToComment(target.comment_id, target.file ?? null);
-      }
-    }
+  /** Switch the view mode. Toggling re-renders the file list and
+   *  scrolls the page back to the top, so re-anchor on the active
+   *  nav comment after the layout flushes. */
+  async function setViewMode(m: ViewMode) {
+    if (m === viewMode) return;
+    viewMode = m;
+    await rescrollNavComment();
+  }
+  async function rescrollNavComment() {
+    if (!navCommentId) return;
+    const target = orderedComments.find(
+      (c) => c.comment_id === navCommentId,
+    );
+    if (!target) return;
+    await tick();
+    void scrollToComment(target.comment_id, target.file ?? null);
   }
 
   /** Comments in document order: review-wide first (only when viewing the
@@ -421,7 +444,7 @@
    *  the click's direction. */
   function commentParkTarget(el: HTMLElement): number {
     const rect = el.getBoundingClientRect();
-    if (diffsCollapsed) {
+    if (!showDiffs) {
       const fileHeader = el
         .closest('.file-diff')
         ?.querySelector('.file-header') as HTMLElement | null;
@@ -693,8 +716,8 @@
               next: navNext,
             }
           : null,
-      diffs: hasComments
-        ? { collapsed: diffsCollapsed, toggle: toggleDiffs }
+      view: hasComments
+        ? { mode: viewMode, set: setViewMode }
         : null,
       patchsets:
         current.manifest.patchsets.length > 1
@@ -924,7 +947,7 @@
    *  list of feedback; the file being composed on stays visible so the
    *  inline composer doesn't disappear under the user. */
   const visibleFiles = $derived.by(() => {
-    if (!diffsCollapsed) return orderedFiles;
+    if (showDiffs) return orderedFiles;
     const withComments = new Set(
       visibleComments.map((c) => c.file).filter((p): p is string => !!p),
     );
@@ -1686,7 +1709,8 @@
           forceRender={!!(composing &&
             'file' in composing &&
             composing.file === f.path)}
-          compact={diffsCollapsed}
+          {showDiffs}
+          {showComments}
           diffCache={fileDiffCache}
           {saving}
           lastVisitAt={current.last_visit_at ?? null}

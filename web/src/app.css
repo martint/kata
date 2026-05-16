@@ -462,9 +462,42 @@ header.app .comment-nav .position {
   text-align: center;
 }
 
-header.app .diffs-toggle {
-  padding: 2px 10px;
+/* Segmented control for the three mutually-exclusive display modes
+ * (Both / Diffs / Comments). Looks like a single pill with three
+ * conjoined cells; the active cell is filled, the others read as
+ * plain text on a panel background. */
+header.app .view-toggle {
+  display: inline-flex;
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+header.app .view-toggle .seg {
+  background: var(--bg);
+  border: none;
+  border-left: 1px solid var(--border);
+  border-radius: 0;
+  color: var(--text-muted);
+  cursor: pointer;
   font-size: 11px;
+  padding: 2px 10px;
+}
+
+header.app .view-toggle .seg:first-child {
+  border-left: none;
+}
+
+header.app .view-toggle .seg:hover:not(.on) {
+  background: var(--bg-elevated);
+  color: var(--text);
+}
+
+header.app .view-toggle .seg.on {
+  background: var(--link);
+  color: var(--on-accent);
+  cursor: default;
 }
 
 .spinner {

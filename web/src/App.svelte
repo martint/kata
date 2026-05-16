@@ -372,9 +372,9 @@
       <!-- Float controls to the right so the title gets breathing
            room from the chips next to it. -->
       <span style="flex: 1"></span>
-      <!-- Order is `nav | hint | chips | diffs-toggle` rather than the
+      <!-- Order is `nav | hint | chips | view-toggle` rather than the
            visual-reading-order opposite so the chip cluster stays
-           anchored against the diffs-toggle at the right edge: when
+           anchored against the view-toggle at the right edge: when
            the nav or hint disappears (no comments, filter not empty),
            only the elements between the title spacer and the chips
            shift — the chips themselves keep their position. -->
@@ -459,16 +459,37 @@
           >Question</button>
         </div>
       {/if}
-      {#if toolbar.diffs}
-        {@const d = toolbar.diffs}
-        <button
-          type="button"
-          class="diffs-toggle"
-          onclick={d.toggle}
-          title={d.collapsed ? 'Show file diffs' : 'Hide file diffs, leave only comments'}
-        >
-          {d.collapsed ? 'Show diffs' : 'Comments only'}
-        </button>
+      {#if toolbar.view}
+        {@const v = toolbar.view}
+        <div class="view-toggle" role="radiogroup" aria-label="View mode">
+          <button
+            type="button"
+            class="seg"
+            class:on={v.mode === 'both'}
+            role="radio"
+            aria-checked={v.mode === 'both'}
+            onclick={() => v.set('both')}
+            title="Show diffs and comment threads"
+          >Both</button>
+          <button
+            type="button"
+            class="seg"
+            class:on={v.mode === 'diffs'}
+            role="radio"
+            aria-checked={v.mode === 'diffs'}
+            onclick={() => v.set('diffs')}
+            title="Show only the diffs, hide comment threads"
+          >Diffs</button>
+          <button
+            type="button"
+            class="seg"
+            class:on={v.mode === 'comments'}
+            role="radio"
+            aria-checked={v.mode === 'comments'}
+            onclick={() => v.set('comments')}
+            title="Show only the comments, hide the diffs"
+          >Comments</button>
+        </div>
       {/if}
     </div>
   {/if}

@@ -33,6 +33,10 @@
     lastVisitAt?: string | null;
     /** Currently signed-in author identity. */
     viewer?: string;
+    /** Render the per-row inline comment threads and the gutter
+     *  +comment buttons. When `false` the diff renders without any
+     *  comment UI (diffs-only mode). */
+    showComments?: boolean;
   }
   const {
     hunk,
@@ -51,6 +55,7 @@
     onselectpatchset,
     lastVisitAt = null,
     viewer = '',
+    showComments = true,
   }: Props = $props();
 
   type PairedRow =
@@ -170,6 +175,7 @@
   });
 
   function isCommented(side: Side, line: number | null | undefined): boolean {
+    if (!showComments) return false;
     return line != null && commentedLines.has(`${side}:${line}`);
   }
 
@@ -291,7 +297,7 @@
               <!-- "+" button lives in the sticky gutter cell, not the
                    content cell, so it stays visible during horizontal
                    scroll of long lines. -->
-              {#if row.left?.base_line != null}
+              {#if row.left?.base_line != null && showComments}
                 <button
                   type="button"
                   class="add-comment"
@@ -314,7 +320,7 @@
               {/if}
             </td>
           </tr>
-          {@const leftThreads = threadsAt('base', row.left?.base_line)}
+          {@const leftThreads = showComments ? threadsAt('base', row.left?.base_line) : []}
           {#if leftThreads.length > 0}
             <tr class="sbs-threads from-{row.left?.origin ?? 'context'}">
               <td colspan="2" class="thread-cell">
@@ -359,7 +365,7 @@
               data-side="tip"
               data-line={rightLine ?? ''}
             >
-              {#if row.right?.tip_line != null}
+              {#if row.right?.tip_line != null && showComments}
                 <button
                   type="button"
                   class="add-comment"
@@ -382,7 +388,7 @@
               {/if}
             </td>
           </tr>
-          {@const rightThreads = threadsAt('tip', row.right?.tip_line)}
+          {@const rightThreads = showComments ? threadsAt('tip', row.right?.tip_line) : []}
           {#if rightThreads.length > 0}
             <tr class="sbs-threads from-{row.right?.origin ?? 'context'}">
               <td colspan="2" class="thread-cell">

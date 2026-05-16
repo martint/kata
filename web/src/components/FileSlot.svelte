@@ -53,9 +53,13 @@
      *  currently hosting an open composer doesn't get virtualized away
      *  out from under the user. */
     forceRender: boolean;
-    /** Render the file with its hunks hidden — only comments and the
-     *  file header remain. */
-    compact: boolean;
+    /** Render the diff hunks. When `false` the file collapses to a
+     *  flat comments-only listing (the old "compact" mode). */
+    showDiffs: boolean;
+    /** Render comment threads inline, the file-level thread, orphan
+     *  threads, and the +comment buttons. When `false` the diff is
+     *  rendered without any comment UI. */
+    showComments: boolean;
     /** Shared cache of resolved file diffs keyed by
      *  `${patchset}|${compare}|${path}`. Lifted up to ReviewViewer
      *  so cached entries survive this slot virtualizing itself out
@@ -90,7 +94,8 @@
     composing,
     saving,
     forceRender,
-    compact,
+    showDiffs,
+    showComments,
     diffCache,
     onstartcompose,
     oncancelcompose,
@@ -176,10 +181,11 @@
     return () => io.disconnect();
   });
 
-  /** In compact mode the page is tiny (each file collapses to a header
-   *  plus a few comments), so virtualization buys nothing — always
-   *  render. Otherwise mount only when the slot is near the viewport. */
-  const shouldRender = $derived(compact || inViewport || forceRender);
+  /** In comments-only mode the page is tiny (each file collapses to a
+   *  header plus a few comments), so virtualization buys nothing —
+   *  always render. Otherwise mount only when the slot is near the
+   *  viewport. */
+  const shouldRender = $derived(!showDiffs || inViewport || forceRender);
 
   /** Cache the actual rendered height so the placeholder reproduces it
    *  exactly when the file scrolls away — otherwise total document
@@ -237,7 +243,8 @@
         {currentPatchset}
         {composing}
         {saving}
-        {compact}
+        {showDiffs}
+        {showComments}
         loadingHunks={loadingHunks && !diffCache.has(cacheKey)}
         bind:wholeFile
         {lastVisitAt}

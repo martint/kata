@@ -37,6 +37,10 @@
     lastVisitAt?: string | null;
     /** Currently signed-in author identity. */
     viewer?: string;
+    /** Render the per-row inline comment threads and the gutter
+     *  +comment buttons. When `false` the diff renders without any
+     *  comment UI (diffs-only mode). */
+    showComments?: boolean;
   }
   const {
     hunk,
@@ -56,6 +60,7 @@
     onselectpatchset,
     lastVisitAt = null,
     viewer = '',
+    showComments = true,
   }: Props = $props();
 
   const showBase = $derived(lineNumberMode !== 'tip');
@@ -188,6 +193,7 @@
   });
 
   function isCommented(a: { side: Side; line: number } | null): boolean {
+    if (!showComments) return false;
     return a != null && commentedLines.has(`${a.side}:${a.line}`);
   }
 
@@ -263,7 +269,7 @@
             <!-- "+" button lives in the gutter cell (not the content
                  cell) so it stays visible while long lines scroll
                  horizontally — the gutter is `position: sticky`. -->
-            {#if a && !showTip}
+            {#if a && !showTip && showComments}
               <button
                 type="button"
                 class="add-comment"
@@ -282,7 +288,7 @@
             data-side={a?.side ?? ''}
             data-line={a?.line ?? ''}
           >
-            {#if a}
+            {#if a && showComments}
               <button
                 type="button"
                 class="add-comment"
@@ -307,7 +313,7 @@
           {/if}
         </td>
       </tr>
-      {#if a}
+      {#if a && showComments}
         {@const threads = threadsFor(a)}
         {#if threads.length > 0}
           <tr class="thread-row from-{line.origin}">

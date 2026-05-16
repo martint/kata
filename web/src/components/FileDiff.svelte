@@ -36,9 +36,14 @@
     currentPatchset: number;
     composing: ComposerTarget | null;
     saving: boolean;
-    /** Hide the diff hunks and show line-level comments as a flat list.
-     *  Used by the top-bar "Comments only" toggle. */
-    compact?: boolean;
+    /** Render the diff hunks. When `false` the file collapses to a
+     *  flat comments-only listing (the old "compact" mode). */
+    showDiffs?: boolean;
+    /** Render comment UI: the file-level thread, the inline per-row
+     *  thread rows in HunkLines/SideBySide, orphan threads, the
+     *  +comment buttons, and the file-comment button in the header.
+     *  When `false`, the diff is shown without any of these. */
+    showComments?: boolean;
     /** True while `FileSlot` is fetching the per-file diff. We render a
      *  "Loading…" placeholder instead of "Diff omitted" so the user
      *  gets feedback rather than confusing them into thinking the
@@ -73,7 +78,8 @@
     currentPatchset,
     composing,
     saving,
-    compact = false,
+    showDiffs = true,
+    showComments = true,
     loadingHunks = false,
     onstartcompose,
     oncancelcompose,
@@ -618,10 +624,10 @@
   data-file-path={file.path}
 >
   <header class="file-header">
-    {#if !compact}
-      <!-- In compact (comments-only) mode the file diff isn't rendered
-           at all, so a toggle that hides/shows nothing is just noise.
-           Hide it. -->
+    {#if showDiffs}
+      <!-- The fold toggle only makes sense when the diff is actually
+           on screen — in comments-only mode there's nothing under
+           the header to hide or reveal. -->
       <button
         class="toggle"
         aria-label={collapsed ? 'expand' : 'collapse'}
@@ -646,7 +652,7 @@
     {#if file.binary}
       <span class="meta">binary</span>
     {/if}
-    {#if !compact && canExpand && !collapsed}
+    {#if showDiffs && canExpand && !collapsed}
       <!-- Toggle between the default hunks-with-context view and a
            continuous "whole file" view. Only meaningful when both
            sides exist (modified/renamed), the diff is actually
@@ -707,18 +713,20 @@
         </svg>
       </button>
     {/if}
-    <button
-      type="button"
-      class="file-comment"
-      aria-label="Comment on this file"
-      title="Comment on this file"
-      onclick={() => onstartcompose({ kind: 'file', file: file.path })}
-    >
-      <Bubble size={14} />
-    </button>
+    {#if showComments}
+      <button
+        type="button"
+        class="file-comment"
+        aria-label="Comment on this file"
+        title="Comment on this file"
+        onclick={() => onstartcompose({ kind: 'file', file: file.path })}
+      >
+        <Bubble size={14} />
+      </button>
+    {/if}
   </header>
 
-  {#if fileLevelComments.length > 0}
+  {#if showComments && fileLevelComments.length > 0}
     <div class="file-thread">
       <CommentThread
         comments={fileLevelComments}
@@ -741,9 +749,11 @@
        surrounding context didn't include, so the inline hunk view
        has no row to attach them to. Render at the file level so
        they're not silently dropped in show-diffs mode. Suppressed
-       in compact mode because the compact-line-list below already
-       shows every line comment irrespective of hunk coverage. -->
-  {#if !compact && orphanLineComments.length > 0}
+       in comments-only mode because the compact-line-list below
+       already shows every line comment irrespective of hunk
+       coverage; suppressed in diffs-only mode because comments
+       are intentionally hidden there. -->
+  {#if showDiffs && showComments && orphanLineComments.length > 0}
     <div
       class="orphan-threads"
       style:margin-left="var(--measured-gutter, {gutterIndentPx}px)"
@@ -769,7 +779,7 @@
     </div>
   {/if}
 
-  {#if composing && composing.kind === 'file' && composing.file === file.path}
+  {#if showComments && composing && composing.kind === 'file' && composing.file === file.path}
     <div class="file-composer">
       <CommentComposer
         target={composing}
@@ -781,7 +791,7 @@
     </div>
   {/if}
 
-  {#if compact}
+  {#if !showDiffs}
     {#if lineCommentsSorted.length > 0}
       <ul class="compact-line-list">
         {#each lineCommentsSorted as c (c.comment_id)}
@@ -864,6 +874,7 @@
               {highlights}
               {lastVisitAt}
               {viewer}
+              {showComments}
               {onstartcompose}
               {onreply}
               {onstatus}
@@ -884,6 +895,7 @@
               {lineNumberMode}
               {lastVisitAt}
               {viewer}
+              {showComments}
               {onstartcompose}
               {onreply}
               {onstatus}
