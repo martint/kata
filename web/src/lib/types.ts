@@ -184,6 +184,61 @@ export interface Diff {
   files: FileChange[];
 }
 
+// ---- patchset-compare v2 ------------------------------------------------
+
+/** How a single change_id relates across two patchsets being compared. */
+export type ChangeStatus =
+  | 'same'
+  | 'changed'
+  | 'added-in-to'
+  | 'removed-from-from';
+
+export interface PatchsetPair {
+  change_id: ChangeId;
+  status: ChangeStatus;
+  from_commit?: CommitId;
+  to_commit?: CommitId;
+  from_description?: string;
+  to_description?: string;
+  /** Parent of the present-side commit, populated by the backend for
+   *  one-sided pairs (`added-in-to` / `removed-from-from`). Lets the
+   *  UI render `parent..commit` for those rows. Absent on
+   *  `same`/`changed` (no parent needed) and on `added`/`removed`
+   *  where parent resolution failed (row falls back to inert). */
+  parent_commit?: CommitId;
+  /** Pre-computed diff counts for the row's effective endpoint pair
+   *  (interdiff for `changed`; `parent..commit` for added/removed).
+   *  Renders as a "3 files +7 −15" chip next to the description.
+   *  Absent for `same` and when the count fetch failed. */
+  diff_counts?: PairDiffCounts;
+}
+
+export interface PairDiffCounts {
+  file_count: number;
+  added: number;
+  removed: number;
+}
+
+export interface PatchsetEndpoints {
+  n: number;
+  base_commit: CommitId;
+  tip_commit: CommitId;
+}
+
+export interface PatchsetCompareView {
+  from: PatchsetEndpoints;
+  to: PatchsetEndpoints;
+  cumulative: Diff;
+  pairs: PatchsetPair[];
+  compare_base_mismatch: boolean;
+}
+
+/** Result of `/api/repos/<repo>/diff?from=<a>&to=<b>[&path=<p>]`. The
+ *  `kind` discriminator mirrors the Rust enum's serde tag. */
+export type DiffCommitsResult =
+  | ({ kind: 'diff' } & Diff)
+  | ({ kind: 'file' } & FileChange);
+
 export type AnchorView =
   | { kind: 'valid' }
   | { kind: 'moved'; new_lines: LineRange }

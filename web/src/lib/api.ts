@@ -3,9 +3,11 @@ import type {
   Comment,
   CommitDiffView,
   CreateReviewParams,
+  DiffCommitsResult,
   DraftCommentInput,
   DraftResponseInput,
   FileChange,
+  PatchsetCompareView,
   RepoSummary,
   Response as ReviewResponse,
   ReviewManifest,
@@ -169,6 +171,44 @@ export const api = {
     );
   },
   readFile: cachedReadFile,
+
+  /** Patchset-compare v2: cumulative diff metadata + per-change-id
+   *  pair list for the (from, to) patchset pair. The per-commit
+   *  interdiff *content* is not in this payload — call `diffCommits`
+   *  with the pair's `from_commit` / `to_commit` to fetch that. */
+  comparePatchsets: (repo: string, number: number, from: number, to: number) =>
+    request<PatchsetCompareView>(
+      'GET',
+      `${repoBase(repo)}/reviews/${number}/compare?from=${from}&to=${to}`,
+    ),
+
+  /** Generic commit-pair diff. Omit `path` for file-level metadata;
+   *  supply `path` for the hunks of that single file. Used by the
+   *  per-commit view in compare mode to fetch interdiffs.
+   *
+   *  When `interdiff: true`, the backend runs a *rebase-based*
+   *  interdiff instead of the literal diff(from, to): it rebases
+   *  `from` onto `to`'s parent in-memory via jj-lib, then diffs the
+   *  rebased tree against `to`. Use this for `changed` pair rows in
+   *  patchset-compare so downstream-of-rewrite commits show only the
+   *  delta they actually contribute, not the inherited cumulative
+   *  tree difference. For added/removed pairs (`parent..commit`)
+   *  leave it false — they're plain commit-own diffs. */
+  diffCommits: (
+    repo: string,
+    from: string,
+    to: string,
+    path?: string,
+    interdiff: boolean = false,
+  ) => {
+    const parts: string[] = [`from=${enc(from)}`, `to=${enc(to)}`];
+    if (path !== undefined) parts.push(`path=${enc(path)}`);
+    if (interdiff) parts.push('interdiff=true');
+    return request<DiffCommitsResult>(
+      'GET',
+      `${repoBase(repo)}/diff?${parts.join('&')}`,
+    );
+  },
 
   startSession: (repo: string, number: number) =>
     request<Session>('POST', `${repoBase(repo)}/reviews/${number}/sessions`),
