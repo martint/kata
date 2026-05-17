@@ -1,9 +1,14 @@
 //! Word-level diff and HTML overlay for paired changed lines.
 //!
-//! Pairing strategy is N:N: a run of N consecutive remove lines followed
-//! by exactly N consecutive add lines pairs row-by-row. Unbalanced blocks
-//! are skipped (any pairing heuristic there tends to produce noisy
-//! highlights for moves and refactors).
+//! Pairing strategy comes from `hunkAlign.alignBlock` — a
+//! Needleman–Wunsch alignment over (remove, add) line-similarity
+//! scores. N:N blocks of similar lines pair straight through (same
+//! visual as the old strict-index zip); uneven or partially-changed
+//! blocks find their best content matches and leave the rest
+//! one-sided. Pre-alignment we bailed entirely on anything other
+//! than strict N:N.
+
+import { alignBlock } from './hunkAlign';
 //!
 //! The line-level diff already tells the reader *that* a line changed;
 //! this layer says *what* inside the line changed. We tokenize each
@@ -289,11 +294,16 @@ export interface HunkLineWordDiff {
 }
 
 /** Walk a hunk's lines and compute per-line word-diff annotations for
- *  every paired remove/add block (N removes followed by exactly N
- *  adds). Returns a map keyed by the hunk-line index. Lines that don't
- *  get a useful word-diff (mismatched block sizes, low similarity, one
- *  side empty) are absent from the map; the caller falls back to the
- *  plain line-level highlight for those. */
+ *  every paired remove/add block. Uses `alignBlock` to find the best
+ *  content-similarity pairing rather than strict-index zipping, so
+ *  word-diff highlights cover uneven blocks (3 removes / 4 adds, etc.)
+ *  too — previously those blocks bailed out entirely and rendered as
+ *  plain line-level highlights.
+ *
+ *  Returns a map keyed by the hunk-line index. Lines that don't
+ *  pair (one-sided changes within the block, sub-threshold
+ *  similarity) are absent; the caller falls back to the plain
+ *  line-level highlight for those. */
 export function computeHunkWordDiff(lines: LineLike[]): Map<number, HunkLineWordDiff> {
   const out = new Map<number, HunkLineWordDiff>();
   let i = 0;
@@ -310,13 +320,18 @@ export function computeHunkWordDiff(lines: LineLike[]): Map<number, HunkLineWord
     const addEnd = i;
     const removeCount = removeEnd - removeStart;
     const addCount = addEnd - addStart;
-    if (removeCount === 0 || removeCount !== addCount) continue;
-    for (let k = 0; k < removeCount; k++) {
-      const rIdx = removeStart + k;
-      const aIdx = addStart + k;
-      const rText = lines[rIdx].content.replace(/\n$/, '');
-      const aText = lines[aIdx].content.replace(/\n$/, '');
-      const d = diffLines(rText, aText);
+    if (removeCount === 0 || addCount === 0) continue;
+    const removeTexts = Array.from({ length: removeCount }, (_, k) =>
+      lines[removeStart + k].content.replace(/\n$/, ''),
+    );
+    const addTexts = Array.from({ length: addCount }, (_, k) =>
+      lines[addStart + k].content.replace(/\n$/, ''),
+    );
+    const alignment = alignBlock(removeTexts, addTexts);
+    for (const { removeIndex, addIndex } of alignment.pairs) {
+      const rIdx = removeStart + removeIndex;
+      const aIdx = addStart + addIndex;
+      const d = diffLines(removeTexts[removeIndex], addTexts[addIndex]);
       if (!d) continue;
       if (d.removed.length > 0) out.set(rIdx, { kind: 'removed', ranges: d.removed });
       if (d.added.length > 0) out.set(aIdx, { kind: 'added', ranges: d.added });

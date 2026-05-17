@@ -12,6 +12,7 @@
   import Bubble from './Bubble.svelte';
   import CommentThread from './CommentThread.svelte';
   import { computeHunkWordDiff, wrapRanges } from '../lib/wordDiff';
+  import { alignBlock, alignedRows } from '../lib/hunkAlign';
 
   interface Props {
     hunk: Hunk;
@@ -95,12 +96,24 @@
         adds.push(lines[i]);
         i++;
       }
-      const max = Math.max(removes.length, adds.length);
-      for (let j = 0; j < max; j++) {
+      // Best-content alignment instead of strict index-pairing.
+      // `alignedRows` slots unpaired removes / adds onto their own
+      // row with the other side blank, so each paired remove/add
+      // sits on the SAME row vertically — exactly the visual cue the
+      // reader needs to see "this and that correspond." Strictly
+      // index-paired N:N blocks degenerate to identical output via
+      // the DP, so the common case is unchanged.
+      const aligned = alignedRows(
+        alignBlock(
+          removes.map((l) => l.content.replace(/\n$/, '')),
+          adds.map((l) => l.content.replace(/\n$/, '')),
+        ),
+      );
+      for (const row of aligned) {
         rows.push({
           kind: 'change',
-          left: removes[j] ?? null,
-          right: adds[j] ?? null,
+          left: row.removeIndex != null ? removes[row.removeIndex] : null,
+          right: row.addIndex != null ? adds[row.addIndex] : null,
         });
       }
     }
