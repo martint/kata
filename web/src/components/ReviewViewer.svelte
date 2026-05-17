@@ -876,12 +876,18 @@
    *  scopes file-content reads + new-comment anchoring to the clicked
    *  commit (otherwise highlights pull from the whole-review tip, whose
    *  line numbers may differ when later commits touch the same file). */
-  let scopedChangeId: string | null = $state(null);
+  // Seed scopedChangeId synchronously from the URL so the commits
+  // panel reflects the correct selection from the very first frame —
+  // without this the panel briefly highlights "All commits" before
+  // selectCommit's async fetch resolves and corrects it. While the
+  // commit_diff fetch is in flight, the file-render template guards
+  // on `scopedChangeId && !scopedDiff` to show a loading placeholder
+  // instead of the unscoped fallback files (which is what
+  // `displayedFiles` resolves to until scopedDiff is populated).
+  // svelte-ignore state_referenced_locally
+  let scopedChangeId: string | null = $state(initialScope ?? null);
   let scopedDiff = $state<CommitDiffView | null>(null);
 
-  // If the URL landed with `?scope=<change>` set, kick off the
-  // commit_diff fetch on mount so the file panel renders that
-  // commit's diff.
   onMount(() => {
     if (initialScope) void selectCommit(initialScope);
   });
@@ -2181,7 +2187,18 @@
       </div>
     {/if}
 
-{#if orderedFiles.length === 0}
+{#if scopedChangeId && !scopedDiff}
+      <!-- We've committed to showing a scoped commit (from
+           `?scope=<id>` in the URL) but the commit_diff fetch
+           hasn't landed yet. Suppress the file list — without
+           this guard `displayedFiles` falls back to the *unscoped*
+           review files for one frame, which reads as a confusing
+           flash. The placeholder also covers the brief window
+           between initial render and `onMount` setting
+           `loadingDiff` true, so the user sees a stable "loading"
+           state instead of nothing. -->
+      <p class="muted">Loading commit diff…</p>
+    {:else if orderedFiles.length === 0}
       <p class="muted">No files changed.</p>
     {:else if visibleFiles.length === 0}
       <p class="muted">No files have comments.</p>
