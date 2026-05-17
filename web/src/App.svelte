@@ -23,6 +23,7 @@
         initialPatchset: number | undefined;
         initialCompareWith: number | undefined;
         initialCommit: string | undefined;
+        initialScope: string | undefined;
       };
 
   // Synchronously decide the initial screen based on the URL, BEFORE the
@@ -71,30 +72,43 @@
     return () => ro.disconnect();
   });
 
+  /** Full view state for a review URL. All fields optional — absent
+   *  means "use the default" (latest patchset, no compare, no scope,
+   *  no pair selected). */
+  interface ReviewViewState {
+    patchset?: number;
+    compareWith?: number | null;
+    commit?: string | null;  // compare-mode pair selection
+    scope?: string | null;   // non-compare commit-panel scoping
+  }
+
   function pathForReview(
     repo: string,
     number: number,
-    patchset?: number,
-    compareWith?: number | null,
-    commit?: string | null,
+    state: ReviewViewState = {},
   ): string {
     const base = `/r/${encodeURIComponent(repo)}/${number}`;
     const parts: string[] = [];
-    if (patchset !== undefined) parts.push(`ps=${patchset}`);
-    if (compareWith != null) parts.push(`cmp=${compareWith}`);
+    if (state.patchset !== undefined) parts.push(`ps=${state.patchset}`);
+    if (state.compareWith != null) parts.push(`cmp=${state.compareWith}`);
     // `commit` only carries meaning in compare mode (it selects a
     // change-id from the pair list); leave it off otherwise so URLs
     // don't grow stale params.
-    if (commit != null && compareWith != null) {
-      parts.push(`commit=${encodeURIComponent(commit)}`);
+    if (state.commit != null && state.compareWith != null) {
+      parts.push(`commit=${encodeURIComponent(state.commit)}`);
+    }
+    // `scope` is the non-compare counterpart of `commit`: a change-id
+    // scoping the file panel to that one commit. Doesn't compose with
+    // compare mode (where the pair-list selection takes its place).
+    if (state.scope != null && state.compareWith == null) {
+      parts.push(`scope=${encodeURIComponent(state.scope)}`);
     }
     return parts.length > 0 ? `${base}?${parts.join('&')}` : base;
   }
 
   /** Parse `/r/<repo>/<number>` (with optional `?ps=N`, `?cmp=M`,
-   *  `?commit=<id>`). Returns null when the URL is the review list
-   *  (or when `<number>` isn't a positive integer — those URLs are
-   *  treated as not-a-review). */
+   *  `?commit=<id>`, `?scope=<id>`). Returns null when the URL is the
+   *  review list (or when `<number>` isn't a positive integer). */
   function parseUrl():
     | {
         repo: string;
@@ -102,6 +116,7 @@
         patchset: number | undefined;
         compareWith: number | undefined;
         commit: string | undefined;
+        scope: string | undefined;
       }
     | null {
     const m = location.pathname.match(/^\/r\/([^/]+)\/(\d+)$/);
@@ -113,13 +128,13 @@
       const n = Number(raw);
       return Number.isFinite(n) ? n : undefined;
     };
-    const commit = params.get('commit') ?? undefined;
     return {
       repo: decodeURIComponent(m[1]),
       number: Number(m[2]),
       patchset: readNum('ps'),
       compareWith: readNum('cmp'),
-      commit,
+      commit: params.get('commit') ?? undefined,
+      scope: params.get('scope') ?? undefined,
     };
   }
 
@@ -145,6 +160,7 @@
     patchset: number | undefined,
     compareWith: number | undefined,
     commit: string | undefined,
+    scope: string | undefined,
   ) {
     loading = true;
     error = null;
@@ -157,6 +173,7 @@
         initialPatchset: patchset,
         initialCompareWith: compareWith,
         initialCommit: commit,
+        initialScope: scope,
       };
     } catch (e) {
       error = (e as Error).message;
@@ -173,23 +190,26 @@
     if (location.pathname + location.search !== path) {
       history.pushState({}, '', path);
     }
-    await showReview(repo, number, undefined, undefined, undefined);
+    await showReview(repo, number, undefined, undefined, undefined, undefined);
   }
 
-  /** Called when the viewer changes patchset, compare target, or the
-   *  selected compare-commit. Sync the URL so the link is shareable
-   *  without pushing a new history entry. */
-  function onViewChange(n: number, compare: number | null, commit: string | null) {
+  /** Called by ReviewViewer when any of its view-state fields change
+   *  via in-app navigation (patchset selector, compare-with selector,
+   *  pair-list click in compare mode, commits-panel scoping click in
+   *  non-compare mode). Pushes a new history entry so the browser
+   *  back button undoes the last action. The previous behaviour
+   *  (replaceState) made back skip past everything the user did
+   *  inside the review and jump straight back to where they entered
+   *  it — the exact bug this fixes. */
+  function onViewChange(state: ReviewViewState) {
     if (screen.kind !== 'review') return;
     const path = pathForReview(
       screen.repo,
       screen.view.manifest.number,
-      n,
-      compare,
-      commit,
+      state,
     );
     if (location.pathname + location.search !== path) {
-      history.replaceState({}, '', path);
+      history.pushState({}, '', path);
     }
   }
 
@@ -221,6 +241,7 @@
         parsed.patchset,
         parsed.compareWith,
         parsed.commit,
+        parsed.scope,
       );
     } else {
       screen = { kind: 'list' };
@@ -549,16 +570,28 @@
       onopen={openReview}
     />
   {:else}
-    <ReviewViewer
-      repo={screen.repo}
-      view={screen.view}
-      viewer={whoami?.author ?? ''}
-      initialPatchset={screen.initialPatchset}
-      initialCompareWith={screen.initialCompareWith}
-      initialCommit={screen.initialCommit}
-      onviewchange={onViewChange}
-      ontoolbarchange={(t) => (toolbar = t)}
-    />
+    <!-- Key on the URL-state fields so popstate (which rebuilds
+         `screen` via `showReview` with new initial* values) actually
+         remounts the viewer. ReviewViewer's `current`, `selectedPatchset`,
+         `compareWith`, etc. are seeded once at mount; without the
+         remount, a back-button navigation would update the URL but
+         leave the viewer showing the previous view's data.
+         In-app navigation (dropdowns, pair clicks) doesn't change the
+         initial* fields — those are only re-assigned by `showReview` —
+         so no spurious remounts during normal use. -->
+    {#key `${screen.repo}|${screen.view.manifest.number}|${screen.initialPatchset ?? ''}|${screen.initialCompareWith ?? ''}|${screen.initialCommit ?? ''}|${screen.initialScope ?? ''}`}
+      <ReviewViewer
+        repo={screen.repo}
+        view={screen.view}
+        viewer={whoami?.author ?? ''}
+        initialPatchset={screen.initialPatchset}
+        initialCompareWith={screen.initialCompareWith}
+        initialCommit={screen.initialCommit}
+        initialScope={screen.initialScope}
+        onviewchange={onViewChange}
+        ontoolbarchange={(t) => (toolbar = t)}
+      />
+    {/key}
   {/if}
 </main>
 

@@ -143,16 +143,24 @@
      *  for this change-id from the pair list. Ignored outside compare
      *  mode. Undefined means "cumulative view across all commits". */
     initialCommit?: string;
-    /** Fires when the user picks a different patchset, compare target,
-     *  or per-commit compare selection. Reports all three so App.svelte
-     *  can keep the URL (`?ps=&cmp=&commit=`) in sync. `compare === null`
-     *  means leaving compare mode; `commit === null` means switching
-     *  back to the cumulative view inside compare mode. */
-    onviewchange?: (
-      patchset: number,
-      compare: number | null,
-      commit: string | null,
-    ) => void;
+    /** Non-compare-mode commit-panel scoping: when set, the file
+     *  panel renders only the named commit's diff (`parent..commit`)
+     *  instead of the whole review. Ignored in compare mode (the
+     *  pair-list selection takes its place). Undefined means
+     *  "show the whole review". */
+    initialScope?: string;
+    /** Fires when the user picks a different patchset, compare
+     *  target, per-commit compare selection, or non-compare scoped
+     *  commit. App.svelte mirrors all four fields into the URL and
+     *  pushes a history entry per change so the browser back button
+     *  undoes the action. `null` for `compare`/`commit`/`scope`
+     *  means "no selection." */
+    onviewchange?: (state: {
+      patchset?: number;
+      compareWith?: number | null;
+      commit?: string | null;
+      scope?: string | null;
+    }) => void;
     /** Reports toolbar state up to the app shell so the publish / discard
      *  controls and the diff-collapse toggle can live in the always-visible
      *  top bar instead of scrolling away with the page. */
@@ -165,6 +173,7 @@
     initialPatchset,
     initialCompareWith,
     initialCommit,
+    initialScope,
     onviewchange,
     ontoolbarchange,
   }: Props = $props();
@@ -845,6 +854,16 @@
   let scopedChangeId: string | null = $state(null);
   let scopedDiff = $state<CommitDiffView | null>(null);
 
+  // If the URL landed with `?scope=<change>` set, kick off the
+  // commit_diff fetch on mount so the file panel renders that
+  // commit's diff. `selectCommit` populates both scopedChangeId
+  // and scopedDiff; we don't seed scopedChangeId synchronously
+  // because the file panel would briefly render an empty scoped
+  // view (scopedDiff still null) before the fetch resolves.
+  onMount(() => {
+    if (initialScope) void selectCommit(initialScope);
+  });
+
   // ---- Patchset-compare v2 (per-commit interdiff) -------------------
   // Cached pair-list + cumulative summary for the active compare. Fetched
   // whenever `compareWith` flips to a new patchset; null outside compare
@@ -1032,6 +1051,11 @@
     if (changeId === null) {
       scopedChangeId = null;
       scopedDiff = null;
+      onviewchange?.({
+        patchset: selectedPatchset,
+        compareWith,
+        scope: null,
+      });
       return;
     }
     loadingDiff = true;
@@ -1040,6 +1064,11 @@
     try {
       scopedDiff = await api.commitDiff(repo, current.manifest.number, changeId);
       scopedChangeId = changeId;
+      onviewchange?.({
+        patchset: selectedPatchset,
+        compareWith,
+        scope: changeId,
+      });
     } catch (e) {
       error = (e as Error).message;
     } finally {
@@ -1177,7 +1206,11 @@
   function selectCompareCommit(changeId: string | null) {
     if (changeId === selectedCompareCommit) return;
     selectedCompareCommit = changeId;
-    onviewchange?.(selectedPatchset, compareWith, changeId);
+    onviewchange?.({
+      patchset: selectedPatchset,
+      compareWith,
+      commit: changeId,
+    });
   }
 
   /** Walkable entries for the top-bar `< >` commit nav.
@@ -1456,7 +1489,12 @@
       scopedDiff = null;
       selectedCompareCommit = null;
       compareInterdiffFiles = null;
-      onviewchange?.(n, nextCompare, null);
+      onviewchange?.({
+        patchset: n,
+        compareWith: nextCompare,
+        commit: null,
+        scope: null,
+      });
     } catch (e) {
       error = (e as Error).message;
     } finally {
@@ -1509,7 +1547,12 @@
       scopedDiff = null;
       selectedCompareCommit = null;
       compareInterdiffFiles = null;
-      onviewchange?.(selectedPatchset, n, null);
+      onviewchange?.({
+        patchset: selectedPatchset,
+        compareWith: n,
+        commit: null,
+        scope: null,
+      });
     } catch (e) {
       error = (e as Error).message;
     } finally {
@@ -1543,21 +1586,43 @@
     }),
   );
 
-  /** Comment-permalink hash. URLs like `…/r/<repo>/<rid>#c-<commentId>`
-   *  scroll to that comment on load; we also listen for `hashchange`
-   *  so clicking a permalink from elsewhere in the app jumps without a
-   *  reload. The file is looked up so `scrollToComment` knows which
-   *  FileSlot to mount when the comment is currently virtualized away. */
+  /** Hash-routed scroll jumps. Two flavours:
+   *  - `#c-<commentId>` for comment permalinks (Copy-Link button, or
+   *    any inbound permalink from elsewhere in the app).
+   *  - `#file-<encoded path>` for the file-tree's onselect — sets the
+   *    hash so browser back undoes the jump.
+   *  Listens on mount + on hashchange. Other state-changing
+   *  navigation (patchset, compare, scope) routes through the
+   *  `?ps=`/`?cmp=`/`?commit=`/`?scope=` query path + pushState
+   *  in `App.svelte`. */
   function jumpToHash() {
     const hash = window.location.hash;
-    if (!hash.startsWith('#c-')) return;
-    const commentId = decodeURIComponent(hash.slice(3));
-    const comment = [
-      ...current.comments,
-      ...current.drafts.comments,
-    ].find((c) => c.comment_id === commentId);
-    if (!comment) return;
-    void scrollToComment(comment.comment_id, comment.file ?? null);
+    if (hash.startsWith('#c-')) {
+      const commentId = decodeURIComponent(hash.slice(3));
+      const comment = [
+        ...current.comments,
+        ...current.drafts.comments,
+      ].find((c) => c.comment_id === commentId);
+      if (!comment) return;
+      void scrollToComment(comment.comment_id, comment.file ?? null);
+    } else if (hash.startsWith('#file-')) {
+      const path = decodeURIComponent(hash.slice(6));
+      void scrollToFile(path);
+    }
+  }
+
+  /** File-tree click handler: update the URL hash so browser back
+   *  undoes the jump, then let the `hashchange` listener above do
+   *  the scroll. When the user clicks the same file again (hash
+   *  already matches), `hashchange` won't fire, so call
+   *  `scrollToFile` directly. */
+  function goToFile(path: string) {
+    const newHash = '#file-' + encodeURIComponent(path);
+    if (window.location.hash === newHash) {
+      void scrollToFile(path);
+    } else {
+      window.location.hash = newHash;
+    }
   }
   onMount(() => {
     // Wait one frame for FileSlots to register; scrollToComment also
@@ -1975,7 +2040,7 @@
     <FileTree
       files={visibleFiles}
       activePath={activeFilePath}
-      onselect={scrollToFile}
+      onselect={goToFile}
       navTotal={orderedFiles.length}
       navPosition={navFilePosition}
       onprev={fileNavPrev}
