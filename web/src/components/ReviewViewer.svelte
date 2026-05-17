@@ -42,20 +42,26 @@
      *  whether to render the Archived pill. Replaces the in-body header
      *  `<h2>` so the title is visible while the user scrolls. */
     title: { number: number; name: string; archived: boolean } | null;
-    /** Draft session controls. Null when the user has no open drafts.
-     *  `position` is 1-based among `count` drafts (in document order),
-     *  or 0 when the current nav target isn't one of the viewer's
-     *  drafts. The shell renders the prev/next around the count so the
-     *  reader can step between their own pending drafts without
-     *  scanning the comment-bar for them. */
+    /** Draft session controls. Null when the user has no open drafts
+     *  at all (neither draft comments nor draft replies). `count` is
+     *  the combined total — comments + replies — so the user sees a
+     *  non-zero indicator when the session has anything to publish.
+     *
+     *  `nav` is non-null only when there are draft comments to step
+     *  through. Draft replies are anchored inside a comment thread
+     *  and don't have an independent scroll target, so prev/next
+     *  walks comments only. A session with only draft replies still
+     *  surfaces publish/discard but no nav. */
     drafts: {
       count: number;
-      position: number;
       saving: boolean;
       publish: () => Promise<void>;
       discard: () => Promise<void>;
-      prev: () => void;
-      next: () => void;
+      nav: {
+        position: number;
+        prev: () => void;
+        next: () => void;
+      } | null;
     } | null;
     /** Prev / next commit nav. `null` when the review has zero
      *  commits in its revset (nothing to scope to). Position 0 means
@@ -708,8 +714,21 @@
    *  shell renders both header rows from this state — see the
    *  ReviewToolbarState interface for the breakdown. */
   $effect(() => {
+    const draftComments = current.drafts.comments.length;
+    // Only count *written* draft responses — actual replies with a
+    // body. The Resolve / Won't fix / Unresolve buttons also create
+    // draft responses (so they batch atomically with other edits in
+    // the same session) but those fire with body='' and don't
+    // register as "drafts" to the user — the comment just shows as
+    // resolved and the action feels instant. Counting them would
+    // produce surprising "N drafts" when the user thinks they've
+    // drafted nothing. They still ride along on publish whenever
+    // there's at least one written draft to trigger it.
+    const writtenReplies = current.drafts.responses.filter(
+      (r) => r.body.trim().length > 0,
+    ).length;
     const hasDrafts =
-      !!current.drafts.session && current.drafts.comments.length > 0;
+      !!current.drafts.session && draftComments + writtenReplies > 0;
     const hasComments = allComments.length > 0;
     const hiddenCount = hasComments && visibleComments.length === 0
       ? allComments.length
@@ -722,13 +741,18 @@
       },
       drafts: hasDrafts
         ? {
-            count: current.drafts.comments.length,
-            position: navDraftPosition,
+            count: draftComments + writtenReplies,
             saving,
             publish,
             discard,
-            prev: navDraftPrev,
-            next: navDraftNext,
+            nav:
+              draftComments > 0
+                ? {
+                    position: navDraftPosition,
+                    prev: navDraftPrev,
+                    next: navDraftNext,
+                  }
+                : null,
           }
         : null,
       commits:

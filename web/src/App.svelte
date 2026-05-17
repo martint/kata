@@ -312,22 +312,34 @@
       {#if toolbar.drafts}
         {@const drafts = toolbar.drafts}
         <div class="draft-nav" role="group" aria-label="Draft navigation">
-          <button
-            type="button"
-            onclick={drafts.prev}
-            title="Previous draft"
-            aria-label="Previous draft"
-          ><Chevron dir="left" /></button>
-          <span class="draft-count" aria-live="polite">
-            {drafts.position || '–'}/<strong>{drafts.count}</strong>
-            <span class="lbl">draft{drafts.count === 1 ? '' : 's'}</span>
-          </span>
-          <button
-            type="button"
-            onclick={drafts.next}
-            title="Next draft"
-            aria-label="Next draft"
-          ><Chevron dir="right" /></button>
+          {#if drafts.nav}
+            {@const nav = drafts.nav}
+            <button
+              type="button"
+              onclick={nav.prev}
+              title="Previous draft"
+              aria-label="Previous draft"
+            ><Chevron dir="left" /></button>
+            <span class="draft-count" aria-live="polite">
+              {nav.position || '–'}/<strong>{drafts.count}</strong>
+              <span class="lbl">draft{drafts.count === 1 ? '' : 's'}</span>
+            </span>
+            <button
+              type="button"
+              onclick={nav.next}
+              title="Next draft"
+              aria-label="Next draft"
+            ><Chevron dir="right" /></button>
+          {:else}
+            <!-- Sessions with only draft replies (no draft comments)
+                 don't have an independent scroll target to nav
+                 between, but we still show the count + publish so
+                 users aren't stranded. -->
+            <span class="draft-count" aria-live="polite">
+              <strong>{drafts.count}</strong>
+              <span class="lbl">draft{drafts.count === 1 ? '' : 's'}</span>
+            </span>
+          {/if}
         </div>
         <button onclick={drafts.discard} disabled={drafts.saving}>Discard</button>
         <button class="primary" onclick={drafts.publish} disabled={drafts.saving}>
