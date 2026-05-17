@@ -720,6 +720,18 @@
         if (rect.top <= threshold) candidate = f.path;
         else break;
       }
+      // End-of-page rescue: when the page can't scroll any further
+      // (last file is too short to push itself up past the sticky
+      // bar), the loop above stops on the previous file even though
+      // the user is clearly looking at the last one. Force the last
+      // file active when we're at — or within a pixel of — the
+      // bottom. Uses Math.ceil on scrollY to handle fractional
+      // scroll positions some browsers report.
+      const docHeight = document.documentElement.scrollHeight;
+      const viewportBottom = Math.ceil(window.scrollY) + window.innerHeight;
+      if (viewportBottom >= docHeight - 1) {
+        candidate = orderedFiles[orderedFiles.length - 1].path;
+      }
       if (activeFilePath !== candidate) activeFilePath = candidate;
     }
     function onScroll() {
@@ -869,10 +881,7 @@
 
   // If the URL landed with `?scope=<change>` set, kick off the
   // commit_diff fetch on mount so the file panel renders that
-  // commit's diff. `selectCommit` populates both scopedChangeId
-  // and scopedDiff; we don't seed scopedChangeId synchronously
-  // because the file panel would briefly render an empty scoped
-  // view (scopedDiff still null) before the fetch resolves.
+  // commit's diff.
   onMount(() => {
     if (initialScope) void selectCommit(initialScope);
   });
