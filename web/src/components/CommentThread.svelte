@@ -246,19 +246,13 @@
           <em class="muted">(no message)</em>
         {/if}
       </div>
-      {#if c.anchor.kind === 'outdated'}
-        <!-- Open by default for outdated comments: the orphan-threads
-             block in FileDiff has no inline diff to anchor against, so
-             surfacing the original lines is the only way the reader
-             can tell what the comment was about. -->
-        <details class="original" open>
-          <summary>
-            Original lines from PS{c.patchset}
-            {#if c.lines}(lines {c.lines.start}–{c.lines.end}){/if}
-          </summary>
-          <pre>{c.anchor.original_content}</pre>
-        </details>
-      {/if}
+      <!-- For outdated comments, the "added in PS N" jump-button in
+           the header is the way to see the comment in context. We
+           used to render an inline `<details>` snippet of the
+           original lines here, but it was a decontextualized excerpt
+           (no surrounding code, no syntax highlight) right next to a
+           one-click jump that shows the comment in its real
+           surroundings — net noise. Drop it; lean on the jump. -->
       {#if replies.length > 0}
         <ul class="replies">
           {#each replies as r (r.response_id)}
@@ -556,20 +550,6 @@
 
   button.badge.ps-jump:hover {
     border-color: var(--link);
-  }
-
-  .original {
-    margin-top: 6px;
-    font-size: 12px;
-    background: var(--bg-panel);
-    border-radius: 4px;
-    padding: 4px 8px;
-  }
-
-  .original pre {
-    margin: 4px 0 0;
-    font-size: 11px;
-    white-space: pre-wrap;
   }
 
   .replies {
