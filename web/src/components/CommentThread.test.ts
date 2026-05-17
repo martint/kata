@@ -5,7 +5,7 @@
 //! through `@testing-library/svelte` so a future refactor of the
 //! template that breaks any of these stays caught.
 
-import { render, screen, within } from '@testing-library/svelte';
+import { fireEvent, render, screen, within } from '@testing-library/svelte';
 import { describe, expect, test } from 'vitest';
 import CommentThread from './CommentThread.svelte';
 import type { CommentView, ResponseView } from '../lib/types';
@@ -69,11 +69,19 @@ function renderThread(props: Partial<Parameters<typeof CommentThread>[0]> = {}) 
 }
 
 describe('CommentThread', () => {
-  test('renders an open comment with its author, flag, and body', () => {
+  test('renders an open comment with its author and body', () => {
     renderThread();
     expect(screen.getByText('reviewer@example.com')).toBeTruthy();
-    expect(screen.getByText('must-do')).toBeTruthy();
     expect(screen.getByText('Please address.')).toBeTruthy();
+    // The default flag (`must-do`) is suppressed to keep the header
+    // uncluttered — most comments are must-do, so the chip would
+    // appear on every row.
+    expect(screen.queryByText('must-do')).toBeNull();
+  });
+
+  test('shows the flag chip when it differs from the default', () => {
+    renderThread({ comments: [comment({ flag: 'question' })] });
+    expect(screen.getByText('question')).toBeTruthy();
   });
 
   test('omits the resolved-state badge while the comment is still open', () => {
@@ -82,7 +90,7 @@ describe('CommentThread', () => {
     expect(screen.queryByText("won't fix")).toBeNull();
   });
 
-  test('collapses a resolved comment and surfaces the resolution badge', () => {
+  test('collapses a resolved comment; the resolution badge is hidden until expanded', async () => {
     const c = comment({ comment_id: 'c1' });
     const r = response({
       response_id: 'r-1',
@@ -90,12 +98,19 @@ describe('CommentThread', () => {
       action: 'resolve',
     });
     const { container } = renderThread({ comments: [c], responses: [r] });
-    // Badge present.
-    expect(screen.getByText('resolved')).toBeTruthy();
-    // Body is hidden under the collapsed wrapper.
+    // The collapse itself signals the resolution; no badge in the
+    // collapsed header (would be redundant noise).
+    expect(screen.queryByText('resolved')).toBeNull();
     const li = container.querySelector('.comment')!;
     expect(li.classList.contains('collapsed')).toBe(true);
     expect(li.querySelector('.body')).toBeNull();
+    // Clicking the fold-toggle expands and the badge then renders
+    // so the reader can see what state they expanded into. Target
+    // the badge specifically (the reply row also contains the word
+    // "resolved" via its action label).
+    const fold = li.querySelector('button.fold-toggle') as HTMLButtonElement;
+    await fireEvent.click(fold);
+    expect(li.querySelector('.badge.resolution-resolved')).not.toBeNull();
   });
 
   test('flags a comment with new replies since the viewer last visited', () => {
@@ -187,12 +202,11 @@ describe('CommentThread', () => {
     expect(screen.getByText('moved to 5-7')).toBeTruthy();
   });
 
-  test("renders the resolution badge for a won't-fix-marked thread", () => {
+  test("collapses a won't-fix-marked thread; resolution badge appears on expand", async () => {
     // A wont-fix response is one of the two paths that collapses the
-    // thread (`resolutionFor` returns `'wont-fix'`). The badge text is
-    // the resolution state itself, not the human-readable action
-    // verb — the latter only appears on the response row, which the
-    // collapsed thread doesn't render.
+    // thread (`resolutionFor` returns `'wont-fix'`). Same as the
+    // resolved case: the badge is hidden in the collapsed state
+    // (collapse itself is the visual cue) and rendered on expand.
     const c = comment({ comment_id: 'c1' });
     const r = response({
       in_reply_to: 'c1',
@@ -201,9 +215,13 @@ describe('CommentThread', () => {
       body: 'Not for this round.',
     });
     const { container } = renderThread({ comments: [c], responses: [r] });
-    expect(screen.getByText('wont-fix')).toBeTruthy();
     const li = container.querySelector('.comment')!;
+    // No `.resolution-wont-fix` badge while collapsed.
+    expect(li.querySelector('.badge.resolution-wont-fix')).toBeNull();
     expect(li.classList.contains('collapsed')).toBe(true);
+    const fold = li.querySelector('button.fold-toggle') as HTMLButtonElement;
+    await fireEvent.click(fold);
+    expect(li.querySelector('.badge.resolution-wont-fix')).not.toBeNull();
   });
 
   test('shows replies for an open comment with a comment-action response', () => {

@@ -186,10 +186,23 @@
           >{collapsed ? '▸' : '▾'}</button>
         {/if}
         <strong>{c.author}</strong>
-        <span class="flag flag-{c.flag}">{c.flag}</span>
-        {#if c.draft}<span class="badge draft">draft</span>{/if}
+        <!-- Flag chip suppressed when it equals the default
+             (`must-do`): most comments are must-do, so showing it
+             on every row is noise. Suggestion / question still
+             render their chip. -->
+        {#if c.flag !== 'must-do'}
+          <span class="flag flag-{c.flag}">{c.flag}</span>
+        {/if}
+        <!-- No explicit `draft` chip: the `.comment.draft` row tag
+             already styles the whole row with the attention border
+             + background, which reads as "draft" at a glance. -->
         {#if label}<span class="badge anchor-{c.anchor.kind}">{label}</span>{/if}
-        {#if state !== 'open'}
+        <!-- Resolution chip suppressed while the row is collapsed
+             (the collapse itself IS the visual signal that the
+             thread is resolved/wont-fix). Expanded resolved rows
+             keep the chip so the reader can see what state they
+             clicked into. -->
+        {#if state !== 'open' && !collapsed}
           <span class="badge resolution-{state}">{state}</span>
         {/if}
         {#if unread}
@@ -253,7 +266,10 @@
               <header>
                 <strong>{r.author}</strong>
                 <span class="action">{actionLabel(r.action)}</span>
-                {#if r.draft}<span class="badge draft">draft</span>{/if}
+                <!-- No explicit `draft` chip: the `.reply.draft`
+                     row tag now carries the same attention styling
+                     the comment row does, which reads as "draft"
+                     without a separate badge. -->
                 <span class="time">{new Date(r.created_at).toLocaleString()}</span>
                 {#if r.body.trim().length > 0}
                   <button
@@ -571,7 +587,14 @@
   }
 
   .reply.draft {
-    color: var(--text-muted);
+    /* The "draft" chip used to carry this signal — now the row
+     * styling does. Background + left accent are enough to read as
+     * "draft" without screaming. */
+    background: var(--attention-bg);
+    border-left: 3px solid var(--attention-border);
+    padding-left: 8px;
+    margin-left: -8px;
+    border-radius: 4px;
   }
 
   .reply .action {
