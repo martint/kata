@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use kata_core::{Author, CommentId, RepoId, ResponseId, ReviewId, SessionId};
+use kata_core::{AnnotationId, Author, CommentId, RepoId, ResponseId, ReviewId, SessionId};
 use sha2::{Digest, Sha256};
 use uuid::{NoContext, Timestamp, Uuid};
 
@@ -59,6 +59,10 @@ pub fn new_comment_id() -> CommentId {
 
 pub fn new_response_id() -> ResponseId {
     ResponseId::new(uuid_v7().to_string())
+}
+
+pub fn new_annotation_id() -> AnnotationId {
+    AnnotationId::new(uuid_v7().to_string())
 }
 
 /// New opaque review identifier (UUID v7). The user-facing slug is
@@ -121,6 +125,10 @@ pub(crate) fn ensure_comment_id(id: &CommentId) -> Result<()> {
 
 pub(crate) fn ensure_response_id(id: &ResponseId) -> Result<()> {
     ensure_path_safe("response_id", id.as_str())
+}
+
+pub(crate) fn ensure_annotation_id(id: &AnnotationId) -> Result<()> {
+    ensure_path_safe("annotation_id", id.as_str())
 }
 
 pub(crate) fn ensure_repo_id(id: &RepoId) -> Result<()> {

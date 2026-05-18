@@ -4,8 +4,8 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use kata_core::{
-    Author, Comment, CommentId, OpId, RepoId, RepoManifest, Response, ResponseId, ReviewId,
-    ReviewManifest, Session, SessionId,
+    Annotation, AnnotationId, Author, Comment, CommentId, OpId, RepoId, RepoManifest, Response,
+    ResponseId, ReviewId, ReviewManifest, Session, SessionId,
 };
 
 use crate::error::Result;
@@ -143,6 +143,32 @@ pub trait Storage: Send + Sync {
         repo: &RepoId,
         review: &ReviewId,
     ) -> Result<Vec<Response>>;
+
+    // ---- annotations ----------------------------------------------------
+
+    /// All annotations attached to `review`. Annotations skip the
+    /// session/draft flow entirely (the creator authors them
+    /// individually and they go live on submit), so there's no
+    /// "draft annotations" counterpart — every annotation visible to
+    /// the storage layer is visible to readers.
+    async fn list_annotations(
+        &self,
+        repo: &RepoId,
+        review: &ReviewId,
+    ) -> Result<Vec<Annotation>>;
+
+    /// Insert or replace the annotation by id. Caller is responsible
+    /// for the creator-only permission check before invoking.
+    async fn upsert_annotation(&self, repo: &RepoId, annotation: &Annotation) -> Result<()>;
+
+    /// Delete the annotation. Caller is responsible for the
+    /// creator-only permission check before invoking.
+    async fn delete_annotation(
+        &self,
+        repo: &RepoId,
+        review: &ReviewId,
+        annotation: &AnnotationId,
+    ) -> Result<()>;
 
     /// Everything `author` can still edit in `review`: their open session
     /// (if any) plus its draft comments and responses.

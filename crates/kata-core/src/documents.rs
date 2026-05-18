@@ -6,8 +6,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{
-    Author, ChangeId, CommentId, CommitId, LineRange, RepoId, ResponseId, ReviewId, RevSet,
-    SessionId, Side,
+    AnnotationId, Author, ChangeId, CommentId, CommitId, LineRange, RepoId, ResponseId, ReviewId,
+    RevSet, SessionId, Side,
 };
 
 pub const SCHEMA_VERSION: u32 = 1;
@@ -95,6 +95,59 @@ pub struct Comment {
 
     /// Markdown body. Storage backends pull this out of the TOML
     /// frontmatter at write time and append it after the closing fence.
+    #[serde(default)]
+    pub body: String,
+}
+
+/// An author-written annotation anchored to a region of code.
+///
+/// Annotations are the review *creator*'s way of giving reviewers extra
+/// context — "this looks weird because legacy X", "the alternative
+/// would be Y but it didn't work because Z" — without polluting the
+/// review-comment thread. They look like comments at the anchor site
+/// but they are not part of the review conversation:
+///
+/// * **Author-only**: only `manifest.created_by` can create, edit, or
+///   delete annotations. Reviewers can read them but cannot reply.
+/// * **One-way**: no threading, no responses, no resolution state.
+/// * **No session**: published immediately on submit; no draft-batch
+///   flow.
+/// * **No flag**: severity makes no sense for context notes.
+///
+/// Anchor handling matches `Comment`: stored against the
+/// `(anchor_change_id, anchor_commit_id, file, side, lines)` tuple
+/// and re-projected onto the current patchset via `resolve_anchor`
+/// so the annotation follows the code as it moves.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Annotation {
+    pub schema_version: u32,
+    pub annotation_id: AnnotationId,
+    pub review_id: ReviewId,
+    pub author: Author,
+    pub created_at: DateTime<Utc>,
+    /// Last edit timestamp. Equals `created_at` for never-edited
+    /// annotations; we don't carry per-edit history.
+    pub updated_at: DateTime<Utc>,
+    /// Patchset current when the annotation was first written. Used
+    /// for scoping (annotations are visible in their own patchset and
+    /// later ones) and for revival when the anchor moves.
+    pub patchset: u32,
+    pub anchor_change_id: ChangeId,
+    pub anchor_commit_id: CommitId,
+
+    /// Omitted for review-wide annotations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+
+    /// Required when both `file` and `lines` are set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub side: Option<Side>,
+
+    /// Omitted for whole-file annotations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lines: Option<LineRange>,
+
+    /// Markdown body.
     #[serde(default)]
     pub body: String,
 }

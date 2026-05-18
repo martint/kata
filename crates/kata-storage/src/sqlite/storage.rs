@@ -20,16 +20,16 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use chrono::Utc;
 use kata_core::{
-    Author, ChangeId, Comment, CommentId, CommitId, LineRange, OpId, RepoId, RepoManifest,
-    Response, ResponseId, ReviewId, ReviewManifest, RevSet, SCHEMA_VERSION, Session, SessionId,
-    SessionStatus,
+    Annotation, AnnotationId, Author, ChangeId, Comment, CommentId, CommitId, LineRange, OpId,
+    RepoId, RepoManifest, Response, ResponseId, ReviewId, ReviewManifest, RevSet, SCHEMA_VERSION,
+    Session, SessionId, SessionStatus,
 };
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 
 use crate::error::{Error, Result};
 use crate::ids::{
-    ensure_author, ensure_comment_id, ensure_repo_id, ensure_response_id, ensure_review_id,
-    ensure_session_id, new_session_id,
+    ensure_annotation_id, ensure_author, ensure_comment_id, ensure_repo_id, ensure_response_id,
+    ensure_review_id, ensure_session_id, new_session_id,
 };
 use crate::sqlite::migrate;
 use crate::sqlite::serde_enums::{
@@ -930,6 +930,103 @@ impl Storage for SqliteStorage {
         .await
     }
 
+    async fn list_annotations(
+        &self,
+        repo: &RepoId,
+        review: &ReviewId,
+    ) -> Result<Vec<Annotation>> {
+        ensure_repo_id(repo)?;
+        ensure_review_id(review)?;
+        let repo_str = repo.as_str().to_owned();
+        let review_str = review.as_str().to_owned();
+        self.with_conn(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT annotation_id, review_id, schema_version, author, created_at, updated_at,
+                        patchset, anchor_change_id, anchor_commit_id, file, side, line_start,
+                        line_end, body
+                 FROM annotations
+                 WHERE repo_id = ?1 AND review_id = ?2
+                 ORDER BY created_at",
+            )?;
+            let rows = stmt.query_map(params![repo_str, review_str], annotation_from_row)?;
+            let mut out = Vec::new();
+            for r in rows {
+                out.push(r.map_err(Error::from)?);
+            }
+            Ok(out)
+        })
+        .await
+    }
+
+    async fn upsert_annotation(&self, repo: &RepoId, annotation: &Annotation) -> Result<()> {
+        ensure_repo_id(repo)?;
+        ensure_review_id(&annotation.review_id)?;
+        ensure_annotation_id(&annotation.annotation_id)?;
+        let repo_str = repo.as_str().to_owned();
+        let annotation = annotation.clone();
+        self.with_conn(move |conn| {
+            let (line_start, line_end) = match &annotation.lines {
+                Some(LineRange { start, end }) => (Some(*start), Some(*end)),
+                None => (None, None),
+            };
+            conn.execute(
+                "INSERT INTO annotations
+                    (annotation_id, repo_id, review_id, schema_version, author, created_at,
+                     updated_at, patchset, anchor_change_id, anchor_commit_id, file, side,
+                     line_start, line_end, body)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                 ON CONFLICT(annotation_id) DO UPDATE SET
+                    schema_version = excluded.schema_version,
+                    updated_at = excluded.updated_at,
+                    patchset = excluded.patchset,
+                    anchor_change_id = excluded.anchor_change_id,
+                    anchor_commit_id = excluded.anchor_commit_id,
+                    file = excluded.file,
+                    side = excluded.side,
+                    line_start = excluded.line_start,
+                    line_end = excluded.line_end,
+                    body = excluded.body",
+                params![
+                    annotation.annotation_id.as_str(),
+                    repo_str,
+                    annotation.review_id.as_str(),
+                    annotation.schema_version,
+                    annotation.author.as_str(),
+                    annotation.created_at,
+                    annotation.updated_at,
+                    annotation.patchset,
+                    annotation.anchor_change_id.as_str(),
+                    annotation.anchor_commit_id.as_str(),
+                    annotation.file,
+                    annotation.side.map(side_to_str),
+                    line_start,
+                    line_end,
+                    annotation.body,
+                ],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn delete_annotation(
+        &self,
+        _repo: &RepoId,
+        _review: &ReviewId,
+        annotation: &AnnotationId,
+    ) -> Result<()> {
+        ensure_annotation_id(annotation)?;
+        let id_str = annotation.as_str().to_owned();
+        self.with_conn(move |conn| {
+            conn.execute(
+                "DELETE FROM annotations WHERE annotation_id = ?1",
+                params![id_str],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
     async fn list_drafts_for(
         &self,
         repo: &RepoId,
@@ -1132,6 +1229,41 @@ fn comment_from_row(row: &Row<'_>) -> rusqlite::Result<Comment> {
         review_wide: review_wide != 0,
         flag,
         body: row.get(15)?,
+    })
+}
+
+fn annotation_from_row(row: &Row<'_>) -> rusqlite::Result<Annotation> {
+    let side: Option<String> = row.get(10)?;
+    let line_start: Option<u32> = row.get(11)?;
+    let line_end: Option<u32> = row.get(12)?;
+    let side = match side {
+        Some(s) => Some(side_from_str(&s).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(
+                10,
+                rusqlite::types::Type::Text,
+                Box::new(e),
+            )
+        })?),
+        None => None,
+    };
+    let lines = match (line_start, line_end) {
+        (Some(s), Some(e)) => Some(LineRange::new(s, e)),
+        _ => None,
+    };
+    Ok(Annotation {
+        annotation_id: AnnotationId::new(row.get::<_, String>(0)?),
+        review_id: ReviewId::new(row.get::<_, String>(1)?),
+        schema_version: row.get(2)?,
+        author: Author::new(row.get::<_, String>(3)?),
+        created_at: row.get(4)?,
+        updated_at: row.get(5)?,
+        patchset: row.get(6)?,
+        anchor_change_id: ChangeId::new(row.get::<_, String>(7)?),
+        anchor_commit_id: CommitId::new(row.get::<_, String>(8)?),
+        file: row.get(9)?,
+        side,
+        lines,
+        body: row.get(13)?,
     })
 }
 

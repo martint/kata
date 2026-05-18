@@ -51,6 +51,7 @@ string_newtype!(ReviewId);
 string_newtype!(SessionId);
 string_newtype!(CommentId);
 string_newtype!(ResponseId);
+string_newtype!(AnnotationId);
 string_newtype!(Author);
 string_newtype!(OpId);
 
