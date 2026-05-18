@@ -1,11 +1,12 @@
 use std::sync::Arc;
 
 use kata_core::{
-    Author, ChangeId, CommentId, CommitId, Flag, LineRange, RepoId, ResolutionAction,
-    ReviewId, RevSet, SessionId, Side,
+    AnnotationId, Author, ChangeId, CommentId, CommitId, Flag, LineRange, RepoId,
+    ResolutionAction, ReviewId, RevSet, SessionId, Side,
 };
 use kata_service::{
-    CreateReviewParams, DraftCommentInput, DraftResponseInput, ReviewService, ServiceError,
+    AnnotationInput, CreateReviewParams, DraftCommentInput, DraftResponseInput, ReviewService,
+    ServiceError,
 };
 use rmcp::{
     ErrorData as McpError, ServerHandler,
@@ -374,6 +375,148 @@ impl ReviewMcp {
         Ok(text_json(&comment))
     }
 
+    // ---- annotations ---------------------------------------------------
+    //
+    // Author-only context notes. Only the review's creator (the agent's
+    // identity must equal the manifest's `created_by`) can write — the
+    // service layer enforces this, so attempts from other identities
+    // fail with BadRequest. No session/draft cycle and no flag.
+
+    #[tool(
+        description = "Attach a line-anchored author note (annotation) to a region of code. Annotations are one-way context for reviewers — no replies, no resolve state. Only the review's creator may author them. Publishes immediately; there's no draft cycle."
+    )]
+    async fn add_line_annotation(
+        &self,
+        Parameters(args): Parameters<AddLineAnnotationArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let AddLineAnnotationArgs {
+            repo,
+            review_id,
+            anchor_change_id,
+            anchor_commit_id,
+            file,
+            side,
+            lines,
+            body,
+        } = args;
+        let repo = self.resolve(&repo)?;
+        let input = AnnotationInput {
+            anchor_change_id,
+            anchor_commit_id,
+            file: Some(file),
+            side: Some(side),
+            lines: Some(lines),
+            body: body.unwrap_or_default(),
+        };
+        let annotation = self
+            .service
+            .upsert_annotation(&repo, &review_id, &self.author, None, input)
+            .await
+            .map_err(into_mcp)?;
+        Ok(text_json(&annotation))
+    }
+
+    #[tool(
+        description = "Attach a whole-file author note (annotation). Same author-only / publishes-immediately semantics as add_line_annotation."
+    )]
+    async fn add_file_annotation(
+        &self,
+        Parameters(args): Parameters<AddFileAnnotationArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let AddFileAnnotationArgs {
+            repo,
+            review_id,
+            anchor_change_id,
+            anchor_commit_id,
+            file,
+            body,
+        } = args;
+        let repo = self.resolve(&repo)?;
+        let input = AnnotationInput {
+            anchor_change_id,
+            anchor_commit_id,
+            file: Some(file),
+            side: None,
+            lines: None,
+            body: body.unwrap_or_default(),
+        };
+        let annotation = self
+            .service
+            .upsert_annotation(&repo, &review_id, &self.author, None, input)
+            .await
+            .map_err(into_mcp)?;
+        Ok(text_json(&annotation))
+    }
+
+    #[tool(
+        description = "Edit the body of an existing annotation. Anchor and id are kept; the new body replaces the old. Only the review's creator may edit."
+    )]
+    async fn update_annotation(
+        &self,
+        Parameters(args): Parameters<UpdateAnnotationArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let UpdateAnnotationArgs {
+            repo,
+            review_id,
+            annotation_id,
+            body,
+        } = args;
+        let repo = self.resolve(&repo)?;
+        // Look up the existing annotation so we can re-supply its anchor
+        // unchanged (the service's upsert needs a full input, not a
+        // patch). Open-review is the cheap path that reuses
+        // `list_annotations` underneath.
+        let view = self
+            .service
+            .open_review(&repo, &review_id, &self.author, None, None)
+            .await
+            .map_err(into_mcp)?;
+        let existing = view
+            .annotations
+            .iter()
+            .find(|a| a.annotation.annotation_id == annotation_id)
+            .ok_or_else(|| {
+                McpError::invalid_params(
+                    format!("annotation {annotation_id} not found in review {review_id}"),
+                    None,
+                )
+            })?;
+        let input = AnnotationInput {
+            anchor_change_id: existing.annotation.anchor_change_id.clone(),
+            anchor_commit_id: existing.annotation.anchor_commit_id.clone(),
+            file: existing.annotation.file.clone(),
+            side: existing.annotation.side,
+            lines: existing.annotation.lines,
+            body: body.unwrap_or_default(),
+        };
+        let annotation = self
+            .service
+            .upsert_annotation(&repo, &review_id, &self.author, Some(annotation_id), input)
+            .await
+            .map_err(into_mcp)?;
+        Ok(text_json(&annotation))
+    }
+
+    #[tool(
+        description = "Delete an annotation. Only the review's creator may delete."
+    )]
+    async fn delete_annotation(
+        &self,
+        Parameters(args): Parameters<DeleteAnnotationArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let DeleteAnnotationArgs {
+            repo,
+            review_id,
+            annotation_id,
+        } = args;
+        let repo = self.resolve(&repo)?;
+        self.service
+            .delete_annotation(&repo, &review_id, &self.author, &annotation_id)
+            .await
+            .map_err(into_mcp)?;
+        Ok(ok_text("deleted"))
+    }
+
     #[tool(
         description = "Reply to a comment. `action` controls resolution: comment (no state change), resolve, unresolve, wont-fix, un-wont-fix. Auto-starts a session."
     )]
@@ -628,6 +771,46 @@ pub struct RespondArgs {
     pub action: ResolutionAction,
     #[serde(default)]
     pub body: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct AddLineAnnotationArgs {
+    pub repo: String,
+    pub review_id: ReviewId,
+    pub anchor_change_id: ChangeId,
+    pub anchor_commit_id: CommitId,
+    pub file: String,
+    pub side: Side,
+    pub lines: LineRange,
+    #[serde(default)]
+    pub body: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct AddFileAnnotationArgs {
+    pub repo: String,
+    pub review_id: ReviewId,
+    pub anchor_change_id: ChangeId,
+    pub anchor_commit_id: CommitId,
+    pub file: String,
+    #[serde(default)]
+    pub body: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct UpdateAnnotationArgs {
+    pub repo: String,
+    pub review_id: ReviewId,
+    pub annotation_id: AnnotationId,
+    #[serde(default)]
+    pub body: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct DeleteAnnotationArgs {
+    pub repo: String,
+    pub review_id: ReviewId,
+    pub annotation_id: AnnotationId,
 }
 
 // ---- helpers -----------------------------------------------------------

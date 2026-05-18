@@ -1,6 +1,6 @@
 ---
 name: kata-review
-description: Use when reviewing code through the Kata MCP server — list reviews, open one, read the diff, leave draft comments anchored to lines/files/the whole review, then publish the batch.
+description: Use when working with code reviews through the Kata MCP server — as a reviewer (read diff, leave draft comments, publish) or as the review's author (attach context annotations for reviewers).
 ---
 
 # Kata code review
@@ -48,6 +48,42 @@ MCP server can front multiple repositories; every tool call takes a
 5. **Publish.** `publish_session` with the `session_id` from
    `drafts.session` makes the whole batch visible to the author. Use
    `discard_session` to throw the batch away instead.
+
+## Author annotations (creator-only)
+
+Annotations are short context notes the **review's author** attaches
+to specific code regions for the benefit of reviewers — "this looks
+weird because we already tried Y", "yes the duplication is on
+purpose, see ticket X". They're separate from review comments:
+
+- One-way: reviewers read them but can't reply. (If a reviewer wants
+  to discuss what an annotation says, they file a regular comment.)
+- No severity / flag — annotations are context, not requests.
+- No draft session — `add_*_annotation` publishes immediately.
+- Creator-only: only the identity matching `manifest.created_by` may
+  write. Non-creators get `BadRequest`.
+
+Tools:
+
+- `add_line_annotation` — anchor a note to a specific line range on
+  one side, same anchor shape as `draft_line_comment`.
+- `add_file_annotation` — note that applies to a whole file.
+- `update_annotation` — change the body of an existing annotation
+  (anchor stays put; pass `annotation_id` + new `body`).
+- `delete_annotation` — remove an annotation.
+
+Annotations are surfaced inline in `get_review` under
+`annotations: []` (omitted when the review has none). Each entry
+flattens an `Annotation` with an `anchor` field that mirrors
+comments' Valid/Moved/Drifted/Outdated revival so an annotation
+stays attached to its code across patchsets.
+
+When to use which:
+
+- You're the **reviewer**, and you have a critique or a question →
+  `draft_*_comment`.
+- You're the **author**, and you want to pre-explain something that
+  would otherwise look wrong → `add_*_annotation`.
 
 ## Recording a new round
 
