@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { getContext, tick } from 'svelte';
+  import { getContext, setContext, tick } from 'svelte';
   import { copyText } from '../lib/clipboard';
   import { api } from '../lib/api';
   import type {
@@ -22,7 +22,7 @@
   } from '../lib/highlight.svelte';
   import { isThreadFolded } from '../lib/resolution';
   import { diffSelectionFor, type DiffSelection } from '../lib/diffSelection';
-  import { plainTextForSelection } from '../lib/diffCopy';
+  import { buildCopyText } from '../lib/diffCopy';
   import { installSelectionClamp } from '../lib/selectionClamp';
   import Bubble from './Bubble.svelte';
   import Chevron from './Chevron.svelte';
@@ -315,6 +315,24 @@
       const t = e.target as HTMLElement | null;
       if (t?.closest('.selection-popup')) return;
       selectionPopup = null;
+      // Drop the overlay's "last valid selection" cache before
+      // collapsing the document selection. Without this the cache
+      // keeps the overlay painted: the click sets `dragSelecting =
+      // true` a few lines below (any `.content` mousedown might be
+      // the start of a new drag), and the selectionchange handler
+      // would then fall back to `lastValidSel` instead of clearing
+      // the overlay.
+      lastValidSel = null;
+      // Click outside the popup clears any document selection. The
+      // browser already collapses the selection on most clicks (its
+      // default mousedown behaviour), but interactive targets that
+      // `preventDefault` mousedown (chevrons, gutter buttons) would
+      // otherwise leave the prior selection painted. Explicitly
+      // clearing here makes "click anywhere outside the highlight"
+      // a consistent way to dismiss the selection.
+      if (typeof window !== 'undefined') {
+        window.getSelection()?.removeAllRanges();
+      }
       // Activate the drag-selecting flag only when the drag starts
       // inside a content cell — that's the only place a text-select
       // drag is meaningful. Gutter / thread / separator clicks
@@ -322,6 +340,12 @@
       // shouldn't hide there.
       if (t?.closest('.content')) {
         dragSelecting = true;
+        // Warm the file-content cache for both sides so a multi-hunk
+        // selection that crosses an inter-hunk gap has the underlying
+        // source available by the time the user copies. Both sides
+        // because the drag side isn't determined until mouseup.
+        void ensureFileContent('tip');
+        void ensureFileContent('base');
       }
     }
     document.addEventListener('mouseup', onMouseUp);
@@ -344,45 +368,333 @@
     return installSelectionClamp(hunksWrapperEl);
   });
 
-  /** Rows we've painted `.selected` onto in response to a text drag-
-   *  select. Tracked so we can clean them up on the next update. */
-  let textSelectedRows: HTMLElement[] = [];
-  /** Apply the `.selected` row tint to EVERY row touched by an active
-   *  text selection — fills the inter-line gap on multi-line drags
-   *  and gives partial first/last lines the same left-stripe gutter
-   *  marker that fully-selected lines get. The character-precise
-   *  range still shows via `::selection` painted on top of the row
-   *  tint (different intensity = tiered visual, see the CSS rule
-   *  below). */
+  /** Precise selection-paint overlays for the current text drag.
+   *  Each rect covers one selected line's selected character range
+   *  (computed via `Range.getBoundingClientRect`), with its height
+   *  extended to meet the next rect's top so the inter-line gap is
+   *  filled. Positioned in `hunksWrapperEl`-relative coords so the
+   *  overlay layer scrolls / re-flows together with the diff. */
+  let selectionOverlays: { top: number; left: number; width: number; height: number }[] = $state([]);
+
+  /** Single shared implementation of the "tag every cell in a line
+   *  range, then bridge inter-hunk separators between the topmost
+   *  and bottommost cell" dance. Each paint path gets its own
+   *  instance with closure-scoped tracking arrays, so cleanup
+   *  doesn't trample another path's work.
+   *
+   *  - `cellClass`: row class to add to every matching `[data-side]
+   *    [data-line]` cell. `null` skips the per-cell paint (used by
+   *    the published-comments path — HunkLines already paints
+   *    `.commented` on those cells; we only want the inter-hunk
+   *    bridge).
+   *  - `bridgeClass`: class added to inter-hunk separators inside
+   *    the painted range. Distinct classes (`drag-bridge` for the
+   *    transient cyan stripe, `comment-bridge` for the persistent
+   *    blue published-comment stripe) so the two CSS rules can use
+   *    their own color + width, and so the paint paths can't step
+   *    on each other's separator state.
+   *
+   *  The bridge `--bridge-offset` follows the same gutter pick the
+   *  composer overlay uses — left gutter for base / unified, right
+   *  gutter for SBS tip — so the stripe lands in the same column
+   *  as the inset box-shadow stripe on the cells. */
+  function makeStripePaint(cellClass: string | null, bridgeClass: string) {
+    let cells: HTMLElement[] = [];
+    let bridges: HTMLElement[] = [];
+    return {
+      clear() {
+        if (cellClass !== null)
+          for (const c of cells) c.classList.remove(cellClass);
+        for (const b of bridges) {
+          b.classList.remove(bridgeClass);
+          b.style.removeProperty('--bridge-offset');
+        }
+        cells = [];
+        bridges = [];
+      },
+      paint(side: 'base' | 'tip', startLine: number, endLine: number) {
+        if (!hunksWrapperEl) return;
+        const wrapper = hunksWrapperEl;
+        // Track the topmost / bottommost matching cell across this
+        // call. For multi-call patterns (one paint() per published
+        // comment, say) each call extends `cells` so the bridge
+        // computed below covers only what *this* call painted.
+        const startIdx = cells.length;
+        for (let ln = startLine; ln <= endLine; ln++) {
+          for (const cell of wrapper.querySelectorAll<HTMLElement>(
+            `[data-side="${side}"][data-line="${ln}"]`,
+          )) {
+            if (cellClass !== null) cell.classList.add(cellClass);
+            cells.push(cell);
+          }
+        }
+        if (cells.length === startIdx) return;
+        const firstRect = cells[startIdx].getBoundingClientRect();
+        const lastRect = cells[cells.length - 1].getBoundingClientRect();
+        const bridgeVar =
+          sideBySide && side === 'tip'
+            ? 'var(--measured-gutter-2)'
+            : 'var(--measured-gutter)';
+        for (const sep of wrapper.querySelectorAll<HTMLElement>(
+          '.hunk-gap, .expand-row',
+        )) {
+          const r = sep.getBoundingClientRect();
+          if (r.top >= firstRect.top && r.bottom <= lastRect.bottom) {
+            sep.style.setProperty('--bridge-offset', bridgeVar);
+            sep.classList.add(bridgeClass);
+            bridges.push(sep);
+          }
+        }
+      },
+    };
+  }
+  /** Active text-selection / column-range composer path. */
+  const overlayPaint = makeStripePaint('text-selection-stripe', 'drag-bridge');
+  /** Gutter drag path (lifted to file level via `lineDrag` context
+   *  so the highlight extends across hunks the drag traverses). */
+  const gutterPaint = makeStripePaint('selected', 'drag-bridge');
+  /** Whole-line composer path (line-range comment opened from a
+   *  gutter drag — no `columns`). */
+  const composerPaint = makeStripePaint('selected', 'drag-bridge');
+  /** Published whole-line comments. Cells already carry `.commented`
+   *  via HunkLines; this instance only contributes the inter-hunk
+   *  bridge so a multi-hunk posted comment's blue gutter stripe
+   *  reads as one continuous rule. */
+  const commentedPaint = makeStripePaint(null, 'comment-bridge');
+  /** Last `DiffSelection` that resolved successfully inside this
+   *  file's wrapper. Re-used while a drag is in progress but the
+   *  selection has transiently extended into a non-content area
+   *  (mouse on an inter-hunk separator) or into a different file
+   *  (mouse on another FileDiff's hunks). Without this cache the
+   *  overlay would flicker off whenever the cursor passes over
+   *  unselectable territory and the user would lose sight of what
+   *  they've selected mid-drag. Cleared when the drag ends or when
+   *  a fresh valid selection arrives. */
+  let lastValidSel: ReturnType<typeof diffSelectionFor> = null;
   $effect(() => {
     if (!hunksWrapperEl) return;
-    let lastKey = '';
-    function update() {
-      if (!hunksWrapperEl) return;
-      const sel = diffSelectionFor(hunksWrapperEl);
-      const key = sel ? `${sel.side}:${sel.startLine}-${sel.endLine}` : '';
-      if (key === lastKey) return;
-      lastKey = key;
-      for (const el of textSelectedRows) el.classList.remove('selected');
-      textSelectedRows = [];
-      if (!sel) return;
-      for (let ln = sel.startLine; ln <= sel.endLine; ln++) {
-        const matches = hunksWrapperEl.querySelectorAll(
-          `[data-side="${sel.side}"][data-line="${ln}"]`,
-        );
-        for (const el of matches) {
-          (el as HTMLElement).classList.add('selected');
-          textSelectedRows.push(el as HTMLElement);
+    // Read `composing` and `comments` so the effect re-runs when
+    // the composer opens / closes or when published comments
+    // change. Without this dep the listener-only path wouldn't
+    // re-evaluate on composer state changes or on a fresh draft
+    // landing — it only fires on `selectionchange`.
+    void composing;
+    void comments;
+    // Re-run when the user expands / collapses inter-hunk context.
+    // Newly revealed lines need their own overlay rects (the
+    // previous render's gap-fill stretched the rect for the line
+    // before the gap to bridge it visually), and lines that go
+    // back into a gap need their rects dropped. Same reason for
+    // the file-header toggles: `wholeFile` swaps between hunks-only
+    // and whole-file rendering (every line gets a cell), and
+    // `collapsed` removes the hunks entirely.
+    void expansions;
+    void wholeFile;
+    void collapsed;
+    /** Compute the per-line overlay rectangles for one (side, lines,
+     *  cols) range, with the inter-line gap filled by stretching
+     *  each rect's bottom to meet the next. Returns an empty array
+     *  if no cells in this file match the range. The per-line
+     *  gutter stripe + inter-hunk bridge live in `overlayPaint`
+     *  (called separately by the caller for the range that should
+     *  get the row-level cue). */
+    function rectsForRange(
+      side: 'base' | 'tip',
+      startLine: number,
+      endLine: number,
+      startCol: number,
+      endCol: number,
+    ): typeof selectionOverlays {
+      if (!hunksWrapperEl) return [];
+      // Look up each line's cell across the WHOLE wrapper rather
+      // than a single hunk's table — multi-hunk selections render
+      // overlays for every line that has a cell in this file, and
+      // the gap-fill loop below stretches each rect to bridge the
+      // inter-hunk separator visually. Hidden lines (between
+      // rendered hunks) have no cell — the gap-fill covers them.
+      const wrapperRect = hunksWrapperEl.getBoundingClientRect();
+      const out: typeof selectionOverlays = [];
+      for (let ln = startLine; ln <= endLine; ln++) {
+        const pre = hunksWrapperEl.querySelector(
+          `td.content[data-side="${side}"][data-line="${ln}"] pre`,
+        ) as HTMLElement | null;
+        if (!pre) continue;
+        const lineLen = pre.textContent?.length ?? 0;
+        const lStart = ln === startLine ? startCol : 0;
+        const lEnd = ln === endLine ? endCol : lineLen;
+        if (lEnd <= lStart) continue;
+        const startLoc = locateInPre(pre, lStart);
+        const endLoc = locateInPre(pre, lEnd);
+        if (!startLoc || !endLoc) continue;
+        const subRange = document.createRange();
+        try {
+          subRange.setStart(startLoc.node, startLoc.offset);
+          subRange.setEnd(endLoc.node, endLoc.offset);
+        } catch {
+          continue;
         }
+        const rect = subRange.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) continue;
+        out.push({
+          top: rect.top - wrapperRect.top,
+          left: rect.left - wrapperRect.left,
+          width: rect.width,
+          height: rect.height,
+        });
       }
+      // Gap-fill within this range only — adjacent rects bridge to
+      // each other; the last keeps its natural height.
+      for (let i = 0; i < out.length - 1; i++) {
+        out[i].height = out[i + 1].top - out[i].top;
+      }
+      return out;
+    }
+
+    function update() {
+      if (!hunksWrapperEl) {
+        selectionOverlays = [];
+        return;
+      }
+      // Reset stripes / overlays at the top — each call rebuilds.
+      overlayPaint.clear();
+      const allOverlays: typeof selectionOverlays = [];
+
+      // 1. Published column-range comments on this file. Paint them
+      //    via the precise overlay so they match the in-progress
+      //    composer's visual exactly (same color, same gap fill).
+      //    No stripe — published comments get their own gutter
+      //    treatment via `.commented` in HunkLines / SBS.
+      for (const c of comments) {
+        if (c.file !== file.path) continue;
+        if (!c.columns || !c.side) continue;
+        if (c.anchor.kind === 'outdated') continue;
+        const effective =
+          c.anchor.kind === 'moved' || c.anchor.kind === 'drifted'
+            ? c.anchor.new_lines
+            : c.lines;
+        if (!effective) continue;
+        allOverlays.push(
+          ...rectsForRange(
+            c.side,
+            effective.start,
+            effective.end,
+            c.columns.start,
+            c.columns.end,
+          ),
+        );
+      }
+
+      // 2. Composer takes precedence over the live selection (the
+      //    textarea autofocus collapses the document selection on
+      //    mount, so `diffSelectionFor` would return null at that
+      //    moment).
+      let sel: DiffSelection | null = null;
+      if (
+        composing?.kind === 'line' &&
+        composing.file === file.path &&
+        composing.columns
+      ) {
+        sel = {
+          side: composing.side,
+          startLine: composing.startLine,
+          endLine: composing.endLine,
+          startCol: composing.columns.start,
+          endCol: composing.columns.end,
+          multiLine: composing.startLine !== composing.endLine,
+          rect: new DOMRect(),
+        };
+      } else {
+        sel = diffSelectionFor(hunksWrapperEl);
+      }
+      // During an active drag, hold the last valid selection through
+      // transient invalid states.
+      if (!sel) {
+        if (dragSelecting && lastValidSel) {
+          sel = lastValidSel;
+        } else {
+          selectionOverlays = allOverlays;
+          lastValidSel = null;
+          return;
+        }
+      } else {
+        lastValidSel = sel;
+      }
+      allOverlays.push(
+        ...rectsForRange(
+          sel.side,
+          sel.startLine,
+          sel.endLine,
+          sel.startCol,
+          sel.endCol,
+        ),
+      );
+      selectionOverlays = allOverlays;
+      // Row-level cue (gutter stripe + inter-hunk bridge) for the
+      // active selection / composer range. Published comments don't
+      // get the row-level cue here — they have their own gutter
+      // treatment via `.commented` in HunkLines / SBS.
+      overlayPaint.paint(sel.side, sel.startLine, sel.endLine);
     }
     document.addEventListener('selectionchange', update);
+    // Run once on attach (and on every effect re-run, e.g. when
+    // `composing` changes) so the overlay reflects the current
+    // state without waiting for the next selectionchange.
+    update();
     return () => {
       document.removeEventListener('selectionchange', update);
-      for (const el of textSelectedRows) el.classList.remove('selected');
-      textSelectedRows = [];
+      overlayPaint.clear();
+      selectionOverlays = [];
     };
   });
+
+  /** Gutter-drag state lifted to the file level so a drag that
+   *  starts in one hunk and crosses into another paints `.selected`
+   *  on rows in every hunk it covers (not just the starting hunk's
+   *  table). HunkLines / HunkLinesSideBySide write to this via the
+   *  `lineDrag` context below; the effect further down does all of
+   *  the DOM work in a single place. */
+  type LineDragState = {
+    side: 'base' | 'tip';
+    start: number;
+    end: number;
+  } | null;
+  let lineDrag: LineDragState = $state.raw(null);
+  setContext('lineDrag', {
+    current: () => lineDrag,
+    set: (s: LineDragState) => {
+      lineDrag = s;
+    },
+  });
+
+  $effect(() => {
+    void lineDrag;
+    gutterPaint.clear();
+    if (!lineDrag) return;
+    const min = Math.min(lineDrag.start, lineDrag.end);
+    const max = Math.max(lineDrag.start, lineDrag.end);
+    gutterPaint.paint(lineDrag.side, min, max);
+  });
+
+  /** Walk text nodes inside `pre` to find the (node, offset) for the
+   *  character at index `col`. Mirrors the existing helper in
+   *  selectionClamp / diffSelection — kept inline here because the
+   *  overlay code is the only caller. */
+  function locateInPre(pre: HTMLElement, col: number): { node: Node; offset: number } | null {
+    let remaining = col;
+    const walker = document.createTreeWalker(pre, NodeFilter.SHOW_TEXT);
+    let node: Node | null = walker.nextNode();
+    while (node) {
+      const len = (node as Text).data.length;
+      if (remaining <= len) return { node, offset: remaining };
+      remaining -= len;
+      node = walker.nextNode();
+    }
+    const last = pre.lastChild;
+    if (last?.nodeType === Node.TEXT_NODE) {
+      return { node: last, offset: (last as Text).data.length };
+    }
+    return null;
+  }
 
   function commentOnSelection() {
     const s = selectionPopup;
@@ -407,20 +719,110 @@
     window.getSelection()?.removeAllRanges();
   }
 
+  /** Cached file content for each side of the patchset. Populated
+   *  lazily by `ensureFileContent` (kicked off as soon as a drag
+   *  begins inside this file's `.content`, see the mousedown handler).
+   *  Used to inject the underlying source for lines that aren't
+   *  rendered as cells — inter-hunk gaps in particular. `null` means
+   *  not-yet-fetched; once a fetch resolves the value is the full
+   *  file text. A failure stays at `null` so the next attempt retries
+   *  through `api.readFile`'s own cache. */
+  let tipContent: string | null = $state(null);
+  let baseContent: string | null = $state(null);
+  let tipContentPending: Promise<void> | null = null;
+  let baseContentPending: Promise<void> | null = null;
+
+  function ensureFileContent(side: 'base' | 'tip'): Promise<void> {
+    if (side === 'tip') {
+      if (tipContent !== null) return Promise.resolve();
+      if (tipContentPending) return tipContentPending;
+      tipContentPending = api
+        .readFile(repo, patchset.tip_commit, file.path)
+        .then((text) => {
+          tipContent = text;
+        })
+        .catch(() => {
+          // Swallow — copy falls back to rendered-cell text.
+        })
+        .finally(() => {
+          tipContentPending = null;
+        });
+      return tipContentPending;
+    }
+    if (baseContent !== null) return Promise.resolve();
+    if (baseContentPending) return baseContentPending;
+    const commit = compareBaseCommit ?? patchset.base_commit;
+    baseContentPending = api
+      .readFile(repo, commit, file.path)
+      .then((text) => {
+        baseContent = text;
+      })
+      .catch(() => {})
+      .finally(() => {
+        baseContentPending = null;
+      });
+    return baseContentPending;
+  }
+
+  /** Pick the cached source for `side` — null when the fetch hasn't
+   *  resolved (or has failed); the copy helper then emits empty
+   *  strings for hidden lines rather than stale rendered text. */
+  function fileTextFor(side: 'base' | 'tip'): string | null {
+    return side === 'tip' ? tipContent : baseContent;
+  }
+
   async function copySelection() {
-    if (!selectionPopup) return;
-    const range = window.getSelection()?.getRangeAt(0);
-    if (!range) return;
-    const text = plainTextForSelection(range);
-    if (text != null) {
+    const s = selectionPopup;
+    if (!s || !hunksWrapperEl) return;
+    // Make sure the side's file content is cached before building so
+    // hidden inter-hunk lines copy with their real text rather than
+    // an empty placeholder.
+    await ensureFileContent(s.side);
+    const text = buildCopyText(hunksWrapperEl, s, fileTextFor(s.side));
+    if (text.length > 0) {
       await copyText(text);
     }
     selectionPopup = null;
     window.getSelection()?.removeAllRanges();
   }
 
+  /** Document-level copy interceptor for Ctrl+C inside this file.
+   *  Runs in the capture phase and `stopImmediatePropagation`s when
+   *  the selection lives in this wrapper, so it wins over any other
+   *  copy handler (the global `installDiffCopyHandler` in particular)
+   *  that would otherwise overwrite `clipboardData` in the bubble
+   *  phase. Selections outside this file are ignored — the other
+   *  FileDiffs' handlers, or the global one, handle those. */
+  $effect(() => {
+    if (!hunksWrapperEl) return;
+    const wrapper = hunksWrapperEl;
+    function onCopy(e: ClipboardEvent) {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed || sel.rangeCount === 0) return;
+      const range = sel.getRangeAt(0);
+      // Only handle when the selection is anchored inside this
+      // file. `commonAncestorContainer` lands inside the wrapper for
+      // any selection that started and ended here.
+      if (!wrapper.contains(range.commonAncestorContainer)) return;
+      const diffSel = diffSelectionFor(wrapper);
+      if (!diffSel) return;
+      const text = buildCopyText(wrapper, diffSel, fileTextFor(diffSel.side));
+      if (text.length === 0) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      e.clipboardData?.setData('text/plain', text);
+      e.clipboardData?.setData(
+        'text/html',
+        text
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;'),
+      );
+    }
+    document.addEventListener('copy', onCopy, true);
+    return () => document.removeEventListener('copy', onCopy, true);
+  });
   let hunksEl: HTMLDivElement | undefined = $state();
-  let composeSelected: HTMLElement[] = [];
 
   /** Track the visible width of the file's .hunks scroll viewport so the
    *  sticky thread wrappers inside know how wide to render. */
@@ -476,19 +878,36 @@
       // Whichever applies, it lands in `--measured-gutter-2`. The
       // two modes are mutually exclusive (SBS doesn't render two
       // unified `.ln` columns), so one variable handles both.
+      //
+      // For SBS we use `getBoundingClientRect` minus the wrapper's
+      // rect rather than `offsetLeft`: a `<td>`'s offsetParent is
+      // its containing `<table>` (table-display elements form their
+      // own offset chain), so `offsetLeft` for the tip-side td would
+      // come back as the tip table's own local gutter offset
+      // (~65 px) — useless for absolute positioning inside the
+      // wrapper. The wrapper-rect math gives the real viewport-
+      // coord position to which the composer overlay is anchored.
       let secondGutter: number | null = null;
       const tipContent = wrapper.querySelector<HTMLTableCellElement>(
         '.sbs-side.tip td.content',
       );
-      if (tipContent && tipContent.offsetLeft > 0) {
-        secondGutter = tipContent.offsetLeft;
-      } else {
+      if (tipContent) {
+        const tipRect = tipContent.getBoundingClientRect();
+        const wrapperRect = wrapper.getBoundingClientRect();
+        const relLeft = tipRect.left - wrapperRect.left;
+        if (relLeft > 0) secondGutter = relLeft;
+      }
+      if (secondGutter === null) {
         // Unified-both: two `.ln` cells in the first row. The first
-        // one's right edge is the inner gutter.
+        // one's right edge is the inner gutter. Same wrapper-rect
+        // math for consistency.
         const firstRow = wrapper.querySelector<HTMLTableRowElement>('tr');
         const lns = firstRow?.querySelectorAll<HTMLTableCellElement>('td.ln');
         if (lns && lns.length >= 2) {
-          secondGutter = lns[0].offsetLeft + lns[0].offsetWidth;
+          const lnRect = lns[0].getBoundingClientRect();
+          const wrapperRect = wrapper.getBoundingClientRect();
+          const inner = lnRect.right - wrapperRect.left;
+          if (inner > 0) secondGutter = inner;
         }
       }
       if (secondGutter !== null && secondGutter > 0) {
@@ -501,10 +920,20 @@
       }
     };
     const ro = new ResizeObserver(measure);
+    let observedSides: NodeListOf<Element> | null = null;
     const observeLnCells = () => {
       if (lnCells) for (const el of lnCells) ro.unobserve(el);
       lnCells = wrapper.querySelectorAll('td.ln');
       for (const el of lnCells) ro.observe(el);
+      // Also observe `.sbs-side` so a divider drag — which resizes
+      // the tip side without changing any `.ln` cell width — still
+      // triggers a re-measure. Without this the tip gutter's x
+      // coord (`--measured-gutter-2`) drifts away from the actual
+      // tip column position as the user drags, and the composer
+      // overlay stays anchored to the pre-drag position.
+      if (observedSides) for (const el of observedSides) ro.unobserve(el);
+      observedSides = wrapper.querySelectorAll('.sbs-side');
+      for (const el of observedSides) ro.observe(el);
       measure();
     };
     observeLnCells();
@@ -527,19 +956,39 @@
    *  Tinting whole rows on top would make it look like the comment
    *  covers whole lines, hiding what the reviewer actually selected. */
   $effect(() => {
-    for (const el of composeSelected) el.classList.remove('selected');
-    composeSelected = [];
-    if (!sectionEl) return;
+    composerPaint.clear();
     if (composing?.kind !== 'line' || composing.file !== file.path) return;
     if (composing.columns) return;
-    for (let ln = composing.startLine; ln <= composing.endLine; ln++) {
-      const matches = sectionEl.querySelectorAll(
-        `[data-side="${composing.side}"][data-line="${ln}"]`,
-      );
-      for (const el of matches) {
-        (el as HTMLElement).classList.add('selected');
-        composeSelected.push(el as HTMLElement);
-      }
+    composerPaint.paint(composing.side, composing.startLine, composing.endLine);
+  });
+
+  /** Bridge inter-hunk separators for every multi-hunk published
+   *  comment on this file so the blue gutter stripe `.row.commented
+   *  .content` paints stays continuous across the gap. Re-runs on
+   *  comment changes (a freshly posted comment included) and on
+   *  expansion / collapse toggles since the bridged separators
+   *  appear and disappear with them. */
+  $effect(() => {
+    void expansions;
+    void wholeFile;
+    void collapsed;
+    commentedPaint.clear();
+    for (const c of comments) {
+      if (c.file !== file.path) continue;
+      if (c.anchor.kind === 'outdated') continue;
+      if (!c.side) continue;
+      const effective =
+        c.anchor.kind === 'moved' || c.anchor.kind === 'drifted'
+          ? c.anchor.new_lines
+          : c.lines;
+      // Single-line comments need no bridge — no separator can sit
+      // inside one line. Column-range comments DO need it: their
+      // tinted overlay rectangles already gap-fill (see
+      // `rectsForRange`), but the row-level `.commented` blue
+      // gutter stripe HunkLines paints on each row would read as
+      // discontinuous across an inter-hunk separator without this.
+      if (!effective || effective.start === effective.end) continue;
+      commentedPaint.paint(c.side, effective.start, effective.end);
     }
   });
 
@@ -1503,6 +1952,7 @@
               {lastVisitAt}
               {viewer}
               {defaultThreadsCollapsed}
+              showFold
               {onreply}
               {onstatus}
               {ondelete}
@@ -1528,6 +1978,15 @@
         class:hide-gutter-affordances={hideGutterAffordances}
         bind:this={hunksWrapperEl}
       >
+        {#each selectionOverlays as o}
+          <div
+            class="selection-overlay"
+            style:top="{o.top}px"
+            style:left="{o.left}px"
+            style:width="{o.width}px"
+            style:height="{o.height}px"
+          ></div>
+        {/each}
         <div class="hunks" bind:this={hunksEl}>
         {#each file.hunks as _, i (i)}
           {@const eh = withContext(file.hunks[i], i)}
@@ -1718,7 +2177,7 @@
             class="line-composer-overlay"
             bind:this={composerOverlayEl}
             style:top="{composerTop}px"
-            style:left="var(--measured-gutter, {gutterIndentPx}px)"
+            style:left="calc(var({sideBySide && composing.side === 'tip' ? '--measured-gutter-2' : '--measured-gutter'}, {gutterIndentPx}px) + 12px)"
           >
             <CommentComposer
               target={composing}
@@ -1761,6 +2220,12 @@
     flex-wrap: wrap;
     gap: 8px;
     padding: 8px 12px;
+    /* Drag-selecting in a diff that runs to the end of the file
+     * shouldn't extend the selection into the NEXT file's header
+     * (which sits just below the last hunk). `user-select: none`
+     * makes the header unselectable, so the browser stops the
+     * range at the previous content's edge. */
+    user-select: none;
     /* `--bg-elevated` is a step darker than `--bg-panel` — strong
      * enough that the file boundary registers immediately while
      * scrolling (--bg-panel was almost indistinguishable from the
@@ -2054,11 +2519,24 @@
   }
 
   .line-composer-overlay {
-    /* `left` is set inline to (gutter width + 14) so the box itself
-     * starts at the diff content edge — matches the inline threads.
-     * `right: 12px` keeps the same breathing room on the far side. */
+    /* Match the eventual posted `.comment` box, not the wider
+     * `.thread-sticky` blue stripe around it: `left` is set inline
+     * to (gutter width + 12), then `max-width` caps the box at the
+     * same width the `.comment` inside thread-sticky tops out at
+     * (see `--message-max-w` on `.thread-sticky`). `right: 24px` is
+     * the upper bound when the viewport is narrow enough that the
+     * cap doesn't apply — 12 of stripe right margin + 12 of stripe
+     * inner padding. Same outer rect as the comment, so submitting
+     * the draft doesn't visibly snap the white box smaller or
+     * shift it sideways. */
     position: absolute;
-    right: 12px;
+    right: 24px;
+    /* Cap matches `--message-max-w` (720px) minus thread-sticky's
+     * 24px horizontal padding — so the composer's outer rect lands
+     * exactly where the .comment box will appear inside the eventual
+     * thread-sticky stripe. Tune both together by changing
+     * --message-max-w on .thread-sticky / .file-thread. */
+    max-width: 696px;
     /* Must beat .file-header (z-index: 10) so the composer isn't behind
      * the sticky header when commenting on a line near the top. */
     z-index: 12;
@@ -2084,24 +2562,29 @@
     overscroll-behavior-x: contain;
   }
 
-  /* Single-color highlight via row tint. `.selected` (applied by
-   * the gutter `dragSelected` effect AND by the text-drag effect in
-   * the script block above) paints `--selection-tint` over each
-   * selected row's content cell — fills the inter-line gap, single
-   * color, and the existing left stripe in `.selected` gives the
-   * "this line has a selection" gutter cue.
-   *
-   * Inside `.selected` rows, the browser's `::selection` paint is
-   * suppressed (transparent) so the row tint isn't overlaid by a
-   * second paint of the same color (the visible "double tint"). The
-   * trade-off: on partial first/last lines of a multi-line text
-   * drag the WHOLE row is tinted even though only some characters
-   * are technically selected. True column-precise paint with no
-   * inter-line gaps would require custom-painted overlays computed
-   * from `Range.getBoundingClientRect` — a much bigger change. */
-  .hunks :global(.content.selected ::selection),
-  .hunks :global(.content.selected::selection) {
+  /* PROTOTYPE: precise selection paint. The browser's native
+   * `::selection` is suppressed everywhere inside the diff; the
+   * custom `.selection-overlay` divs (positioned absolutely in
+   * `hunksWrapperEl` by the effect in the script block) provide all
+   * the selection paint. This gives us per-line precision (rect
+   * width follows the actual selected character range) AND an
+   * inter-line gap fill (each rect's height is stretched to meet
+   * the next rect's top). */
+  .hunks :global(::selection) {
     background: transparent;
+  }
+  .selection-overlay {
+    position: absolute;
+    background: var(--selection-tint);
+    pointer-events: none;
+    z-index: 1;
+  }
+  /* Per-row gutter stripe for any row that overlaps the current text
+   * selection — partial first/last lines get the same cue as full
+   * middle lines. Cell-level rather than tr-level because the cells
+   * carry the `data-side` / `data-line` we match on. */
+  .hunks :global(.content.text-selection-stripe) {
+    box-shadow: inset 4px 0 0 var(--selection-rule);
   }
 
   /* Inter-hunk separator + the expand-context affordances share the
@@ -2111,6 +2594,41 @@
   .expand-row {
     position: relative;
     background: var(--bg-panel);
+  }
+
+  /* Extend the gutter stripe across inter-hunk gaps when a paint
+   * path's range spans across them. The stripe lives on a pseudo-
+   * element rather than `box-shadow` so its `left` can be set
+   * per-side (--bridge-offset published by the paint effects) —
+   * base/unified use --measured-gutter, SBS tip uses
+   * --measured-gutter-2.
+   *
+   * Two classes so the transient drag/selection stripe (cyan,
+   * 4px to match `.selected` / `.text-selection-stripe`) and the
+   * persistent posted-comment stripe (blue, 3px to match
+   * `.row.commented .content`) can coexist with their own colors
+   * and widths, and so each effect manages its own bridge state
+   * without stepping on the other. */
+  .hunk-gap.drag-bridge::before,
+  .expand-row.drag-bridge::before,
+  .hunk-gap.comment-bridge::before,
+  .expand-row.comment-bridge::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: var(--bridge-offset, 0);
+    pointer-events: none;
+  }
+  .hunk-gap.drag-bridge::before,
+  .expand-row.drag-bridge::before {
+    width: 4px;
+    background: var(--selection-rule);
+  }
+  .hunk-gap.comment-bridge::before,
+  .expand-row.comment-bridge::before {
+    width: 3px;
+    background: var(--link);
   }
 
   .hunk-gap {

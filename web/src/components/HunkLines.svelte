@@ -248,31 +248,22 @@
   const lnCols = $derived((showBase ? 1 : 0) + (showTip ? 1 : 0));
   const colspan = $derived(lnCols + 1);
 
-  let dragging: { side: Side; start: number; end: number } | null = $state(null);
   let tableEl: HTMLTableElement | undefined = $state();
-  let dragSelected: HTMLElement[] = [];
 
-
-  /** Apply the `.selected` class directly to matching rows when dragging.
-   *  We bypass per-row Svelte reactivity here because toggling a top-level
-   *  state like `composing` would otherwise re-evaluate every row's @const,
-   *  which is O(file_size). */
-  $effect(() => {
-    for (const el of dragSelected) el.classList.remove('selected');
-    dragSelected = [];
-    if (!tableEl || !dragging) return;
-    const min = Math.min(dragging.start, dragging.end);
-    const max = Math.max(dragging.start, dragging.end);
-    for (let ln = min; ln <= max; ln++) {
-      const matches = tableEl.querySelectorAll(
-        `[data-side="${dragging.side}"][data-line="${ln}"]`,
-      );
-      for (const el of matches) {
-        (el as HTMLElement).classList.add('selected');
-        dragSelected.push(el as HTMLElement);
-      }
-    }
-  });
+  /** Gutter-drag is owned by FileDiff via the `lineDrag` context so a
+   *  drag started in this hunk can paint `.selected` on rows in other
+   *  hunks of the same file as the pointer crosses into them. The
+   *  pointer handler below writes through the setter; the effect that
+   *  applies `.selected` lives in FileDiff. */
+  type LineDragState = {
+    side: Side;
+    start: number;
+    end: number;
+  } | null;
+  const lineDrag = getContext<{
+    current: () => LineDragState;
+    set: (s: LineDragState) => void;
+  } | undefined>('lineDrag');
 
   function rowClass(origin: HunkLine['origin']): string {
     switch (origin) {
@@ -375,32 +366,11 @@
         out.push({ start: 0, end: Number.MAX_SAFE_INTEGER });
       }
     }
-    // In-progress composer with columns: paint the same column anchor
-    // for it so the reviewer keeps seeing the precise range while the
-    // composer is open. The browser's native text selection is gone
-    // by then (the composer's textarea autofocus collapses it); this
-    // synthetic anchor stands in. Disappears when the composer closes
-    // (cancel) or the comment is published (`comments` then carries
-    // the real one).
-    if (
-      composing?.kind === 'line' &&
-      composing.file === filePath &&
-      composing.side === a.side &&
-      composing.columns &&
-      a.line >= composing.startLine &&
-      a.line <= composing.endLine
-    ) {
-      const { startLine, endLine, columns } = composing;
-      if (startLine === endLine) {
-        out.push({ start: columns.start, end: columns.end });
-      } else if (a.line === startLine) {
-        out.push({ start: columns.start, end: Number.MAX_SAFE_INTEGER });
-      } else if (a.line === endLine) {
-        out.push({ start: 0, end: columns.end });
-      } else {
-        out.push({ start: 0, end: Number.MAX_SAFE_INTEGER });
-      }
-    }
+    // The in-progress composer's range is painted by the precise
+    // selection-overlay in FileDiff (driven by both the user's
+    // active selection AND the composer state). It used to be
+    // synthesized here as a `.column-anchor` span wrap; that path
+    // duplicated the overlay paint visually now.
     return out;
   }
 
@@ -696,31 +666,32 @@
       });
       return;
     }
-    dragging = { side, start: line, end: line };
+    lineDrag?.set({ side, start: line, end: line });
 
     const onMove = (ev: PointerEvent) => {
-      if (!dragging) return;
+      const cur = lineDrag?.current();
+      if (!cur) return;
       const el = document.elementFromPoint(ev.clientX, ev.clientY);
       const row = (el as HTMLElement | null)?.closest('[data-line]') as HTMLElement | null;
       if (row && row.getAttribute('data-side') === side) {
         const ln = Number(row.getAttribute('data-line'));
-        if (!isNaN(ln) && ln !== dragging.end) {
-          dragging = { ...dragging, end: ln };
+        if (!isNaN(ln) && ln !== cur.end) {
+          lineDrag?.set({ ...cur, end: ln });
         }
       }
     };
     const onUp = () => {
       document.removeEventListener('pointermove', onMove);
       document.removeEventListener('pointerup', onUp);
-      if (dragging) {
-        const start = Math.min(dragging.start, dragging.end);
-        const end = Math.max(dragging.start, dragging.end);
-        const s = dragging.side;
-        dragging = null;
+      const cur = lineDrag?.current();
+      lineDrag?.set(null);
+      if (cur) {
+        const start = Math.min(cur.start, cur.end);
+        const end = Math.max(cur.start, cur.end);
         onstartcompose({
           kind: 'line',
           file: filePath,
-          side: s,
+          side: cur.side,
           startLine: start,
           endLine: end,
         });
@@ -1008,13 +979,13 @@
    * inside a wd-added/wd-removed run. Color picks up the comment palette
    * so the eye links it to the inline thread below. */
   :global(.content .column-anchor) {
-    /* Background tint + underline. Click-on-highlight prototype: the
-     * underline-only treatment was hard to spot on long lines and
-     * didn't read as "this is the click target." The bg makes the
-     * affordance obvious and matches the full-line tint applied to
-     * `.row.commented-fullline` for whole-line comments below. */
-    background: var(--link-bg);
-    box-shadow: inset 0 -2px 0 var(--link);
+    /* Click-target only — the visible highlight for both in-progress
+     * composers AND published column-range comments is painted by
+     * the precise overlay in FileDiff (no inter-line gap, uniform
+     * color). This span wrap stays in the DOM so the
+     * `onContentClick` handler can match `t.closest('.column-
+     * anchor')` and toggle the right thread, but it carries no
+     * visual style. */
     cursor: pointer;
   }
 
@@ -1311,12 +1282,20 @@
      * starts at the measured offset so its 3px left stripe lines up
      * with the .row.commented .content stripe; sticky `left` keeps
      * the block pinned during horizontal scroll, and the width is
-     * trimmed to keep a little right-edge breathing room. */
+     * trimmed to keep a little right-edge breathing room.
+     *
+     * `--message-max-w` caps the box at a comfortable reading width
+     * on wide monitors — paired with the same cap (minus padding)
+     * on `.line-composer-overlay` so the composer's white outer
+     * rect lands exactly where the .comment box will appear inside
+     * this stripe. Tune both together by changing this value. */
     --gutter: var(--measured-gutter, var(--gutter-offset));
+    --message-max-w: 720px;
     position: sticky;
     left: var(--gutter);
     margin-left: var(--gutter);
     width: calc(var(--content-vp-width, 100%) - var(--gutter) - 12px);
+    max-width: var(--message-max-w);
     background: var(--link-bg);
     padding: 8px 12px;
     border-top: 1px solid var(--border-muted);

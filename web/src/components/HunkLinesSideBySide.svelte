@@ -231,14 +231,24 @@
    *  the composer below takes its visual slot instead of stacking under
    *  the original draft bubble. */
   const editingCommentId = $derived(composing?.editing?.commentId ?? null);
-  let dragging: { side: Side; start: number; end: number } | null = $state(null);
   let baseSideEl: HTMLDivElement | undefined = $state();
   let tipSideEl: HTMLDivElement | undefined = $state();
   let baseTableEl: HTMLTableElement | undefined = $state();
   let tipTableEl: HTMLTableElement | undefined = $state();
   let pairEl: HTMLDivElement | undefined = $state();
   let dividerDragging = $state(false);
-  let dragSelected: HTMLElement[] = [];
+
+  /** Gutter-drag state lifted to FileDiff via context — see HunkLines
+   *  for the rationale (multi-hunk drag needs file-level paint). */
+  type LineDragState = {
+    side: Side;
+    start: number;
+    end: number;
+  } | null;
+  const lineDrag = getContext<{
+    current: () => LineDragState;
+    set: (s: LineDragState) => void;
+  } | undefined>('lineDrag');
 
   /** Hovered folded-thread marker — paints `.highlight-anchor` onto
    *  matching rows in the relevant side's table. See HunkLines.svelte
@@ -315,25 +325,6 @@
     if (baseSideEl) ro.observe(baseSideEl);
     if (tipSideEl) ro.observe(tipSideEl);
     return () => ro.disconnect();
-  });
-
-  $effect(() => {
-    for (const el of dragSelected) el.classList.remove('selected');
-    dragSelected = [];
-    if (!dragging) return;
-    const tableEl = dragging.side === 'base' ? baseTableEl : tipTableEl;
-    if (!tableEl) return;
-    const min = Math.min(dragging.start, dragging.end);
-    const max = Math.max(dragging.start, dragging.end);
-    for (let ln = min; ln <= max; ln++) {
-      const matches = tableEl.querySelectorAll(
-        `[data-side="${dragging.side}"][data-line="${ln}"]`,
-      );
-      for (const el of matches) {
-        (el as HTMLElement).classList.add('selected');
-        dragSelected.push(el as HTMLElement);
-      }
-    }
   });
 
   function threadsAt(side: Side, line: number | null | undefined): CommentView[] {
@@ -587,33 +578,34 @@
       });
       return;
     }
-    dragging = { side, start: line, end: line };
+    lineDrag?.set({ side, start: line, end: line });
 
     const onMove = (ev: PointerEvent) => {
-      if (!dragging) return;
+      const cur = lineDrag?.current();
+      if (!cur) return;
       const el = document.elementFromPoint(ev.clientX, ev.clientY);
       const cell = (el as HTMLElement | null)?.closest(
         '[data-line]',
       ) as HTMLElement | null;
       if (cell && cell.getAttribute('data-side') === side) {
         const ln = Number(cell.getAttribute('data-line'));
-        if (!isNaN(ln) && ln !== dragging.end) {
-          dragging = { ...dragging, end: ln };
+        if (!isNaN(ln) && ln !== cur.end) {
+          lineDrag?.set({ ...cur, end: ln });
         }
       }
     };
     const onUp = () => {
       document.removeEventListener('pointermove', onMove);
       document.removeEventListener('pointerup', onUp);
-      if (dragging) {
-        const start = Math.min(dragging.start, dragging.end);
-        const end = Math.max(dragging.start, dragging.end);
-        const s = dragging.side;
-        dragging = null;
+      const cur = lineDrag?.current();
+      lineDrag?.set(null);
+      if (cur) {
+        const start = Math.min(cur.start, cur.end);
+        const end = Math.max(cur.start, cur.end);
         onstartcompose({
           kind: 'line',
           file: filePath,
-          side: s,
+          side: cur.side,
           startLine: start,
           endLine: end,
         });
@@ -705,25 +697,8 @@
         out.push({ start: 0, end: Number.MAX_SAFE_INTEGER });
       }
     }
-    if (
-      composing?.kind === 'line' &&
-      composing.file === filePath &&
-      composing.side === side &&
-      composing.columns &&
-      line >= composing.startLine &&
-      line <= composing.endLine
-    ) {
-      const { startLine, endLine, columns } = composing;
-      if (startLine === endLine) {
-        out.push({ start: columns.start, end: columns.end });
-      } else if (line === startLine) {
-        out.push({ start: columns.start, end: Number.MAX_SAFE_INTEGER });
-      } else if (line === endLine) {
-        out.push({ start: 0, end: columns.end });
-      } else {
-        out.push({ start: 0, end: Number.MAX_SAFE_INTEGER });
-      }
-    }
+    // Composer state handled by the precise selection overlay in
+    // FileDiff — see HunkLines.svelte.
     return out;
   }
 </script>
@@ -1177,11 +1152,8 @@
     border-radius: 2px;
   }
 
-  /* See HunkLines.svelte — bg tint + underline for the click-on-
-   * highlight prototype. */
+  /* See HunkLines.svelte — click-target only. */
   :global(.content .column-anchor) {
-    background: var(--link-bg);
-    box-shadow: inset 0 -2px 0 var(--link);
     cursor: pointer;
   }
 
@@ -1355,14 +1327,16 @@
    * surrounding diff rows. See HunkLines.svelte for rationale. */
   .thread-sticky {
     /* See HunkLines.svelte — same measured / fallback / right-trim
-     * pattern. `--measured-gutter` is published by FileDiff and
-     * cascades down; the inline `--gutter-offset` is the hardcoded
-     * fallback (one line-number column's width plus a small gap). */
+     * pattern, same `--message-max-w` cap paired with the composer
+     * overlay so the white .comment / composer box lands in the
+     * same place across both states. */
     --gutter: var(--measured-gutter, var(--gutter-offset));
+    --message-max-w: 720px;
     position: sticky;
     left: var(--gutter);
     margin-left: var(--gutter);
     width: calc(var(--content-vp-width, 100%) - var(--gutter) - 12px);
+    max-width: var(--message-max-w);
     background: var(--link-bg);
     padding: 8px 12px;
     border-top: 1px solid var(--border-muted);

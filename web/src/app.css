@@ -46,7 +46,7 @@
   --success-text: #1a7f37;
   --question-bg: #fbefff;
   --question-text: #8250df;
-  --selection-tint: rgba(9, 105, 218, 0.12);
+  --selection-tint: rgba(9, 105, 218, 0.22);
   --selection-rule: #0969da;
   /* Text color drawn on top of saturated accent backgrounds (primary
    * buttons, active tabs, hovered + buttons). Same in both palettes
@@ -92,7 +92,7 @@
     --success-text: #56d364;
     --question-bg: rgba(163, 113, 247, 0.18);
     --question-text: #a371f7;
-    --selection-tint: rgba(56, 139, 253, 0.25);
+    --selection-tint: rgba(120, 180, 255, 0.40);
     --selection-rule: #58a6ff;
   }
 }
