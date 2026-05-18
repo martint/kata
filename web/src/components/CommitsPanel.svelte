@@ -9,7 +9,9 @@
     ResolutionAction,
     ResponseView,
   } from '../lib/types';
+  import { getContext } from 'svelte';
   import { renderMarkdown } from '../lib/markdown';
+  import type { FoldStore } from '../lib/foldStore';
   import Bubble from './Bubble.svelte';
   import CommentComposer from './CommentComposer.svelte';
   import CommentThread from './CommentThread.svelte';
@@ -131,8 +133,17 @@
       return true;
     });
   });
-  /** Commit-ids whose body is expanded. Body = lines after the first. */
-  let expanded: Set<string> = $state(new Set());
+  /** Commit-ids whose body is expanded. Body = lines after the first.
+   *  Hydrated from the fold-store so an unfolded body survives reloads;
+   *  only explicit unfolds are recorded (collapsed is the default). */
+  const foldStore = getContext<FoldStore | undefined>('kata-fold-store');
+  let expanded: Set<string> = $state(
+    new Set(
+      foldStore
+        ? foldStore.ids('commit').filter((id) => foldStore.get('commit', id) === true)
+        : [],
+    ),
+  );
 
   /** When an existing draft is being edited, hide it from the thread so
    *  the composer below takes its visual slot instead of stacking under
@@ -231,8 +242,13 @@
 
   function toggleExpanded(commitId: string) {
     const next = new Set(expanded);
-    if (next.has(commitId)) next.delete(commitId);
-    else next.add(commitId);
+    if (next.has(commitId)) {
+      next.delete(commitId);
+      foldStore?.set('commit', commitId, false);
+    } else {
+      next.add(commitId);
+      foldStore?.set('commit', commitId, true);
+    }
     expanded = next;
   }
 

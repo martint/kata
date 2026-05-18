@@ -19,6 +19,7 @@
   import { sortFilesLikeTree } from '../lib/tree';
   import { setTokenizationPaused } from '../lib/highlight.svelte';
   import { resolutionFor } from '../lib/resolution';
+  import { createFoldStore, type FoldStore } from '../lib/foldStore';
   import Chevron from './Chevron.svelte';
   import CommitsPanel from './CommitsPanel.svelte';
   import FileSlot from './FileSlot.svelte';
@@ -190,6 +191,27 @@
   // remounts ReviewViewer (via the {#key} in App.svelte) and the
   // new context value flows through.
   setContext<boolean>('kata-debug', debug);
+
+  // Persistent fold/expand state, keyed by (repo, review number). The
+  // store outlives any single component instance, so a file you
+  // collapsed survives both scrolling-induced re-mounts and full page
+  // refreshes. Constructed once per viewer mount — the {#key} in
+  // App.svelte already remounts the viewer when repo or review number
+  // changes, so we don't need to react.
+  // svelte-ignore state_referenced_locally
+  const foldStore = createFoldStore(repo, view.manifest.number);
+  setContext<FoldStore>('kata-fold-store', foldStore);
+  // Garbage-collect entries that no longer match anything in this
+  // review — renamed files, deleted comments, dropped commits would
+  // otherwise grow the per-review blob indefinitely. One-shot on
+  // mount: the lifetimes we care about (page-reload survivability)
+  // are already covered, and the blob is small enough that intra-
+  // session orphans are harmless until the next reload.
+  onMount(() => {
+    foldStore.prune('file', view.diff.files.map((f) => f.path));
+    foldStore.prune('comment', view.comments.map((c) => c.comment_id));
+    foldStore.prune('commit', view.commits.map((c) => c.commit_id));
+  });
 
   // We seed local state from the prop and then manage refreshes ourselves.
   // svelte-ignore state_referenced_locally

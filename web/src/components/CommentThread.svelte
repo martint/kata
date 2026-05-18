@@ -1,7 +1,9 @@
 <script lang="ts">
+  import { getContext } from 'svelte';
   import { copyText } from '../lib/clipboard';
   import { renderMarkdown } from '../lib/markdown';
   import { resolutionFor } from '../lib/resolution';
+  import type { FoldStore } from '../lib/foldStore';
   import type {
     AnchorView,
     CommentView,
@@ -143,12 +145,29 @@
    *  the user can click the header to expand them and re-read the
    *  body or replies. Tracking only the explicit overrides keeps
    *  the resolution-status as the source of truth: a comment
-   *  flipping back to open via a new response collapses naturally. */
-  let expanded: Set<string> = $state(new Set());
+   *  flipping back to open via a new response collapses naturally.
+   *
+   *  Hydrated from the fold-store on mount so an unfold survives
+   *  page reloads and re-mounts. We only persist `true` (explicit
+   *  unfold of a resolved comment); the natural collapsed-default
+   *  needs no recording. */
+  const foldStore = getContext<FoldStore | undefined>('kata-fold-store');
+  let expanded: Set<string> = $state(
+    new Set(
+      foldStore
+        ? foldStore.ids('comment').filter((id) => foldStore.get('comment', id) === true)
+        : [],
+    ),
+  );
   function toggleExpanded(id: string) {
     const next = new Set(expanded);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
+    if (next.has(id)) {
+      next.delete(id);
+      foldStore?.set('comment', id, false);
+    } else {
+      next.add(id);
+      foldStore?.set('comment', id, true);
+    }
     expanded = next;
   }
 </script>

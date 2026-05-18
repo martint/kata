@@ -12,6 +12,7 @@
   //! Before the file has ever been rendered, an estimate based on hunk
   //! line count is used.
 
+  import { getContext } from 'svelte';
   import { api } from '../lib/api';
   import type {
     CommentView,
@@ -22,6 +23,7 @@
     ResolutionAction,
     ResponseView,
   } from '../lib/types';
+  import type { FoldStore } from '../lib/foldStore';
   import FileDiff from './FileDiff.svelte';
 
   interface Props {
@@ -157,6 +159,21 @@
    *  DOM. Without this, scrolling away from an unfolded file and back
    *  would silently re-fold it. */
   let wholeFile = $state(false);
+
+  /** Whole-file collapse (▸/▾) state — same lift-to-slot rationale as
+   *  `wholeFile`, plus an extra reason: persist across page reloads
+   *  via the fold store so a file the user collapsed mid-review stays
+   *  collapsed when they come back tomorrow. */
+  const foldStore = getContext<FoldStore | undefined>('kata-fold-store');
+  // `file.path` is stable for the slot's lifetime — the parent
+  // `{#each}` keys slots by path, so seeing a new path means a new
+  // slot instance — so capturing the initial value here is exactly
+  // what we want.
+  // svelte-ignore state_referenced_locally
+  let collapsed = $state(foldStore?.get('file', file.path) ?? false);
+  $effect(() => {
+    foldStore?.set('file', file.path, collapsed);
+  });
 
   /** Cache key for this slot's (patchset, compare, path) — or for the
    *  v2 per-commit interdiff, `(from_commit, to_commit, path)`. The
@@ -322,6 +339,7 @@
         {setSbsSplit}
         loadingHunks={loadingHunks && !diffCache.has(cacheKey)}
         bind:wholeFile
+        bind:collapsed
         {lastVisitAt}
         {viewer}
         {onstartcompose}

@@ -84,6 +84,11 @@
      *  otherwise the default `false` would re-fold the file every
      *  remount. */
     wholeFile?: boolean;
+    /** Whole-file collapse toggle (▸/▾). Same rationale as `wholeFile`
+     *  — lifted to `FileSlot` so virtualisation doesn't silently
+     *  re-expand a file the user collapsed, and so the fold-store
+     *  can persist the value across page reloads. */
+    collapsed?: boolean;
     /** Timestamp of the viewer's previous open. Threaded to
      *  `CommentThread` to flag threads with new replies since then. */
     lastVisitAt?: string | null;
@@ -115,11 +120,10 @@
     onedit,
     onselectpatchset,
     wholeFile = $bindable(false),
+    collapsed = $bindable(false),
     lastVisitAt = null,
     viewer = '',
   }: Props = $props();
-
-  let collapsed = $state(false);
 
   /** Debug-mode hooks. `debug` comes from ReviewViewer's context
    *  (turned on by `?debug` in the URL). When true, the file header
