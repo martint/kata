@@ -475,6 +475,7 @@
                     {editingCommentId}
                     {lastVisitAt}
                     {viewer}
+                    showFold
                     {onreply}
                     {onstatus}
                     {ondelete}
@@ -533,6 +534,7 @@
               {editingCommentId}
               {lastVisitAt}
               {viewer}
+              showFold
               {onreply}
               {onstatus}
               {ondelete}
@@ -592,6 +594,7 @@
                   {editingCommentId}
                   {lastVisitAt}
                   {viewer}
+                  showFold
                   {onreply}
                   {onstatus}
                   {ondelete}
@@ -684,6 +687,7 @@
                     {editingCommentId}
                     {lastVisitAt}
                     {viewer}
+                    showFold
                     {onreply}
                     {onstatus}
                     {ondelete}
