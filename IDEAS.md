@@ -61,36 +61,16 @@ picking up once we have a workflow that mounts/unmounts the same
 slot quickly (rapid scrolling on a slow connection, automated
 navigation tests, etc.).
 
-## Word-diff pairing across uneven remove/add blocks
+## Review-summary deltas in patchset-compare
 
-`computeHunkWordDiff` (`web/src/lib/wordDiff.ts`) uses N:N pairing
-— a run of N consecutive remove lines followed by exactly N add
-lines pairs row-by-row, everything else is skipped. Covers the
-common case ("edit a few lines"), bails on the rest: `3 removed,
-4 added` (one genuinely inserted line in the middle of a refactor)
-gets no word-diff at all, even though three of the pairings are
-obvious.
-
-An LCS-best-match approach would score every `(remove[i], add[j])`
-candidate by token overlap and pick pairings that maximize total
-similarity, leaving the leftovers as pure delete/insert. More code
-and a bigger debugging surface, but covers real cases (renames
-mixed with inserts, lines reordered inside a block). Worth a look
-at what VSCode / GitHub actually do before reinventing.
-
-## Compare beyond hunks across patchsets
-
-The "compared to" selector re-resolves the file diff between two
-patchsets, but leaves everything else (commits, descriptions, review
-summary) rendering as if the viewer were on the target patchset
-alone. A richer compare view would surface:
-
-- commits in patchset B that aren't in A, and vice versa;
-- per-commit description deltas across the matched commits;
-- review-summary deltas across the two rounds.
-
-Probably a dedicated panel on the compare landing rather than
-annotations sprinkled on existing widgets.
+Compare v2 surfaces per-change-id status (`same` / `changed` /
+`added` / `removed`), per-commit description deltas, and per-pair
+interdiffs. The one thing it still doesn't surface is the
+review-summary delta across the two rounds — the manifest's
+`summary` field can change when an author updates the description
+to track scope drift, but a reader comparing PS_a → PS_b never
+sees that. Probably a small section above the pair list on the
+compare landing.
 
 ## Tauri desktop shell
 
@@ -182,62 +162,6 @@ intended. The shape is straightforward:
 Wait for the demand signal before building — most reviews probably
 don't hit this, and the divergence banner + `jj abandon` workflow
 covers the common case.
-
-## Patchset-compare: two complementary views
-
-The compare branch in `open_review` runs `build_diff_metadata(PS_a.tip,
-PS_b.tip)` — a raw tree-vs-tree diff between the two snapshots. That
-result is mathematically correct, but readers ask two different
-questions about it that the single view conflates:
-
-1. **"What changed about *this patchset* between rounds?"** —
-   treat PS_a as ground truth, show every file/line difference between
-   PS_a.tip and PS_b.tip. Useful for sweeping the agent's response to
-   your comments and verifying the edits match what you asked for.
-   The current behaviour, and the workflow most people will reach for
-   first.
-2. **"How did *each commit* evolve between rounds?"** — for every
-   change-id that appears in both PS_a and PS_b, an interdiff between
-   PS_a's version of that commit and PS_b's. Lets the reader zoom
-   into a single commit: "what did the agent rewrite about commit X."
-   `git range-diff` and the mailing-list `interdiff` tool serve the
-   same workflow.
-
-The second view also disambiguates the cases where the cumulative
-diff feels misleading: cross-file method moves (a `getArgumentNames`
-goes from `FunctionMetadata.java` to `Signature.java` and the
-cumulative view shows the move as 28 lines removed in one file with
-no semantic link to the additions in the other), style changes
-(javadoc → slash-doc that read as remove+add), or wholesale
-restructures the agent made beyond what was requested. None of these
-are diff-algorithm bugs — they're real changes shown without
-attribution. The per-commit view pins each delta to the commit (and
-implicitly the agent's task) that made it.
-
-**Shape:**
-
-- New service endpoint `compare_patchsets(repo, review, ps_a, ps_b)`
-  returning both shapes in one round trip:
-  - The cumulative `tree(PS_a.tip)` vs `tree(PS_b.tip)` file/hunk
-    diff. (Should be base-aware: if `PS_a.base != PS_b.base`,
-    reproject one onto the other's base — jj's in-memory rebase
-    makes this cheap — so upstream rebase noise doesn't appear as
-    "agent edits." Today every review in the corpus has stable
-    bases, but this matters once that stops being true.)
-  - Per-change-id pair list with each entry marked `same` (matching
-    commit IDs), `changed` (same change ID, different commit ID),
-    `added-in-PS_b`, or `removed-from-PS_a`. For `changed` entries,
-    include the inter-version diff (jj's `commit.inter_diff()`
-    template handles this natively).
-- UI: the cumulative diff stays the default landing view (matches
-  the current compare-mode mental model). The commits panel grows
-  the per-change-id markers; clicking a `changed` commit swaps the
-  main panel to that commit's inter-version diff. Both views are
-  derived from one server response, so switching is instant.
-- Keep `open_review`'s `compare` query param for backward compat,
-  but route the new richer response through the dedicated endpoint
-  so the wire format can grow without dragging the open-review
-  payload with it.
 
 ## Two-phase comment resolution: claim vs. acknowledgement
 
