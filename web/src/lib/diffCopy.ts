@@ -14,6 +14,8 @@
 //! through untouched, so copying from the comment composer, the
 //! sidebar, or anywhere else outside the diff still works normally.
 
+import type { DiffSelection } from './diffSelection';
+
 /** Install the document-level copy handler. Idempotent — calling
  *  twice during HMR is harmless. Returns an unsubscribe for tests
  *  and for the (currently unused) component-teardown path. */
@@ -92,6 +94,59 @@ function ancestorElement(node: Node): Element | null {
   return node.nodeType === Node.ELEMENT_NODE
     ? (node as Element)
     : node.parentElement;
+}
+
+/** Build the clipboard text for a `DiffSelection`, splicing in the
+ *  underlying source for any line in `[startLine, endLine]` whose
+ *  cell isn't rendered — inter-hunk gaps in particular. Used both
+ *  by the selection-popup's Copy button (where the caller awaits a
+ *  fetch of `fileText` first) and by the per-file Ctrl+C handler
+ *  (where `fileText` may still be null on the very first drag of a
+ *  file; hidden lines fall through to empty strings rather than
+ *  emit stale rendered text).
+ *
+ *  - `wrapper` — the file's `.hunks-wrapper`. Used to look up
+ *    rendered `td.content[data-side][data-line]` cells.
+ *  - `sel` — the resolved selection: side, line range, column
+ *    range. First / last line are clipped to `startCol` / `endCol`;
+ *    middle lines copy in full.
+ *  - `fileText` — the full file content for `sel.side`, or `null`
+ *    if the fetch hasn't resolved (or failed) yet. `null` causes
+ *    hidden lines to emit `''`; the caller is responsible for
+ *    making sure the content is loaded when it cares about the
+ *    hidden-line text. */
+export function buildCopyText(
+  wrapper: HTMLElement,
+  sel: DiffSelection,
+  fileText: string | null,
+): string {
+  const fileLines = fileText != null ? fileText.split('\n') : null;
+  const lines: string[] = [];
+  for (let ln = sel.startLine; ln <= sel.endLine; ln++) {
+    const pre = wrapper.querySelector(
+      `td.content[data-side="${sel.side}"][data-line="${ln}"] pre`,
+    ) as HTMLElement | null;
+    let text: string;
+    if (pre) {
+      text = pre.textContent ?? '';
+    } else if (fileLines) {
+      // 1-indexed line numbers; clamp to defend against off-by-one
+      // at EOF (file with no trailing newline yields one fewer
+      // entry than the last line number we'd expect).
+      text = fileLines[ln - 1] ?? '';
+    } else {
+      text = '';
+    }
+    if (ln === sel.startLine && ln === sel.endLine) {
+      text = text.slice(sel.startCol, sel.endCol);
+    } else if (ln === sel.startLine) {
+      text = text.slice(sel.startCol);
+    } else if (ln === sel.endLine) {
+      text = text.slice(0, sel.endCol);
+    }
+    lines.push(text);
+  }
+  return lines.join('\n');
 }
 
 function escapeHtml(text: string): string {
