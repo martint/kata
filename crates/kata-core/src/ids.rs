@@ -246,12 +246,24 @@ impl FromStr for LineRange {
 #[error("not a valid line range: {0:?}")]
 pub struct LineRangeParseError(String);
 
-/// 0-based, half-open UTF-16 column range within a single line —
-/// `[start, end)`. UTF-16 because that's what `String.length` /
-/// `Range.startOffset` use in browsers, and the frontend's
-/// drag-to-select translation does its arithmetic in those units.
-/// Backend code generally treats columns as opaque integers; the
-/// only domain rule is `start < end`.
+/// 0-based UTF-16 column anchors. Semantics depend on the comment's
+/// `LineRange`:
+///
+/// - **Single-line** (`lines.start == lines.end`): a half-open
+///   character range `[start, end)` within that line. Invariant
+///   `start < end` enforced by [`ColumnRange::new`].
+/// - **Multi-line** (`lines.start < lines.end`): `start` is the
+///   character offset on the FIRST line where the selection begins,
+///   `end` is the character offset on the LAST line where it ends.
+///   No relation required between `start` and `end` — the last line
+///   may be shorter than the first, or end mid-token. Constructed
+///   directly (struct literal) since [`ColumnRange::new`] assumes
+///   the single-line invariant.
+///
+/// UTF-16 because that's what `String.length` / `Range.startOffset`
+/// use in browsers, and the frontend's drag-to-select translation
+/// does its arithmetic in those units. Backend code treats both
+/// fields as opaque integers.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ColumnRange {
@@ -260,6 +272,9 @@ pub struct ColumnRange {
 }
 
 impl ColumnRange {
+    /// Single-line column range. Asserts `start < end` — for multi-
+    /// line ranges where the invariant doesn't hold, build the
+    /// struct directly with `ColumnRange { start, end }`.
     pub fn new(start: u32, end: u32) -> Self {
         assert!(start < end, "ColumnRange start must be < end");
         Self { start, end }

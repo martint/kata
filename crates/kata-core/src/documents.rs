@@ -81,13 +81,20 @@ pub struct Comment {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lines: Option<LineRange>,
 
-    /// Optional intra-line character range, scoping the comment to a
-    /// region within a single line rather than the whole line. Only
-    /// valid when `lines` is set and `lines.start == lines.end` (you
-    /// can't pick a sub-region across multiple lines — those drop
-    /// back to line-level). UTF-16 offsets. Inherits the line
-    /// anchor's revival state — when the line is Drifted or Outdated
-    /// the column highlight degrades to a plain line-level mark.
+    /// Optional column-range anchor, scoping the comment to a sub-
+    /// region of the line range rather than the whole line(s). Two
+    /// modes (see [`ColumnRange`] for full semantics):
+    ///
+    /// - Single-line (`lines.start == lines.end`): half-open
+    ///   `[start, end)` within that line.
+    /// - Multi-line (`lines.start < lines.end`): `start` is the
+    ///   offset on the FIRST selected line, `end` is the offset on
+    ///   the LAST one — typical for free-form text selections that
+    ///   begin mid-line on one row and end mid-line on another.
+    ///
+    /// UTF-16 offsets. Inherits the line anchor's revival state —
+    /// when the line is Drifted or Outdated the column highlight
+    /// degrades to a plain line-level mark.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub columns: Option<ColumnRange>,
 

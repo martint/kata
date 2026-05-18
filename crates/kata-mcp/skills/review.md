@@ -28,12 +28,15 @@ MCP server can front multiple repositories; every tool call takes a
    `manifest.patchsets[last].tip_change` and `tip_commit`. Pick the
    granularity that fits:
    - `draft_line_comment` — a specific line range on one side.
-     Pass `columns` (UTF-16 `{start, end}` inside the line) to scope
-     the comment to a region within a single line — useful for
-     dense lines (long parameter lists, chained calls) where
-     line-granularity hides which part you mean. Only valid when
-     `lines.start == lines.end`; multi-line ranges fall back to
-     line-level.
+     Pass `columns` to scope to a sub-region: for a single line
+     (`lines.start == lines.end`), `columns` is `{start, end}` UTF-
+     16 within the line — useful for dense lines (long parameter
+     lists, chained calls) where line-granularity hides which part
+     you mean. For a multi-line range, `columns.start` is the
+     offset on the FIRST line and `columns.end` is the offset on
+     the LAST line — the typical shape when reviewers free-form
+     drag-select prose that begins mid-line on one row and ends
+     mid-line on another.
    - `draft_file_comment` — feedback about a whole file.
    - `draft_review_comment` — overall notes, not tied to any file.
 

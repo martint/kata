@@ -208,7 +208,7 @@ impl ReviewMcp {
     // ---- comments ------------------------------------------------------
 
     #[tool(
-        description = "Draft a line-level comment. Auto-starts a session if none is open. Use `flag` to mark severity: must-do, suggestion, or question. Pass `columns` (UTF-16 `[start, end)` inside the line) to scope the comment to a region within the line — only valid when `lines` is a single line."
+        description = "Draft a line-level comment. Auto-starts a session if none is open. Use `flag` to mark severity: must-do, suggestion, or question. Pass `columns` to scope to a sub-region of the line range: for a single line `lines.start == lines.end`, `columns` is the half-open UTF-16 range `[start, end)` within that line; for a multi-line range, `columns.start` is the offset on the FIRST line and `columns.end` is the offset on the LAST line (no relation required between the two values)."
     )]
     async fn draft_line_comment(
         &self,
@@ -729,8 +729,11 @@ pub struct DraftLineCommentArgs {
     pub file: String,
     pub side: Side,
     pub lines: LineRange,
-    /// Optional intra-line character range (UTF-16, `[start, end)`).
-    /// When set, `lines` must be a single line. Omit for whole-line.
+    /// Optional column-range anchor (UTF-16). For a single-line
+    /// `lines`, this is `[start, end)` within the line. For a multi-
+    /// line `lines`, `start` is the offset on the FIRST selected
+    /// line and `end` is the offset on the LAST one. Omit for whole-
+    /// line(s).
     #[serde(default)]
     pub columns: Option<ColumnRange>,
     pub flag: Flag,

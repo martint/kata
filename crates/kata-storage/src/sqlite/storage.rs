@@ -1223,8 +1223,13 @@ fn comment_from_row(row: &Row<'_>) -> rusqlite::Result<Comment> {
         (Some(s), Some(e)) => Some(LineRange::new(s, e)),
         _ => None,
     };
+    // Either both column endpoints are stored or neither — partial
+    // rows are treated as "no columns". `end > start` is NOT enforced
+    // here: a multi-line comment's columns mean "start col on first
+    // line, end col on last line", and the last line can perfectly
+    // well end before the first line's start col.
     let columns = match (col_start, col_end) {
-        (Some(s), Some(e)) if e > s => Some(ColumnRange::new(s, e)),
+        (Some(s), Some(e)) => Some(ColumnRange { start: s, end: e }),
         _ => None,
     };
     let flag = flag_from_str(&flag_str).map_err(|e| {

@@ -1787,22 +1787,22 @@ fn validate_anchor(input: &DraftCommentInput) -> ServiceResult<()> {
         return Err(ServiceError::BadRequest("lines provided without side".into()));
     }
     if let Some(cols) = input.columns {
-        // Columns are scoped to a single line. If the caller asks for
-        // a multi-line *and* column range, we'd have to decide which
-        // line owns the slice — better to reject up front and let the
-        // frontend fall back to line-level. Same logic for
-        // columns-without-lines: nothing to anchor against.
         let lines = input
             .lines
             .ok_or_else(|| ServiceError::BadRequest("columns provided without lines".into()))?;
-        if lines.start != lines.end {
-            return Err(ServiceError::BadRequest(
-                "columns only valid on single-line comments".into(),
-            ));
+        if lines.start == lines.end {
+            // Single-line column range — half-open `[start, end)`
+            // within the line. The `>=` check rejects both `start ==
+            // end` (zero-width) and `start > end` (inverted).
+            if cols.end <= cols.start {
+                return Err(ServiceError::BadRequest("column end must be > start".into()));
+            }
         }
-        if cols.end <= cols.start {
-            return Err(ServiceError::BadRequest("column end must be > start".into()));
-        }
+        // Multi-line column range: `cols.start` is the offset on the
+        // FIRST selected line and `cols.end` is the offset on the
+        // LAST one — they live in different coord systems, so no
+        // relation between them is required. Both are `u32`, so non-
+        // negativity is type-enforced. Nothing more to check.
     }
     Ok(())
 }
@@ -2052,16 +2052,40 @@ mod validate_anchor_tests {
     }
 
     #[test]
-    fn rejects_columns_spanning_multiple_lines() {
-        // Multi-line + columns ambiguity: which line owns the slice?
-        // We reject so callers fall back to line-level.
+    fn accepts_multi_line_columns_with_end_greater_than_start() {
+        // Multi-line + columns: `start` is the col offset on the FIRST
+        // line where the selection begins; `end` is the col offset on
+        // the LAST line where it ends. They live in different coord
+        // systems, so there's no required relation between them.
+        // Here `end > start` — should pass.
         let mut input = base_input();
         input.lines = Some(LineRange::new(10, 15));
-        input.columns = Some(ColumnRange::new(4, 12));
-        assert_bad_request(
-            validate_anchor(&input),
-            "columns only valid on single-line comments",
-        );
+        input.columns = Some(ColumnRange { start: 4, end: 12 });
+        validate_anchor(&input).expect("valid multi-line column anchor (end > start)");
+    }
+
+    #[test]
+    fn accepts_multi_line_columns_with_end_less_than_start() {
+        // Same multi-line case, but the last line ends BEFORE the
+        // first line's start col (selection started mid-token on a
+        // long line and ended near column 0 on a short last line).
+        // Single-line validation would reject this; multi-line must
+        // accept.
+        let mut input = base_input();
+        input.lines = Some(LineRange::new(10, 15));
+        input.columns = Some(ColumnRange { start: 20, end: 3 });
+        validate_anchor(&input).expect("valid multi-line column anchor (end < start)");
+    }
+
+    #[test]
+    fn accepts_multi_line_columns_with_zero_offsets() {
+        // Selection that begins at col 0 on the first line and ends
+        // at col 0 on the last (last line empty, or selection ended
+        // immediately at line start). Multi-line columns allow it.
+        let mut input = base_input();
+        input.lines = Some(LineRange::new(10, 15));
+        input.columns = Some(ColumnRange { start: 0, end: 0 });
+        validate_anchor(&input).expect("valid multi-line column anchor (both 0)");
     }
 
     #[test]
