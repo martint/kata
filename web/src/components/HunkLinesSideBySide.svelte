@@ -386,6 +386,12 @@
               {#if row.left}
                 {@const html = withWordDiff(highlightedLeft(row.left), row.left)}
                 <pre>{#if html}{@html html}{:else}{lineText(row.left) || ' '}{/if}</pre>
+              {:else}
+                <!-- Empty <td>s collapse to zero height; a <pre> with a
+                     single space gives the row the same line-box height
+                     as its populated siblings, keeping this table in
+                     lockstep with the right-side one. -->
+                <pre> </pre>
               {/if}
             </td>
           </tr>
@@ -472,6 +478,8 @@
               {#if row.right}
                 {@const html = withWordDiff(highlightedRight(row.right), row.right)}
                 <pre>{#if html}{@html html}{:else}{lineText(row.right) || ' '}{/if}</pre>
+              {:else}
+                <pre> </pre>
               {/if}
             </td>
           </tr>
