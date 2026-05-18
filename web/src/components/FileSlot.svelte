@@ -80,6 +80,12 @@
     /** Render the diff hunks. When `false` the file collapses to a
      *  flat comments-only listing (the old "compact" mode). */
     showDiffs: boolean;
+    /** When the user hasn't explicitly toggled a specific thread,
+     *  this is the fallback fold state. `diffs` view mode sets it
+     *  true so threads render as gutter markers; `both` mode sets it
+     *  false so threads render inline expanded. Per-thread overrides
+     *  live in foldStore under the `thread` kind. */
+    defaultThreadsCollapsed?: boolean;
     /** Render comment threads inline, the file-level thread, orphan
      *  threads, and the +comment buttons. When `false` the diff is
      *  rendered without any comment UI. */
@@ -153,6 +159,7 @@
     forceRender,
     showDiffs,
     showComments,
+    defaultThreadsCollapsed = false,
     commentsWriteable = true,
     sbsSplit,
     setSbsSplit,
@@ -369,6 +376,7 @@
         {saving}
         {showDiffs}
         {showComments}
+        {defaultThreadsCollapsed}
         {commentsWriteable}
         {sbsSplit}
         {setSbsSplit}

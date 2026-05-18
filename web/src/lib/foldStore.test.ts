@@ -30,6 +30,17 @@ describe('createFoldStore', () => {
     expect(s.get('comment', 'same-id')).toBe(false);
   });
 
+  test('thread kind round-trips alongside the others', () => {
+    // Per-anchor thread fold is the most recently added kind — verify
+    // it doesn't trip the in-memory cache shape.
+    const s = createFoldStore('repo', 1);
+    s.set('thread', 'foo.ts:tip:42', true);
+    s.set('thread', 'bar.ts:base:7', false);
+    expect(s.get('thread', 'foo.ts:tip:42')).toBe(true);
+    expect(s.get('thread', 'bar.ts:base:7')).toBe(false);
+    expect(s.ids('thread').sort()).toEqual(['bar.ts:base:7', 'foo.ts:tip:42']);
+  });
+
   test('different (repo, number) pairs are independent stores', () => {
     const a = createFoldStore('repo-a', 1);
     const b = createFoldStore('repo-b', 1);

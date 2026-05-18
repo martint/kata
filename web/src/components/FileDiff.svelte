@@ -72,6 +72,8 @@
      *  still render when false. See FileSlot's prop doc for the
      *  per-commit-compare design reason. */
     commentsWriteable?: boolean;
+    /** Default per-thread collapse state. See FileSlot for details. */
+    defaultThreadsCollapsed?: boolean;
     /** Base-side width fraction for the side-by-side renderer. 0.5
      *  by default (even split). Threaded down to every
      *  HunkLinesSideBySide instance so the page's SBS split is
@@ -131,6 +133,7 @@
     showDiffs = true,
     showComments = true,
     commentsWriteable = true,
+    defaultThreadsCollapsed = false,
     sbsSplit = 0.5,
     setSbsSplit = () => {},
     loadingHunks = false,
@@ -1164,6 +1167,7 @@
               {onsubmitannotation}
               {ondeleteannotation}
               {oneditannotation}
+              {defaultThreadsCollapsed}
               {responses}
               {currentPatchset}
               {composing}
@@ -1196,6 +1200,7 @@
               {onsubmitannotation}
               {ondeleteannotation}
               {oneditannotation}
+              {defaultThreadsCollapsed}
               {responses}
               {currentPatchset}
               {composing}

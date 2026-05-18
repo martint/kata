@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { getContext } from 'svelte';
   import type {
     AnnotationInput,
     AnnotationView,
@@ -11,6 +12,7 @@
     ResponseView,
     Side,
   } from '../lib/types';
+  import type { FoldStore } from '../lib/foldStore';
   import AnnotationBubble from './AnnotationBubble.svelte';
   import AnnotationComposer, {
     type AnnotationComposerTarget,
@@ -71,6 +73,11 @@
     onsubmitannotation?: (input: AnnotationInput) => Promise<void>;
     ondeleteannotation?: (annotation: AnnotationView) => Promise<void>;
     oneditannotation?: (annotation: AnnotationView) => void;
+    /** Default fold state for threads at lines the user hasn't
+     *  toggled explicitly. `diffs` view mode passes true so the
+     *  diff stays clean and threads become clickable markers in the
+     *  gutter; `both` mode passes false. */
+    defaultThreadsCollapsed?: boolean;
   }
   const {
     hunk,
@@ -101,7 +108,40 @@
     onsubmitannotation = async () => {},
     ondeleteannotation = async () => {},
     oneditannotation = () => {},
+    defaultThreadsCollapsed = false,
   }: Props = $props();
+
+  /** Per-anchor thread fold state, persisted via foldStore. We track
+   *  the set of (file:side:line) keys the user has explicitly
+   *  toggled and merge with `defaultThreadsCollapsed` at read time —
+   *  lets the user override the view-mode default on a per-thread
+   *  basis. */
+  const foldStore = getContext<FoldStore | undefined>('kata-fold-store');
+  // Bumping this counter is how we re-trigger reads after a toggle.
+  // The store is non-reactive (a plain object), so a $derived that
+  // calls `foldStore.get(...)` wouldn't re-evaluate on its own.
+  let foldVersion = $state(0);
+
+  function threadKey(side: Side, line: number): string {
+    return `${filePath}:${side}:${line}`;
+  }
+
+  function isThreadCollapsed(side: Side, line: number): boolean {
+    // Read foldVersion to register a dependency — Svelte's $derived
+    // tracking notices this and re-runs whenever toggleThreadFold
+    // bumps the counter.
+    void foldVersion;
+    const stored = foldStore?.get('thread', threadKey(side, line));
+    return stored ?? defaultThreadsCollapsed;
+  }
+
+  function toggleThreadFold(side: Side, line: number) {
+    if (!foldStore) return;
+    const k = threadKey(side, line);
+    const currently = foldStore.get('thread', k) ?? defaultThreadsCollapsed;
+    foldStore.set('thread', k, !currently);
+    foldVersion++;
+  }
 
   const showBase = $derived(lineNumberMode !== 'tip');
   const showTip = $derived(lineNumberMode !== 'base');
@@ -426,7 +466,39 @@
       {#if a && showComments}
         {@const threads = threadsFor(a)}
         {@const notes = annotationsFor(a)}
-        {#if threads.length > 0 || notes.length > 0}
+        {@const hasContent = threads.length > 0 || notes.length > 0}
+        {@const collapsed = hasContent && isThreadCollapsed(a.side, a.line)}
+        {#if hasContent && collapsed}
+          <!-- Folded-thread marker row. Compact one-liner with a
+               count + click target that expands the full thread.
+               Same `from-<origin>` tint as the expanded thread-row
+               so the eye doesn't jump when toggling. -->
+          <tr class="thread-row collapsed from-{line.origin}">
+            <td colspan={colspan} class="thread-cell">
+              <div
+                class="thread-sticky"
+                style="--gutter-offset: {lnCols * 65}px"
+              >
+                <button
+                  type="button"
+                  class="folded-marker"
+                  title="Click to expand"
+                  onclick={() => toggleThreadFold(a.side, a.line)}
+                >
+                  <Bubble size={11} />
+                  <span class="count"
+                    >{threads.length + notes.length}
+                    {threads.length + notes.length === 1
+                      ? 'comment'
+                      : 'comments'}</span
+                  >
+                  <span class="chev">▸</span>
+                </button>
+              </div>
+            </td>
+          </tr>
+        {/if}
+        {#if hasContent && !collapsed}
           <tr class="thread-row from-{line.origin}">
             <td colspan={colspan} class="thread-cell">
               <!-- Visual indent past the line-number gutter is done
@@ -440,6 +512,12 @@
                 class="thread-sticky"
                 style="--gutter-offset: {lnCols * 65}px"
               >
+                <button
+                  type="button"
+                  class="collapse-thread"
+                  title="Collapse this thread"
+                  onclick={() => toggleThreadFold(a.side, a.line)}
+                >▾</button>
                 {#each notes as n (n.annotation_id)}
                   <AnnotationBubble
                     annotation={n}
@@ -685,6 +763,48 @@
   .thread-cell {
     padding: 0;
     background: transparent;
+  }
+
+  /* Folded-thread marker — one slim row with comment-bubble icon, a
+   * count, and a chevron. Click anywhere to expand. Replaces the
+   * full thread block when the per-thread fold is on (whether from
+   * `diffs` mode default or an explicit user collapse). */
+  .folded-marker {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--link-bg);
+    border: 1px solid var(--link);
+    border-radius: 4px;
+    color: var(--link);
+    font-size: 11px;
+    padding: 2px 8px;
+    cursor: pointer;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+  }
+  .folded-marker:hover {
+    background: var(--link);
+    color: var(--on-accent);
+  }
+  .folded-marker .chev {
+    font-size: 10px;
+  }
+
+  /* "Collapse this thread" affordance in the expanded thread block.
+   * Lives in the sticky wrapper's top-right corner so it doesn't
+   * compete with the thread content for the eye. */
+  .collapse-thread {
+    float: right;
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+    padding: 0 4px;
+  }
+  .collapse-thread:hover {
+    color: var(--link);
   }
 
   /* The sticky wrapper lets the thread stay at the visible viewport while

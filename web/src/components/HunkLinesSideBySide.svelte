@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { getContext } from 'svelte';
   import type {
     AnnotationInput,
     AnnotationView,
@@ -11,6 +12,7 @@
     ResponseView,
     Side,
   } from '../lib/types';
+  import type { FoldStore } from '../lib/foldStore';
   import AnnotationBubble from './AnnotationBubble.svelte';
   import AnnotationComposer, {
     type AnnotationComposerTarget,
@@ -66,6 +68,7 @@
     onsubmitannotation?: (input: AnnotationInput) => Promise<void>;
     ondeleteannotation?: (annotation: AnnotationView) => Promise<void>;
     oneditannotation?: (annotation: AnnotationView) => void;
+    defaultThreadsCollapsed?: boolean;
   }
   const {
     hunk,
@@ -97,7 +100,29 @@
     onsubmitannotation = async () => {},
     ondeleteannotation = async () => {},
     oneditannotation = () => {},
+    defaultThreadsCollapsed = false,
   }: Props = $props();
+
+  /** Per-anchor thread fold — same idea as HunkLines, scoped to this
+   *  component's filePath. Toggling bumps `foldVersion` so the
+   *  $derived row computations re-run. */
+  const foldStore = getContext<FoldStore | undefined>('kata-fold-store');
+  let foldVersion = $state(0);
+  function threadKey(side: Side, line: number): string {
+    return `${filePath}:${side}:${line}`;
+  }
+  function isThreadCollapsed(side: Side, line: number): boolean {
+    void foldVersion;
+    const stored = foldStore?.get('thread', threadKey(side, line));
+    return stored ?? defaultThreadsCollapsed;
+  }
+  function toggleThreadFold(side: Side, line: number) {
+    if (!foldStore) return;
+    const k = threadKey(side, line);
+    const currently = foldStore.get('thread', k) ?? defaultThreadsCollapsed;
+    foldStore.set('thread', k, !currently);
+    foldVersion++;
+  }
 
   type PairedRow =
     | { kind: 'context'; left: HunkLine; right: HunkLine }
@@ -470,13 +495,49 @@
           {@const leftThreads = showComments ? threadsAt('base', row.left?.base_line) : []}
           {@const leftNotes = showComments ? annotationsAt('base', row.left?.base_line) : []}
           {@const leftAnnotating = isAnnotatingHere('base', row.left?.base_line)}
-          {#if leftThreads.length > 0 || leftNotes.length > 0 || leftAnnotating}
+          {@const leftHasContent = leftThreads.length > 0 || leftNotes.length > 0}
+          {@const leftCollapsed =
+            leftHasContent &&
+            row.left?.base_line != null &&
+            isThreadCollapsed('base', row.left.base_line)}
+          {#if leftHasContent && leftCollapsed}
+            <tr class="sbs-threads collapsed from-{row.left?.origin ?? 'context'}">
+              <td colspan="2" class="thread-cell">
+                <div class="thread-sticky" style="--gutter-offset: 65px">
+                  <button
+                    type="button"
+                    class="folded-marker"
+                    title="Click to expand"
+                    onclick={() => toggleThreadFold('base', row.left!.base_line!)}
+                  >
+                    <Bubble size={11} />
+                    <span class="count"
+                      >{leftThreads.length + leftNotes.length}
+                      {leftThreads.length + leftNotes.length === 1
+                        ? 'comment'
+                        : 'comments'}</span
+                    >
+                    <span class="chev">▸</span>
+                  </button>
+                </div>
+              </td>
+            </tr>
+          {/if}
+          {#if (leftHasContent && !leftCollapsed) || leftAnnotating}
             <tr class="sbs-threads from-{row.left?.origin ?? 'context'}">
               <td colspan="2" class="thread-cell">
                 <!-- Indent past the side's line-number gutter via
                      padding rather than an empty cell — see
                      HunkLines.svelte for the rationale. -->
                 <div class="thread-sticky" style="--gutter-offset: 65px">
+                  {#if leftHasContent && !leftCollapsed}
+                    <button
+                      type="button"
+                      class="collapse-thread"
+                      title="Collapse this thread"
+                      onclick={() => toggleThreadFold('base', row.left!.base_line!)}
+                    >▾</button>
+                  {/if}
                   {#each leftNotes as n (n.annotation_id)}
                     <AnnotationBubble
                       annotation={n}
@@ -589,13 +650,49 @@
           {@const rightThreads = showComments ? threadsAt('tip', row.right?.tip_line) : []}
           {@const rightNotes = showComments ? annotationsAt('tip', row.right?.tip_line) : []}
           {@const rightAnnotating = isAnnotatingHere('tip', row.right?.tip_line)}
-          {#if rightThreads.length > 0 || rightNotes.length > 0 || rightAnnotating}
+          {@const rightHasContent = rightThreads.length > 0 || rightNotes.length > 0}
+          {@const rightCollapsed =
+            rightHasContent &&
+            row.right?.tip_line != null &&
+            isThreadCollapsed('tip', row.right.tip_line)}
+          {#if rightHasContent && rightCollapsed}
+            <tr class="sbs-threads collapsed from-{row.right?.origin ?? 'context'}">
+              <td colspan="2" class="thread-cell">
+                <div class="thread-sticky" style="--gutter-offset: 65px">
+                  <button
+                    type="button"
+                    class="folded-marker"
+                    title="Click to expand"
+                    onclick={() => toggleThreadFold('tip', row.right!.tip_line!)}
+                  >
+                    <Bubble size={11} />
+                    <span class="count"
+                      >{rightThreads.length + rightNotes.length}
+                      {rightThreads.length + rightNotes.length === 1
+                        ? 'comment'
+                        : 'comments'}</span
+                    >
+                    <span class="chev">▸</span>
+                  </button>
+                </div>
+              </td>
+            </tr>
+          {/if}
+          {#if (rightHasContent && !rightCollapsed) || rightAnnotating}
             <tr class="sbs-threads from-{row.right?.origin ?? 'context'}">
               <td colspan="2" class="thread-cell">
                 <!-- Indent past the side's line-number gutter via
                      padding rather than an empty cell — see
                      HunkLines.svelte for the rationale. -->
                 <div class="thread-sticky" style="--gutter-offset: 65px">
+                  {#if rightHasContent && !rightCollapsed}
+                    <button
+                      type="button"
+                      class="collapse-thread"
+                      title="Collapse this thread"
+                      onclick={() => toggleThreadFold('tip', row.right!.tip_line!)}
+                    >▾</button>
+                  {/if}
                   {#each rightNotes as n (n.annotation_id)}
                     <AnnotationBubble
                       annotation={n}
@@ -868,6 +965,42 @@
   .thread-cell {
     padding: 0;
     background: transparent;
+  }
+
+  /* Folded-thread marker — see HunkLines.svelte for rationale. */
+  .folded-marker {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--link-bg);
+    border: 1px solid var(--link);
+    border-radius: 4px;
+    color: var(--link);
+    font-size: 11px;
+    padding: 2px 8px;
+    cursor: pointer;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+  }
+  .folded-marker:hover {
+    background: var(--link);
+    color: var(--on-accent);
+  }
+  .folded-marker .chev {
+    font-size: 10px;
+  }
+
+  .collapse-thread {
+    float: right;
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+    padding: 0 4px;
+  }
+  .collapse-thread:hover {
+    color: var(--link);
   }
 
   /* Blue tint + left stripe so inline threads visually separate from

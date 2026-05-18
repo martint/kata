@@ -240,11 +240,16 @@
 
   // --- View mode ------------------------------------------------------
   // Three mutually-exclusive display modes: diffs + comments (default),
-  // diffs only (hide comment threads), and comments only (the old
-  // "compact" mode that hides the diff hunks and lists comments flat).
-  // The state is the enum; the two booleans `showDiffs` / `showComments`
-  // are derived from it so downstream components can keep their simple
-  // boolean props without learning the enum.
+  // diffs with comments collapsed (compact reading), and comments only
+  // (the old "compact" mode that hides the diff hunks and lists
+  // comments flat). The state is the enum; the downstream booleans
+  // `showDiffs` / `showComments` / `defaultThreadsCollapsed` are
+  // derived so child components keep their simple props.
+  //
+  // `diffs` no longer *hides* comments — it renders them collapsed
+  // with a clickable gutter marker on the anchor line. The user can
+  // still expand any individual thread; the per-anchor fold state
+  // persists in foldStore under the `thread` kind.
   type ViewMode = 'both' | 'diffs' | 'comments';
   const VIEW_KEY = 'kata:viewMode';
   function readViewMode(): ViewMode {
@@ -255,7 +260,16 @@
   }
   let viewMode = $state<ViewMode>(readViewMode());
   const showDiffs = $derived(viewMode !== 'comments');
-  const showComments = $derived(viewMode !== 'diffs');
+  // Comments are always part of the diff view now — `diffs` mode
+  // collapses them with a gutter marker instead of hiding them
+  // outright. `showComments` stays true wherever the diff renders,
+  // so the marker + per-thread expansion always works.
+  const showComments = $derived(true);
+  /** Default per-thread collapse state when the user hasn't toggled a
+   *  specific anchor yet. `diffs` mode wants every thread collapsed
+   *  so the diff stays clean; `both` mode wants them expanded so the
+   *  conversation reads inline. */
+  const defaultThreadsCollapsed = $derived(viewMode === 'diffs');
   $effect(() => {
     if (typeof localStorage === 'undefined') return;
     localStorage.setItem(VIEW_KEY, viewMode);
@@ -2368,6 +2382,7 @@
             composing.file === f.path)}
           {showDiffs}
           {showComments}
+          {defaultThreadsCollapsed}
           {sbsSplit}
           {setSbsSplit}
           diffCache={fileDiffCache}

@@ -22,8 +22,16 @@
 
 /** What kind of thing is being folded. The store namespaces by kind so
  *  prune calls can scope to "files that still exist" without touching
- *  comment-thread state, etc. */
-export type FoldKind = 'file' | 'comment' | 'commit';
+ *  comment-thread state, etc.
+ *
+ *  - `file` — whole-file collapse on `FileSlot`.
+ *  - `comment` — per-comment "I unfolded this resolved comment"
+ *    overrides inside `CommentThread`.
+ *  - `commit` — per-commit body expansion in `CommitsPanel`.
+ *  - `thread` — per-anchor (file/side/line) thread fold. Drives the
+ *    "diffs view" collapse-by-default + per-line markers in
+ *    HunkLines / HunkLinesSideBySide. Keys are `${file}:${side}:${line}`. */
+export type FoldKind = 'file' | 'comment' | 'commit' | 'thread';
 
 /** Per-review fold store. */
 export interface FoldStore {
