@@ -15,6 +15,7 @@
   import { getContext } from 'svelte';
   import { api } from '../lib/api';
   import type {
+    AnnotationView,
     CommentView,
     ComposerTarget,
     DraftResponseInput,
@@ -24,6 +25,7 @@
     ResponseView,
   } from '../lib/types';
   import type { FoldStore } from '../lib/foldStore';
+  import type { AnnotationComposerTarget } from './AnnotationComposer.svelte';
   import FileDiff from './FileDiff.svelte';
 
   interface Props {
@@ -61,6 +63,9 @@
      *  the network round-trip is eager. */
     eagerFetch: boolean;
     comments: CommentView[];
+    /** Annotations scoped to this slot's file. Passed straight through
+     *  to `FileDiff` which re-filters down to per-line. */
+    annotations?: AnnotationView[];
     responses: ResponseView[];
     /** Patchset the viewer is currently showing. Threaded into
      *  CommentThread so each comment's "PS N" badge can render as a
@@ -109,6 +114,20 @@
     ondelete: (comment: CommentView) => Promise<void>;
     onedit: (comment: CommentView) => void;
     onselectpatchset: (n: number, commentId?: string) => void;
+    /** Currently-open annotation composer, if any. Non-null only when
+     *  the user is annotating in *this* file. */
+    composingAnnotation?: AnnotationComposerTarget | null;
+    /** True when the current viewer is allowed to author annotations
+     *  (i.e., they're the review creator). Gates the "Note" gutter
+     *  button and the edit/delete affordances on existing bubbles. */
+    canAnnotate?: boolean;
+    onstartannotate?: (target: AnnotationComposerTarget) => void;
+    oncancelannotate?: () => void;
+    onsubmitannotation?: (
+      input: import('../lib/types').AnnotationInput,
+    ) => Promise<void>;
+    ondeleteannotation?: (annotation: AnnotationView) => Promise<void>;
+    oneditannotation?: (annotation: AnnotationView) => void;
     /** Timestamp of the viewer's previous open of the review. Threaded
      *  down to `FileDiff` → `CommentThread` so threads with responses
      *  newer than this get the "new replies" badge and stay expanded. */
@@ -126,6 +145,7 @@
     interdiffEndpoints = null,
     eagerFetch,
     comments,
+    annotations = [],
     responses,
     currentPatchset,
     composing,
@@ -145,6 +165,13 @@
     ondelete,
     onedit,
     onselectpatchset,
+    composingAnnotation = null,
+    canAnnotate = false,
+    onstartannotate = () => {},
+    oncancelannotate = () => {},
+    onsubmitannotation = async () => {},
+    ondeleteannotation = async () => {},
+    oneditannotation = () => {},
     lastVisitAt = null,
     viewer = '',
   }: Props = $props();
@@ -328,6 +355,14 @@
         {patchset}
         {compareBaseCommit}
         {comments}
+        {annotations}
+        {composingAnnotation}
+        {canAnnotate}
+        {onstartannotate}
+        {oncancelannotate}
+        {onsubmitannotation}
+        {ondeleteannotation}
+        {oneditannotation}
         {responses}
         {currentPatchset}
         {composing}

@@ -4,6 +4,8 @@
   import { api } from '../lib/api';
   import { subscribe as subscribeEvents } from '../lib/events';
   import type {
+    AnnotationInput,
+    AnnotationView,
     CommentView,
     CommitDiffView,
     ComposerTarget,
@@ -16,6 +18,7 @@
     ResponseView,
     ReviewView,
   } from '../lib/types';
+  import type { AnnotationComposerTarget } from './AnnotationComposer.svelte';
   import { sortFilesLikeTree } from '../lib/tree';
   import { setTokenizationPaused } from '../lib/highlight.svelte';
   import { resolutionFor } from '../lib/resolution';
@@ -227,6 +230,11 @@
   // whole object (never mutate fields), so the granular reactivity isn't
   // useful here.
   let composing: ComposerTarget | null = $state.raw(null);
+  /** Annotation composer state, independent of `composing` so the two
+   *  flows don't collide. Annotations have their own component (no
+   *  flag, no draft session) and only the review creator can author
+   *  them — guarded by `canAnnotate` below. */
+  let composingAnnotation: AnnotationComposerTarget | null = $state.raw(null);
   let saving = $state(false);
   let error: string | null = $state(null);
 
@@ -1805,6 +1813,100 @@
     }
   }
 
+  // ---- Annotations --------------------------------------------------
+
+  /** Gate for the author-only annotation flow. The button + composer
+   *  affordances stay hidden for non-creators; the server enforces
+   *  the same rule, so this is purely a UX gate. */
+  const canAnnotate = $derived(
+    !!viewer && viewer === current.manifest.created_by,
+  );
+
+  function startAnnotate(target: AnnotationComposerTarget) {
+    composingAnnotation = target;
+  }
+
+  function cancelAnnotate() {
+    composingAnnotation = null;
+  }
+
+  function startEditAnnotation(annotation: AnnotationView) {
+    if (!canAnnotate) return;
+    const editing = {
+      annotationId: annotation.annotation_id,
+      body: annotation.body,
+    };
+    if (annotation.file && annotation.lines && annotation.side) {
+      composingAnnotation = {
+        kind: 'line',
+        file: annotation.file,
+        side: annotation.side,
+        startLine: annotation.lines.start,
+        endLine: annotation.lines.end,
+        editing,
+      };
+    } else if (annotation.file) {
+      composingAnnotation = {
+        kind: 'file',
+        file: annotation.file,
+        editing,
+      };
+    }
+  }
+
+  async function submitAnnotation(input: AnnotationInput) {
+    saving = true;
+    error = null;
+    try {
+      const editingId = composingAnnotation?.editing?.annotationId;
+      const saved = editingId
+        ? await api.updateAnnotation(
+            repo,
+            current.manifest.number,
+            editingId,
+            input,
+          )
+        : await api.createAnnotation(repo, current.manifest.number, input);
+      // Splice into local state. Anchor is trivially valid here — it
+      // was just authored against the patchset we're viewing; the
+      // server-side resolver will reconfirm on next load.
+      const view: AnnotationView = { ...saved, anchor: { kind: 'valid' } };
+      const prev = current.annotations ?? [];
+      const next = editingId
+        ? prev.map((a) => (a.annotation_id === editingId ? view : a))
+        : [...prev, view];
+      current = { ...current, annotations: next };
+      composingAnnotation = null;
+    } catch (e) {
+      error = (e as Error).message;
+    } finally {
+      saving = false;
+    }
+  }
+
+  async function deleteAnnotation(annotation: AnnotationView) {
+    if (!canAnnotate) return;
+    saving = true;
+    error = null;
+    try {
+      await api.deleteAnnotation(
+        repo,
+        current.manifest.number,
+        annotation.annotation_id,
+      );
+      current = {
+        ...current,
+        annotations: (current.annotations ?? []).filter(
+          (a) => a.annotation_id !== annotation.annotation_id,
+        ),
+      };
+    } catch (e) {
+      error = (e as Error).message;
+    } finally {
+      saving = false;
+    }
+  }
+
   async function submitResponse(input: DraftResponseInput) {
     saving = true;
     error = null;
@@ -2242,6 +2344,18 @@
           {commentsWriteable}
           eagerFetch={filesWithComments.has(f.path)}
           comments={visibleCommentsForFiles}
+          annotations={current.annotations ?? []}
+          composingAnnotation={composingAnnotation &&
+          'file' in composingAnnotation &&
+          composingAnnotation.file === f.path
+            ? composingAnnotation
+            : null}
+          {canAnnotate}
+          onstartannotate={startAnnotate}
+          oncancelannotate={cancelAnnotate}
+          onsubmitannotation={submitAnnotation}
+          ondeleteannotation={deleteAnnotation}
+          oneditannotation={startEditAnnotation}
           responses={allResponses}
           currentPatchset={selectedPatchset}
           composing={composing &&

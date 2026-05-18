@@ -1,5 +1,7 @@
 <script lang="ts">
   import type {
+    AnnotationInput,
+    AnnotationView,
     CommentView,
     ComposerTarget,
     DraftResponseInput,
@@ -9,6 +11,10 @@
     ResponseView,
     Side,
   } from '../lib/types';
+  import AnnotationBubble from './AnnotationBubble.svelte';
+  import AnnotationComposer, {
+    type AnnotationComposerTarget,
+  } from './AnnotationComposer.svelte';
   import Bubble from './Bubble.svelte';
   import CommentThread from './CommentThread.svelte';
   import { computeHunkWordDiff, wrapRanges } from '../lib/wordDiff';
@@ -18,6 +24,9 @@
     hunk: Hunk;
     filePath: string;
     comments: CommentView[];
+    /** Author-attached context notes scoped to this file. Per-line
+     *  filtering matches `comments`. */
+    annotations?: AnnotationView[];
     responses: ResponseView[];
     currentPatchset: number;
     composing: ComposerTarget | null;
@@ -49,11 +58,20 @@
     sbsSplit?: number;
     /** Drag callback for the divider. The parent clamps + snaps. */
     setSbsSplit?: (next: number) => void;
+    composingAnnotation?: AnnotationComposerTarget | null;
+    annotationAnchorIds?: { change: string; commit: string };
+    canAnnotate?: boolean;
+    onstartannotate?: (target: AnnotationComposerTarget) => void;
+    oncancelannotate?: () => void;
+    onsubmitannotation?: (input: AnnotationInput) => Promise<void>;
+    ondeleteannotation?: (annotation: AnnotationView) => Promise<void>;
+    oneditannotation?: (annotation: AnnotationView) => void;
   }
   const {
     hunk,
     filePath,
     comments,
+    annotations = [],
     responses,
     currentPatchset,
     composing,
@@ -71,6 +89,14 @@
     commentsWriteable = true,
     sbsSplit = 0.5,
     setSbsSplit = () => {},
+    composingAnnotation = null,
+    annotationAnchorIds = { change: '', commit: '' },
+    canAnnotate = false,
+    onstartannotate = () => {},
+    oncancelannotate = () => {},
+    onsubmitannotation = async () => {},
+    ondeleteannotation = async () => {},
+    oneditannotation = () => {},
   }: Props = $props();
 
   type PairedRow =
@@ -214,6 +240,42 @@
           ? c.anchor.new_lines
           : c.lines;
       return effective != null && effective.end === line;
+    });
+  }
+
+  function annotationsAt(
+    side: Side,
+    line: number | null | undefined,
+  ): AnnotationView[] {
+    if (line == null) return [];
+    return annotations.filter((n) => {
+      if (n.side !== side) return false;
+      const effective =
+        n.anchor.kind === 'moved' || n.anchor.kind === 'drifted'
+          ? n.anchor.new_lines
+          : n.lines;
+      return effective != null && effective.end === line;
+    });
+  }
+
+  function isAnnotatingHere(side: Side, line: number | null | undefined): boolean {
+    if (line == null) return false;
+    return (
+      composingAnnotation?.kind === 'line' &&
+      composingAnnotation.file === filePath &&
+      composingAnnotation.side === side &&
+      composingAnnotation.endLine === line
+    );
+  }
+
+  function startAnnotateHere(side: Side, line: number) {
+    if (!canAnnotate) return;
+    onstartannotate({
+      kind: 'line',
+      file: filePath,
+      side,
+      startLine: line,
+      endLine: line,
     });
   }
 
@@ -375,6 +437,16 @@
                 >
                   <Bubble size={12} />
                 </button>
+                {#if canAnnotate}
+                  <button
+                    type="button"
+                    class="add-note"
+                    title="Add author note (only the review creator can do this)"
+                    onclick={() => startAnnotateHere('base', row.left!.base_line!)}
+                  >
+                    N
+                  </button>
+                {/if}
               {/if}
               {row.left?.base_line ?? row.left?.tip_line ?? ''}
             </td>
@@ -396,27 +468,48 @@
             </td>
           </tr>
           {@const leftThreads = showComments ? threadsAt('base', row.left?.base_line) : []}
-          {#if leftThreads.length > 0}
+          {@const leftNotes = showComments ? annotationsAt('base', row.left?.base_line) : []}
+          {@const leftAnnotating = isAnnotatingHere('base', row.left?.base_line)}
+          {#if leftThreads.length > 0 || leftNotes.length > 0 || leftAnnotating}
             <tr class="sbs-threads from-{row.left?.origin ?? 'context'}">
               <td colspan="2" class="thread-cell">
                 <!-- Indent past the side's line-number gutter via
                      padding rather than an empty cell — see
                      HunkLines.svelte for the rationale. -->
                 <div class="thread-sticky" style="--gutter-offset: 65px">
-                  <CommentThread
-                    comments={leftThreads}
-                    {responses}
-                    {saving}
-                    {currentPatchset}
-                    {editingCommentId}
-                    {lastVisitAt}
-                    {viewer}
-                    {onreply}
-                    {onstatus}
-                    {ondelete}
-                    {onedit}
-                    {onselectpatchset}
-                  />
+                  {#each leftNotes as n (n.annotation_id)}
+                    <AnnotationBubble
+                      annotation={n}
+                      canEdit={canAnnotate}
+                      onedit={oneditannotation}
+                      ondelete={ondeleteannotation}
+                    />
+                  {/each}
+                  {#if leftAnnotating && composingAnnotation}
+                    <AnnotationComposer
+                      target={composingAnnotation}
+                      anchorIds={annotationAnchorIds}
+                      {saving}
+                      oncancel={oncancelannotate}
+                      onsubmit={onsubmitannotation}
+                    />
+                  {/if}
+                  {#if leftThreads.length > 0}
+                    <CommentThread
+                      comments={leftThreads}
+                      {responses}
+                      {saving}
+                      {currentPatchset}
+                      {editingCommentId}
+                      {lastVisitAt}
+                      {viewer}
+                      {onreply}
+                      {onstatus}
+                      {ondelete}
+                      {onedit}
+                      {onselectpatchset}
+                    />
+                  {/if}
                 </div>
               </td>
             </tr>
@@ -467,6 +560,16 @@
                 >
                   <Bubble size={12} />
                 </button>
+                {#if canAnnotate}
+                  <button
+                    type="button"
+                    class="add-note"
+                    title="Add author note (only the review creator can do this)"
+                    onclick={() => startAnnotateHere('tip', row.right!.tip_line!)}
+                  >
+                    N
+                  </button>
+                {/if}
               {/if}
               {row.right?.tip_line ?? row.right?.base_line ?? ''}
             </td>
@@ -484,27 +587,48 @@
             </td>
           </tr>
           {@const rightThreads = showComments ? threadsAt('tip', row.right?.tip_line) : []}
-          {#if rightThreads.length > 0}
+          {@const rightNotes = showComments ? annotationsAt('tip', row.right?.tip_line) : []}
+          {@const rightAnnotating = isAnnotatingHere('tip', row.right?.tip_line)}
+          {#if rightThreads.length > 0 || rightNotes.length > 0 || rightAnnotating}
             <tr class="sbs-threads from-{row.right?.origin ?? 'context'}">
               <td colspan="2" class="thread-cell">
                 <!-- Indent past the side's line-number gutter via
                      padding rather than an empty cell — see
                      HunkLines.svelte for the rationale. -->
                 <div class="thread-sticky" style="--gutter-offset: 65px">
-                  <CommentThread
-                    comments={rightThreads}
-                    {responses}
-                    {saving}
-                    {currentPatchset}
-                    {editingCommentId}
-                    {lastVisitAt}
-                    {viewer}
-                    {onreply}
-                    {onstatus}
-                    {ondelete}
-                    {onedit}
-                    {onselectpatchset}
-                  />
+                  {#each rightNotes as n (n.annotation_id)}
+                    <AnnotationBubble
+                      annotation={n}
+                      canEdit={canAnnotate}
+                      onedit={oneditannotation}
+                      ondelete={ondeleteannotation}
+                    />
+                  {/each}
+                  {#if rightAnnotating && composingAnnotation}
+                    <AnnotationComposer
+                      target={composingAnnotation}
+                      anchorIds={annotationAnchorIds}
+                      {saving}
+                      oncancel={oncancelannotate}
+                      onsubmit={onsubmitannotation}
+                    />
+                  {/if}
+                  {#if rightThreads.length > 0}
+                    <CommentThread
+                      comments={rightThreads}
+                      {responses}
+                      {saving}
+                      {currentPatchset}
+                      {editingCommentId}
+                      {lastVisitAt}
+                      {viewer}
+                      {onreply}
+                      {onstatus}
+                      {ondelete}
+                      {onedit}
+                      {onselectpatchset}
+                    />
+                  {/if}
                 </div>
               </td>
             </tr>
@@ -693,6 +817,37 @@
     background: var(--link);
     color: var(--on-accent);
     border-color: var(--link);
+  }
+
+  /* Amber sibling of `.add-comment`, sits just below it. See
+   * HunkLines.svelte for the colour-coding rationale. */
+  .add-note {
+    position: absolute;
+    right: -9px;
+    top: calc(50% + 11px);
+    transform: translateY(-50%);
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border: 1px solid var(--attention-border);
+    border-radius: 4px;
+    background: var(--bg-elevated);
+    color: var(--attention-text);
+    font-weight: 700;
+    font-size: 11px;
+    line-height: 16px;
+    cursor: pointer;
+    visibility: hidden;
+    user-select: none;
+  }
+
+  .sbs-row:hover .add-note {
+    visibility: visible;
+  }
+
+  .add-note:hover {
+    background: var(--attention-border);
+    color: var(--bg);
   }
 
   /* See HunkLines.svelte — match the adjacent diff row's tint so the

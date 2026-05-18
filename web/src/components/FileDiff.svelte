@@ -3,6 +3,7 @@
   import { copyText } from '../lib/clipboard';
   import { api } from '../lib/api';
   import type {
+    AnnotationView,
     CommentView,
     ComposerTarget,
     DraftCommentInput,
@@ -24,6 +25,7 @@
   import CommentThread from './CommentThread.svelte';
   import HunkLines from './HunkLines.svelte';
   import HunkLinesSideBySide from './HunkLinesSideBySide.svelte';
+  import type { AnnotationComposerTarget } from './AnnotationComposer.svelte';
 
   import type { DraftResponseInput, ResolutionAction, ResponseView } from '../lib/types';
 
@@ -41,6 +43,19 @@
      *  and show wildly unrelated content. */
     compareBaseCommit?: string | null;
     comments: CommentView[];
+    /** Author annotations across the review. This component filters
+     *  down to the ones scoped to its file (and to per-line on the
+     *  way into HunkLines / HunkLinesSideBySide). */
+    annotations?: AnnotationView[];
+    composingAnnotation?: AnnotationComposerTarget | null;
+    canAnnotate?: boolean;
+    onstartannotate?: (target: AnnotationComposerTarget) => void;
+    oncancelannotate?: () => void;
+    onsubmitannotation?: (
+      input: import('../lib/types').AnnotationInput,
+    ) => Promise<void>;
+    ondeleteannotation?: (annotation: AnnotationView) => Promise<void>;
+    oneditannotation?: (annotation: AnnotationView) => void;
     responses: ResponseView[];
     currentPatchset: number;
     composing: ComposerTarget | null;
@@ -101,6 +116,14 @@
     patchset,
     compareBaseCommit = null,
     comments,
+    annotations = [],
+    composingAnnotation = null,
+    canAnnotate = false,
+    onstartannotate = () => {},
+    oncancelannotate = () => {},
+    onsubmitannotation = async () => {},
+    ondeleteannotation = async () => {},
+    oneditannotation = () => {},
     responses,
     currentPatchset,
     composing,
@@ -297,6 +320,9 @@
   });
 
   const fileComments = $derived(comments.filter((c) => c.file === file.path));
+  const fileAnnotations = $derived(
+    annotations.filter((n) => n.file === file.path),
+  );
   /** Whole-file comments — those targeting this file with no line range. */
   const fileLevelComments = $derived(
     fileComments.filter((c) => c.lines == null),
@@ -366,6 +392,18 @@
         : { change: patchset.base_change, commit: patchset.base_commit };
     }
     return fileAnchorIds;
+  });
+
+  /** Anchor ids for the annotation composer. Same picking logic as
+   *  `lineAnchorIds` — file-wide annotations fall back to the tip
+   *  side's anchor by default. */
+  const annotationAnchorIds = $derived.by(() => {
+    if (composingAnnotation?.kind === 'line') {
+      return composingAnnotation.side === 'tip'
+        ? { change: patchset.tip_change, commit: patchset.tip_commit }
+        : { change: patchset.base_change, commit: patchset.base_commit };
+    }
+    return { change: patchset.tip_change, commit: patchset.tip_commit };
   });
 
   /** Reactive narrow-viewport flag. Updated via the media-query listener
@@ -1117,6 +1155,15 @@
               hunk={eh}
               filePath={file.path}
               comments={fileComments}
+              annotations={fileAnnotations}
+              {composingAnnotation}
+              {annotationAnchorIds}
+              {canAnnotate}
+              {onstartannotate}
+              {oncancelannotate}
+              {onsubmitannotation}
+              {ondeleteannotation}
+              {oneditannotation}
               {responses}
               {currentPatchset}
               {composing}
@@ -1140,6 +1187,15 @@
               hunk={eh}
               filePath={file.path}
               comments={fileComments}
+              annotations={fileAnnotations}
+              {composingAnnotation}
+              {annotationAnchorIds}
+              {canAnnotate}
+              {onstartannotate}
+              {oncancelannotate}
+              {onsubmitannotation}
+              {ondeleteannotation}
+              {oneditannotation}
               {responses}
               {currentPatchset}
               {composing}

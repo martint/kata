@@ -1,5 +1,7 @@
 <script lang="ts">
   import type {
+    AnnotationInput,
+    AnnotationView,
     CommentView,
     ComposerTarget,
     DraftResponseInput,
@@ -9,6 +11,10 @@
     ResponseView,
     Side,
   } from '../lib/types';
+  import AnnotationBubble from './AnnotationBubble.svelte';
+  import AnnotationComposer, {
+    type AnnotationComposerTarget,
+  } from './AnnotationComposer.svelte';
   import Bubble from './Bubble.svelte';
   import CommentThread from './CommentThread.svelte';
   import { computeHunkWordDiff, wrapRanges } from '../lib/wordDiff';
@@ -17,6 +23,9 @@
     hunk: Hunk;
     filePath: string;
     comments: CommentView[];
+    /** Author-attached context notes scoped to this file. May be empty.
+     *  Filtered down to per-line just like `comments`. */
+    annotations?: AnnotationView[];
     responses: ResponseView[];
     currentPatchset: number;
     composing: ComposerTarget | null;
@@ -46,11 +55,28 @@
      *  true to preserve call-sites that don't care about the
      *  per-commit-compare writeability gate. */
     commentsWriteable?: boolean;
+    /** When non-null and matching this hunk's file, an annotation
+     *  composer is open. Rendered inline at the anchor row. */
+    composingAnnotation?: AnnotationComposerTarget | null;
+    /** Anchor ids passed to the annotation composer. Side-aware:
+     *  derived in FileDiff based on `composingAnnotation.side` so the
+     *  annotation gets stored against the right commit. */
+    annotationAnchorIds?: { change: string; commit: string };
+    /** Whether the viewer is allowed to author annotations. Gates the
+     *  "+ Note" gutter button and the edit/delete affordances on
+     *  existing bubbles. */
+    canAnnotate?: boolean;
+    onstartannotate?: (target: AnnotationComposerTarget) => void;
+    oncancelannotate?: () => void;
+    onsubmitannotation?: (input: AnnotationInput) => Promise<void>;
+    ondeleteannotation?: (annotation: AnnotationView) => Promise<void>;
+    oneditannotation?: (annotation: AnnotationView) => void;
   }
   const {
     hunk,
     filePath,
     comments,
+    annotations = [],
     responses,
     currentPatchset,
     composing,
@@ -67,6 +93,14 @@
     viewer = '',
     showComments = true,
     commentsWriteable = true,
+    composingAnnotation = null,
+    annotationAnchorIds = { change: '', commit: '' },
+    canAnnotate = false,
+    onstartannotate = () => {},
+    oncancelannotate = () => {},
+    onsubmitannotation = async () => {},
+    ondeleteannotation = async () => {},
+    oneditannotation = () => {},
   }: Props = $props();
 
   const showBase = $derived(lineNumberMode !== 'tip');
@@ -166,6 +200,49 @@
           ? c.anchor.new_lines
           : c.lines;
       return effective != null && effective.end === a.line;
+    });
+  }
+
+  /** Annotations anchored to this `(side, line)`. Same anchor-revival
+   *  semantics as `threadsFor` — moved/drifted anchors render at their
+   *  current location, outdated ones fall through to the orphan
+   *  bucket handled by `FileDiff`. */
+  function annotationsFor(a: { side: Side; line: number }): AnnotationView[] {
+    return annotations.filter((n) => {
+      if (n.side !== a.side) return false;
+      const effective =
+        n.anchor.kind === 'moved' || n.anchor.kind === 'drifted'
+          ? n.anchor.new_lines
+          : n.lines;
+      return effective != null && effective.end === a.line;
+    });
+  }
+
+  /** True when an annotation composer is open AND its target is a
+   *  line range ending on this (side, line). The composer renders on
+   *  that "anchor" row — same convention used for displaying
+   *  multi-line ranges. */
+  function isAnnotatingHere(a: { side: Side; line: number }): boolean {
+    return (
+      composingAnnotation?.kind === 'line' &&
+      composingAnnotation.file === filePath &&
+      composingAnnotation.side === a.side &&
+      composingAnnotation.endLine === a.line
+    );
+  }
+
+  /** Start an annotation. Mirrors `onPointerDown` for the comment
+   *  flow but skips the drag — annotations open with a single-line
+   *  range by default; the composer can be edited to expand if
+   *  needed (future enhancement). */
+  function startAnnotateHere(side: Side, line: number) {
+    if (!canAnnotate) return;
+    onstartannotate({
+      kind: 'line',
+      file: filePath,
+      side,
+      startLine: line,
+      endLine: line,
     });
   }
 
@@ -284,6 +361,16 @@
               >
                 <Bubble size={12} />
               </button>
+              {#if canAnnotate}
+                <button
+                  type="button"
+                  class="add-note"
+                  title="Add author note (only the review creator can do this)"
+                  onclick={() => startAnnotateHere(a.side, a.line)}
+                >
+                  N
+                </button>
+              {/if}
             {/if}
             {line.base_line ?? ''}
           </td>
@@ -319,9 +406,27 @@
           {/if}
         </td>
       </tr>
+      {#if a && isAnnotatingHere(a)}
+        <tr class="thread-row from-{line.origin}">
+          <td colspan={colspan} class="thread-cell">
+            <div class="thread-sticky" style="--gutter-offset: {lnCols * 65}px">
+              {#if composingAnnotation}
+                <AnnotationComposer
+                  target={composingAnnotation}
+                  anchorIds={annotationAnchorIds}
+                  saving={saving}
+                  oncancel={oncancelannotate}
+                  onsubmit={onsubmitannotation}
+                />
+              {/if}
+            </div>
+          </td>
+        </tr>
+      {/if}
       {#if a && showComments}
         {@const threads = threadsFor(a)}
-        {#if threads.length > 0}
+        {@const notes = annotationsFor(a)}
+        {#if threads.length > 0 || notes.length > 0}
           <tr class="thread-row from-{line.origin}">
             <td colspan={colspan} class="thread-cell">
               <!-- Visual indent past the line-number gutter is done
@@ -335,20 +440,30 @@
                 class="thread-sticky"
                 style="--gutter-offset: {lnCols * 65}px"
               >
-                <CommentThread
-                  comments={threads}
-                  {responses}
-                  {saving}
-                  {currentPatchset}
-                  {editingCommentId}
-                  {lastVisitAt}
-                  {viewer}
-                  {onreply}
-                  {onstatus}
-                  {ondelete}
-                  {onedit}
-                  {onselectpatchset}
-                />
+                {#each notes as n (n.annotation_id)}
+                  <AnnotationBubble
+                    annotation={n}
+                    canEdit={canAnnotate}
+                    onedit={oneditannotation}
+                    ondelete={ondeleteannotation}
+                  />
+                {/each}
+                {#if threads.length > 0}
+                  <CommentThread
+                    comments={threads}
+                    {responses}
+                    {saving}
+                    {currentPatchset}
+                    {editingCommentId}
+                    {lastVisitAt}
+                    {viewer}
+                    {onreply}
+                    {onstatus}
+                    {ondelete}
+                    {onedit}
+                    {onselectpatchset}
+                  />
+                {/if}
               </div>
             </td>
           </tr>
@@ -514,6 +629,39 @@
     background: var(--link);
     color: var(--on-accent);
     border-color: var(--link);
+  }
+
+  /* Sibling of `.add-comment` — sits just below so both gutter
+   * affordances stay close to the line they target. Amber palette
+   * matches AnnotationBubble / AnnotationComposer so the reader
+   * builds the colour mapping (blue = comment, amber = note). */
+  .add-note {
+    position: absolute;
+    right: -9px;
+    top: calc(50% + 11px);
+    transform: translateY(-50%);
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border: 1px solid var(--attention-border);
+    border-radius: 4px;
+    background: var(--bg-elevated);
+    color: var(--attention-text);
+    font-weight: 700;
+    font-size: 11px;
+    line-height: 16px;
+    cursor: pointer;
+    visibility: hidden;
+    user-select: none;
+  }
+
+  .row:hover .add-note {
+    visibility: visible;
+  }
+
+  .add-note:hover {
+    background: var(--attention-border);
+    color: var(--bg);
   }
 
   /* The thread-row's tinted background bleeds through wherever the
