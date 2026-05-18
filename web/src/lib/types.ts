@@ -6,6 +6,7 @@ export type ReviewId = string;
 export type SessionId = string;
 export type CommentId = string;
 export type ResponseId = string;
+export type AnnotationId = string;
 export type Author = string;
 export type RevSet = string;
 export type RepoId = string;
@@ -70,6 +71,27 @@ export interface Comment {
    *  Mutually exclusive with `file`/`lines`. */
   review_wide?: boolean;
   flag: Flag;
+  body: string;
+}
+
+/** Author-written annotation attached to a code region (or to the
+ *  whole file / whole review). Annotations are one-way context — only
+ *  `manifest.created_by` can author them, reviewers can read but not
+ *  reply, no resolution state. */
+export interface Annotation {
+  schema_version: number;
+  annotation_id: AnnotationId;
+  review_id: ReviewId;
+  author: Author;
+  created_at: string;
+  /** Last edit timestamp; equals `created_at` for unedited annotations. */
+  updated_at: string;
+  patchset: number;
+  anchor_change_id: ChangeId;
+  anchor_commit_id: CommitId;
+  file?: string;
+  side?: Side;
+  lines?: LineRange;
   body: string;
 }
 
@@ -257,6 +279,12 @@ export type ResponseView = Response & {
   draft: boolean;
 };
 
+/** Annotation with anchor resolution. No `draft` flag — annotations
+ *  publish immediately, there's no draft / batch-publish cycle. */
+export type AnnotationView = Annotation & {
+  anchor: AnchorView;
+};
+
 /** UI-side resolution state derived from a comment's responses. */
 export type ResolutionState = 'open' | 'resolved' | 'wont-fix';
 
@@ -272,6 +300,9 @@ export interface ReviewView {
   commits: CommitInfo[];
   comments: CommentView[];
   responses: ResponseView[];
+  /** Author-attached annotations across the review. Absent or empty
+   *  on reviews that haven't used the feature. */
+  annotations?: AnnotationView[];
   drafts: DraftsView;
   /** True when re-resolving the manifest's revset would advance the
    *  current patchset. Used to gate the "Refresh" button. */
@@ -346,6 +377,19 @@ export interface DraftCommentInput {
 export interface DraftResponseInput {
   in_reply_to: CommentId;
   action: ResolutionAction;
+  body?: string;
+}
+
+/** Create/update body for annotations. Same anchor fields as a
+ *  comment, minus `flag` (annotations have no severity) and
+ *  `review_wide` (a review-wide annotation is just one with no
+ *  `file`). */
+export interface AnnotationInput {
+  anchor_change_id: ChangeId;
+  anchor_commit_id: CommitId;
+  file?: string;
+  side?: Side;
+  lines?: LineRange;
   body?: string;
 }
 

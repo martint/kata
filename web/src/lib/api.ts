@@ -1,4 +1,6 @@
 import type {
+  Annotation,
+  AnnotationInput,
   Bookmark,
   Comment,
   CommitDiffView,
@@ -279,5 +281,32 @@ export const api = {
     request<void>(
       'DELETE',
       `${repoBase(repo)}/reviews/${number}/sessions/${enc(sid)}/responses/${enc(respId)}`,
+    ),
+
+  // Annotations live outside the session flow — only the review
+  // creator can write them, enforced server-side. No "session id"
+  // segment in the path; the actor identity comes from the standard
+  // X-Review-Author header.
+  createAnnotation: (repo: string, number: number, input: AnnotationInput) =>
+    request<Annotation>(
+      'POST',
+      `${repoBase(repo)}/reviews/${number}/annotations`,
+      input,
+    ),
+  updateAnnotation: (
+    repo: string,
+    number: number,
+    annotationId: string,
+    input: AnnotationInput,
+  ) =>
+    request<Annotation>(
+      'PATCH',
+      `${repoBase(repo)}/reviews/${number}/annotations/${enc(annotationId)}`,
+      input,
+    ),
+  deleteAnnotation: (repo: string, number: number, annotationId: string) =>
+    request<void>(
+      'DELETE',
+      `${repoBase(repo)}/reviews/${number}/annotations/${enc(annotationId)}`,
     ),
 };
