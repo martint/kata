@@ -169,15 +169,28 @@ pub async fn resolve_anchor<B: JjBackend + ?Sized>(
         });
     }
 
-    // 1. Exact line-sequence match.
+    // 1. Exact line-sequence match. A match at the same range as the
+    //    original means the content hasn't moved — report Valid so
+    //    the UI doesn't slap a misleading "Moved to <same range>"
+    //    badge on a comment whose anchor commit just happens to
+    //    differ from the patchset tip (typical for per-commit
+    //    scoped views, where comments anchor to the scoped commit
+    //    but the patchset endpoint we compare against is the tip).
     if let Some(range) = find_exact(&current_lines, &snippet) {
+        if range == original_range {
+            return Ok(AnchorResolution::Valid);
+        }
         return Ok(AnchorResolution::Moved { new_range: range });
     }
 
     // 2. Fuzzy: sliding window of the same length, ranked by similarity.
+    //    Same "no-move-when-same-range" guard as the exact branch.
     if let Some((range, ratio)) = find_fuzzy(&current_lines, &snippet)
         && ratio >= FUZZY_THRESHOLD
     {
+        if range == original_range {
+            return Ok(AnchorResolution::Valid);
+        }
         return Ok(AnchorResolution::Drifted {
             new_range: range,
             similarity: ratio,

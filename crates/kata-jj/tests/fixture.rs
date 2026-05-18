@@ -200,6 +200,38 @@ async fn anchor_moves_when_lines_shift() {
 }
 
 #[tokio::test]
+async fn anchor_valid_when_lines_unchanged_across_commits() {
+    // Regression: a comment posted in a per-commit scoped view
+    // anchors to the scoped commit, not the patchset tip. When the
+    // backend builds the comment view it compares the anchor against
+    // the patchset tip — a different commit id, so the fast path
+    // doesn't fire. The original code then ran find_exact and, on
+    // an unchanged file, returned Moved { new_range: original_range }
+    // — a "moved to <same lines>" badge plastered on a comment that
+    // hadn't moved at all. The same-range guard in resolve_anchor
+    // turns that case back into Valid.
+    let fx = Fixture::new();
+    fx.write("f.txt", "alpha\nbeta\ngamma\n");
+    fx.jj(&["describe", "-m", "initial"]);
+    let (_, original) = current_change_and_commit(&fx.root, "@");
+
+    // New commit, but the file (and the line of interest) is
+    // identical — like a downstream commit in the same patchset
+    // that doesn't touch this file.
+    fx.jj(&["new", "-m", "downstream"]);
+    fx.write("other.txt", "unrelated\n");
+    let (_, current) = current_change_and_commit(&fx.root, "@");
+    assert_ne!(original, current, "commit id should differ between revs");
+
+    let cli = fx.cli();
+    let cache = FileCache::default();
+    let res = resolve_anchor(&cli, &cache, "f.txt", &original, LineRange::new(2, 2), &current)
+        .await
+        .unwrap();
+    assert_eq!(res, AnchorResolution::Valid);
+}
+
+#[tokio::test]
 async fn anchor_outdated_when_content_gone() {
     let fx = Fixture::new();
     fx.write("f.txt", "needle\n");

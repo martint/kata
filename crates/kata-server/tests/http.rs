@@ -447,6 +447,170 @@ async fn refresh_review_appends_a_new_patchset_when_the_tip_moves() {
     assert_ne!(patchsets[0]["tip_commit"], patchsets[1]["tip_commit"]);
 }
 
+/// After a refresh appends a new patchset, comments published
+/// against the previous patchset must still render at their original
+/// lines when nothing about those lines changed — `anchor.kind`
+/// should be `valid`, not `moved`. Regression for a bug where
+/// `find_exact` in `resolve_anchor` reported a same-range hit as
+/// `Moved { new_range: original }`, slapping a misleading "moved to
+/// <same lines>" badge on every comment whose anchor commit just
+/// happened to differ from the new patchset's tip.
+#[tokio::test]
+async fn comment_stays_valid_after_refresh_when_lines_unchanged() {
+    let h = Harness::new().await;
+    let (_, created) = h
+        .json(
+            "POST",
+            "/api/repos/main/reviews",
+            Some(json!({
+                "name": "feature",
+                "revset": "@-..feature",
+                "bookmark": "feature",
+                "created_by": "alice@example.com",
+            })),
+        )
+        .await;
+    let review_url = format!(
+        "/api/repos/main/reviews/{}",
+        created["number"].as_u64().unwrap()
+    );
+
+    // Post a comment on PS1, line 2 (which contains "TWO" per the
+    // harness setup).
+    let (_, view) = h.json("GET", &review_url, None).await;
+    let ps1 = view["manifest"]["patchsets"][0].clone();
+    let anchor_change = ps1["tip_change"].as_str().unwrap().to_owned();
+    let anchor_commit = ps1["tip_commit"].as_str().unwrap().to_owned();
+    let (_, session) = h
+        .json("POST", &format!("{review_url}/sessions"), None)
+        .await;
+    let session_id = session["session_id"].as_str().unwrap().to_owned();
+    let (_, _) = h
+        .json(
+            "POST",
+            &format!("{review_url}/sessions/{session_id}/comments"),
+            Some(json!({
+                "anchor_change_id": anchor_change,
+                "anchor_commit_id": anchor_commit,
+                "file": "a.txt",
+                "side": "tip",
+                "lines": {"start": 2, "end": 2},
+                "flag": "must-do",
+                "body": "still here\n",
+            })),
+        )
+        .await;
+    let (_, _) = h
+        .json(
+            "POST",
+            &format!("{review_url}/sessions/{session_id}/publish"),
+            None,
+        )
+        .await;
+
+    // Refresh: amend so PS2 differs from PS1 (line 3 changes), but
+    // line 2 — the anchored line — stays exactly the same.
+    std::fs::write(h.workspace_path.join("a.txt"), "one\nTWO\nThree\n").unwrap();
+    run_jj(&h.workspace_path, &["bookmark", "set", "feature", "-r", "@"]);
+    let (_, manifest) = h
+        .json("POST", &format!("{review_url}/refresh"), None)
+        .await;
+    assert_eq!(manifest["current_patchset"], 2);
+    assert_ne!(
+        manifest["patchsets"][0]["tip_commit"],
+        manifest["patchsets"][1]["tip_commit"],
+        "amend should rewrite the tip commit"
+    );
+
+    // Open at the new patchset. The comment was anchored to PS1's
+    // tip commit; the backend now compares against PS2's tip. Since
+    // line 2's content didn't change, the anchor should resolve to
+    // Valid — no "Moved" badge.
+    let (_, view) = h.json("GET", &review_url, None).await;
+    let comments = view["comments"].as_array().unwrap();
+    assert_eq!(comments.len(), 1);
+    assert_eq!(
+        comments[0]["anchor"]["kind"], "valid",
+        "anchor should stay Valid when line 2 didn't change between PS1 and PS2; got {:?}",
+        comments[0]["anchor"]
+    );
+}
+
+/// Counterpart to the previous test: when the anchored line genuinely
+/// moves between patchsets (lines inserted above it), the comment's
+/// anchor must come back as `moved` with the new range — confirming
+/// the same-range guard in `resolve_anchor` hasn't suppressed the
+/// real "moved" case.
+#[tokio::test]
+async fn comment_reports_moved_after_refresh_when_lines_shift() {
+    let h = Harness::new().await;
+    let (_, created) = h
+        .json(
+            "POST",
+            "/api/repos/main/reviews",
+            Some(json!({
+                "name": "feature",
+                "revset": "@-..feature",
+                "bookmark": "feature",
+                "created_by": "alice@example.com",
+            })),
+        )
+        .await;
+    let review_url = format!(
+        "/api/repos/main/reviews/{}",
+        created["number"].as_u64().unwrap()
+    );
+
+    let (_, view) = h.json("GET", &review_url, None).await;
+    let ps1 = view["manifest"]["patchsets"][0].clone();
+    let anchor_change = ps1["tip_change"].as_str().unwrap().to_owned();
+    let anchor_commit = ps1["tip_commit"].as_str().unwrap().to_owned();
+    let (_, session) = h
+        .json("POST", &format!("{review_url}/sessions"), None)
+        .await;
+    let session_id = session["session_id"].as_str().unwrap().to_owned();
+    let (_, _) = h
+        .json(
+            "POST",
+            &format!("{review_url}/sessions/{session_id}/comments"),
+            Some(json!({
+                "anchor_change_id": anchor_change,
+                "anchor_commit_id": anchor_commit,
+                "file": "a.txt",
+                "side": "tip",
+                "lines": {"start": 2, "end": 2},
+                "flag": "must-do",
+                "body": "anchored on TWO\n",
+            })),
+        )
+        .await;
+    let (_, _) = h
+        .json(
+            "POST",
+            &format!("{review_url}/sessions/{session_id}/publish"),
+            None,
+        )
+        .await;
+
+    // Insert two lines above; line 2 ("TWO") moves to line 4.
+    std::fs::write(h.workspace_path.join("a.txt"), "header\nblank\none\nTWO\nthree\n").unwrap();
+    run_jj(&h.workspace_path, &["bookmark", "set", "feature", "-r", "@"]);
+    let (_, _) = h
+        .json("POST", &format!("{review_url}/refresh"), None)
+        .await;
+
+    let (_, view) = h.json("GET", &review_url, None).await;
+    let comments = view["comments"].as_array().unwrap();
+    assert_eq!(comments.len(), 1);
+    assert_eq!(comments[0]["anchor"]["kind"], "moved");
+    assert_eq!(
+        comments[0]["anchor"]["new_lines"],
+        json!({"start": 4, "end": 4}),
+        "moved anchor should point at the new location of the line; got {:?}",
+        comments[0]["anchor"]
+    );
+}
+
 /// Compare-mode regression: `GET /file-diff?ps=N&compare=M` must
 /// return hunks computed against patchset M's tip (not patchset N's
 /// base). The frontend's syntax-highlight pass indexes
