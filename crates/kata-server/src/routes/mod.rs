@@ -7,6 +7,7 @@ use tower_http::trace::TraceLayer;
 
 use crate::state::AppState;
 
+mod annotations;
 mod author;
 mod comments;
 mod events;
@@ -107,5 +108,14 @@ fn api_routes() -> Router<AppState> {
         .route(
             "/api/repos/{repo_name}/reviews/{review_number}/sessions/{session_id}/responses/{response_id}",
             axum::routing::put(responses::update_response).delete(responses::delete_response),
+        )
+        .route(
+            "/api/repos/{repo_name}/reviews/{review_number}/annotations",
+            post(annotations::create_annotation),
+        )
+        .route(
+            "/api/repos/{repo_name}/reviews/{review_number}/annotations/{annotation_id}",
+            axum::routing::patch(annotations::update_annotation)
+                .delete(annotations::delete_annotation),
         )
 }

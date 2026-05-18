@@ -10,10 +10,11 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use kata_core::{
-    Author, Bookmark, ChangeId, ChangeStatus, Comment, CommentId, CommitId, CommitInfo, Diff,
-    Flag, LineRange, OpSummary, PairDiffCounts, Patchset, PatchsetCompareView,
-    PatchsetEndpoints, PatchsetPair, RepoId, RepoSummary, ResolutionAction, Response,
-    ResponseId, ReviewId, ReviewManifest, RevSet, SCHEMA_VERSION, Session, SessionId, Side,
+    Annotation, AnnotationId, Author, Bookmark, ChangeId, ChangeStatus, Comment, CommentId,
+    CommitId, CommitInfo, Diff, Flag, LineRange, OpSummary, PairDiffCounts, Patchset,
+    PatchsetCompareView, PatchsetEndpoints, PatchsetPair, RepoId, RepoSummary, ResolutionAction,
+    Response, ResponseId, ReviewId, ReviewManifest, RevSet, SCHEMA_VERSION, Session, SessionId,
+    Side,
 };
 use kata_jj::{
     AnchorResolution, FileCache, JjBackend, build_diff, build_diff_metadata,
@@ -25,25 +26,33 @@ use serde::{Deserialize, Serialize};
 pub use crate::error::{ServiceError, ServiceResult};
 pub use crate::events::{Event, EventBus};
 
-/// `(commit, path)` pairs `resolve_anchor` will need for `comment`,
-/// given the patchset currently being rendered. Empty for non-line /
-/// non-file comments (no anchoring) and for the trivial case where
-/// the comment already anchors to the active commit on its side.
-fn anchor_read_keys(comment: &Comment, viewing: &Patchset) -> Vec<(CommitId, String)> {
-    let (Some(path), Some(_), Some(side)) = (&comment.file, comment.lines, comment.side)
-    else {
+/// `(commit, path)` pairs `resolve_anchor` will need to project the
+/// anchor described by `(file, side, lines, anchor_commit_id)` onto
+/// the patchset currently being rendered. Empty for non-line /
+/// non-file targets (no anchoring) and for the trivial case where
+/// the anchor already sits on the active commit on its side. Used
+/// for both comments and annotations — both share the same anchor
+/// shape and the same revival path.
+fn anchor_read_keys(
+    file: Option<&str>,
+    side: Option<Side>,
+    lines: Option<LineRange>,
+    anchor_commit_id: &CommitId,
+    viewing: &Patchset,
+) -> Vec<(CommitId, String)> {
+    let (Some(path), Some(_), Some(side)) = (file, lines, side) else {
         return Vec::new();
     };
     let current = match side {
         Side::Tip => viewing.tip_commit.clone(),
         Side::Base => viewing.base_commit.clone(),
     };
-    if current == comment.anchor_commit_id {
+    if &current == anchor_commit_id {
         return Vec::new();
     }
     vec![
-        (comment.anchor_commit_id.clone(), path.clone()),
-        (current, path.clone()),
+        (anchor_commit_id.clone(), path.to_owned()),
+        (current, path.to_owned()),
     ]
 }
 
@@ -718,13 +727,32 @@ impl ReviewService {
         // line/file comment on a given file needs both its anchor_commit
         // and the current patchset endpoint. Read each pair once, in
         // parallel, then let `resolve_anchor` hit the cache.
+        let annotations_raw = self.storage.list_annotations(repo, review).await?;
+
         let cache = FileCache::new();
-        let prefetch_keys: std::collections::HashSet<(CommitId, String)> = published
+        let mut prefetch_keys: std::collections::HashSet<(CommitId, String)> = published
             .iter()
             .filter(|c| c.patchset <= selected_n)
             .chain(drafts.comments.iter().filter(|c| c.patchset <= selected_n))
-            .flat_map(|c| anchor_read_keys(c, &selected))
+            .flat_map(|c| {
+                anchor_read_keys(
+                    c.file.as_deref(),
+                    c.side,
+                    c.lines,
+                    &c.anchor_commit_id,
+                    &selected,
+                )
+            })
             .collect();
+        for a in annotations_raw.iter().filter(|a| a.patchset <= selected_n) {
+            prefetch_keys.extend(anchor_read_keys(
+                a.file.as_deref(),
+                a.side,
+                a.lines,
+                &a.anchor_commit_id,
+                &selected,
+            ));
+        }
         cache.prefetch(&**jj, prefetch_keys).await?;
         let mut comments = Vec::with_capacity(published.len());
         for c in published {
@@ -757,12 +785,21 @@ impl ReviewService {
             .map(|r| ResponseView { response: r, draft: true })
             .collect();
 
+        let mut annotations = Vec::with_capacity(annotations_raw.len());
+        for a in annotations_raw {
+            if a.patchset > selected_n {
+                continue;
+            }
+            annotations.push(self.build_annotation_view(repo, &cache, a, &selected).await?);
+        }
+
         Ok(ReviewView {
             manifest,
             diff,
             commits,
             comments,
             responses: response_views,
+            annotations,
             drafts: DraftsView {
                 session: drafts.session,
                 comments: draft_comments,
@@ -819,6 +856,53 @@ impl ReviewService {
             _ => AnchorView::Valid,
         };
         Ok(CommentView { comment, anchor, draft })
+    }
+
+    /// Same anchor-revival path as `build_comment_view`, applied to an
+    /// `Annotation`. Annotations have no `draft` / `flag` / responses
+    /// so the wrapping view is simpler.
+    async fn build_annotation_view(
+        &self,
+        repo: &RepoId,
+        cache: &FileCache,
+        annotation: Annotation,
+        viewing: &Patchset,
+    ) -> ServiceResult<AnnotationView> {
+        let jj = self.jj_for(repo)?;
+        let anchor = match (&annotation.file, annotation.lines, annotation.side) {
+            (Some(path), Some(range), Some(side)) => {
+                let current = match side {
+                    Side::Tip => &viewing.tip_commit,
+                    Side::Base => &viewing.base_commit,
+                };
+                match resolve_anchor(
+                    &**jj,
+                    cache,
+                    path,
+                    &annotation.anchor_commit_id,
+                    range,
+                    current,
+                )
+                .await?
+                {
+                    AnchorResolution::Valid => AnchorView::Valid,
+                    AnchorResolution::Moved { new_range } => {
+                        AnchorView::Moved { new_lines: new_range }
+                    }
+                    AnchorResolution::Drifted { new_range, similarity } => {
+                        AnchorView::Drifted {
+                            new_lines: new_range,
+                            similarity,
+                        }
+                    }
+                    AnchorResolution::Outdated { original_content } => {
+                        AnchorView::Outdated { original_content }
+                    }
+                }
+            }
+            _ => AnchorView::Valid,
+        };
+        Ok(AnnotationView { annotation, anchor })
     }
 
     /// Hunks for one file in a review. Used by the UI to lazy-load a
@@ -1421,6 +1505,90 @@ impl ReviewService {
             .discard_draft_response(repo, review, session, response)
             .await?)
     }
+
+    // ---- annotations ---------------------------------------------------
+
+    /// Create or replace an annotation. Only the review creator may
+    /// author annotations; reviewers attempting this get
+    /// `BadRequest`. On `None` for `annotation_id` a fresh id is
+    /// minted; otherwise the existing annotation is overwritten in
+    /// place. Both paths bump `updated_at` to now.
+    pub async fn upsert_annotation(
+        &self,
+        repo: &RepoId,
+        review: &ReviewId,
+        actor: &Author,
+        annotation_id: Option<AnnotationId>,
+        input: AnnotationInput,
+    ) -> ServiceResult<Annotation> {
+        validate_annotation_anchor(&input)?;
+        let manifest = self.storage.open_review(repo, review).await?;
+        if actor != &manifest.created_by {
+            return Err(ServiceError::BadRequest(
+                "only the review's creator can write annotations".into(),
+            ));
+        }
+        if manifest.archived_at.is_some() {
+            return Err(ServiceError::BadRequest(
+                "review is archived; unarchive before editing annotations".into(),
+            ));
+        }
+        let now = Utc::now();
+        // For an update we preserve the original created_at so the
+        // annotation's place in the chronological view doesn't shift
+        // when the author tweaks the body.
+        let (annotation_id, created_at) = match annotation_id {
+            Some(id) => {
+                let existing = self
+                    .storage
+                    .list_annotations(repo, review)
+                    .await?
+                    .into_iter()
+                    .find(|a| a.annotation_id == id);
+                match existing {
+                    Some(prev) => (id, prev.created_at),
+                    None => (id, now),
+                }
+            }
+            None => (kata_storage::ids::new_annotation_id(), now),
+        };
+        let annotation = Annotation {
+            schema_version: SCHEMA_VERSION,
+            annotation_id,
+            review_id: review.clone(),
+            author: actor.clone(),
+            created_at,
+            updated_at: now,
+            patchset: manifest.current_patchset,
+            anchor_change_id: input.anchor_change_id,
+            anchor_commit_id: input.anchor_commit_id,
+            file: input.file,
+            side: input.side,
+            lines: input.lines,
+            body: input.body,
+        };
+        self.storage.upsert_annotation(repo, &annotation).await?;
+        Ok(annotation)
+    }
+
+    pub async fn delete_annotation(
+        &self,
+        repo: &RepoId,
+        review: &ReviewId,
+        actor: &Author,
+        annotation_id: &AnnotationId,
+    ) -> ServiceResult<()> {
+        let manifest = self.storage.open_review(repo, review).await?;
+        if actor != &manifest.created_by {
+            return Err(ServiceError::BadRequest(
+                "only the review's creator can delete annotations".into(),
+            ));
+        }
+        self.storage
+            .delete_annotation(repo, review, annotation_id)
+            .await?;
+        Ok(())
+    }
 }
 
 // ---- request shapes ----------------------------------------------------
@@ -1469,6 +1637,24 @@ pub struct DraftResponseInput {
     pub body: String,
 }
 
+/// Request body for create or update of an annotation. Same anchor
+/// shape as [`DraftCommentInput`] minus the bits that don't apply:
+/// no `flag` (annotations have no severity), no `review_wide` (a
+/// review-wide annotation is just one with `file == None`).
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct AnnotationInput {
+    pub anchor_change_id: ChangeId,
+    pub anchor_commit_id: CommitId,
+    #[serde(default)]
+    pub file: Option<String>,
+    #[serde(default)]
+    pub side: Option<Side>,
+    #[serde(default)]
+    pub lines: Option<LineRange>,
+    #[serde(default)]
+    pub body: String,
+}
+
 // ---- view shapes -------------------------------------------------------
 
 /// Result of [`ReviewService::commit_diff`]: the diff for one commit
@@ -1492,6 +1678,11 @@ pub struct ReviewView {
     pub commits: Vec<CommitInfo>,
     pub comments: Vec<CommentView>,
     pub responses: Vec<ResponseView>,
+    /// Author-attached context notes anchored to code regions. Visible
+    /// to all reviewers; only `manifest.created_by` can write them.
+    /// Empty for reviews that don't use the feature.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub annotations: Vec<AnnotationView>,
     pub drafts: DraftsView,
     /// True when re-resolving the manifest's revset would advance the
     /// current patchset — i.e., the live tip or base of the branch has
@@ -1548,6 +1739,16 @@ pub struct CommentView {
     pub draft: bool,
 }
 
+/// Wraps an [`Annotation`] with its anchor revival for the current
+/// patchset (Valid/Moved/Drifted/Outdated — same vocabulary as
+/// [`CommentView`]). No `draft` field: annotations are always live.
+#[derive(Clone, Debug, Serialize)]
+pub struct AnnotationView {
+    #[serde(flatten)]
+    pub annotation: Annotation,
+    pub anchor: AnchorView,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct ResponseView {
     #[serde(flatten)]
@@ -1572,6 +1773,16 @@ pub struct DraftsView {
 }
 
 fn validate_anchor(input: &DraftCommentInput) -> ServiceResult<()> {
+    if input.lines.is_some() && input.file.is_none() {
+        return Err(ServiceError::BadRequest("lines provided without file".into()));
+    }
+    if input.lines.is_some() && input.side.is_none() {
+        return Err(ServiceError::BadRequest("lines provided without side".into()));
+    }
+    Ok(())
+}
+
+fn validate_annotation_anchor(input: &AnnotationInput) -> ServiceResult<()> {
     if input.lines.is_some() && input.file.is_none() {
         return Err(ServiceError::BadRequest("lines provided without file".into()));
     }
