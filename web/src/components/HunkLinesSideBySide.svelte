@@ -18,6 +18,7 @@
     type AnnotationComposerTarget,
   } from './AnnotationComposer.svelte';
   import Bubble from './Bubble.svelte';
+  import Chevron from './Chevron.svelte';
   import CommentThread from './CommentThread.svelte';
   import { computeHunkWordDiff, wrapRanges } from '../lib/wordDiff';
   import { alignBlock, alignedRows } from '../lib/hunkAlign';
@@ -128,6 +129,37 @@
     foldVersion++;
   }
 
+  /** Aggregate anchor range for the folded comments + notes at
+   *  (side, line). See HunkLines.svelte for the design rationale. */
+  function foldedRangeAt(side: Side, line: number): { start: number; end: number } | null {
+    let start = Number.POSITIVE_INFINITY;
+    let end = Number.NEGATIVE_INFINITY;
+    for (const c of comments) {
+      if (c.side !== side) continue;
+      const eff =
+        c.anchor.kind === 'moved' || c.anchor.kind === 'drifted'
+          ? c.anchor.new_lines
+          : c.lines;
+      if (!eff) continue;
+      if (eff.end !== line) continue;
+      if (eff.start < start) start = eff.start;
+      if (eff.end > end) end = eff.end;
+    }
+    for (const n of annotations) {
+      if (n.side !== side) continue;
+      const eff =
+        n.anchor.kind === 'moved' || n.anchor.kind === 'drifted'
+          ? n.anchor.new_lines
+          : n.lines;
+      if (!eff) continue;
+      if (eff.end !== line) continue;
+      if (eff.start < start) start = eff.start;
+      if (eff.end > end) end = eff.end;
+    }
+    if (!Number.isFinite(start)) return null;
+    return { start, end };
+  }
+
   type PairedRow =
     | { kind: 'context'; left: HunkLine; right: HunkLine }
     | { kind: 'change'; left: HunkLine | null; right: HunkLine | null };
@@ -188,6 +220,30 @@
   let pairEl: HTMLDivElement | undefined = $state();
   let dividerDragging = $state(false);
   let dragSelected: HTMLElement[] = [];
+
+  /** Hovered folded-thread marker — paints `.highlight-anchor` onto
+   *  matching rows in the relevant side's table. See HunkLines.svelte
+   *  for the design rationale; SBS just picks the right table from
+   *  `side`. */
+  let hoveredAnchor: { side: Side; start: number; end: number } | null = $state.raw(null);
+  let hoveredEls: HTMLElement[] = [];
+  $effect(() => {
+    for (const el of hoveredEls) el.classList.remove('highlight-anchor');
+    hoveredEls = [];
+    if (!hoveredAnchor) return;
+    const { side, start, end } = hoveredAnchor;
+    const table = side === 'base' ? baseTableEl : tipTableEl;
+    if (!table) return;
+    for (let ln = start; ln <= end; ln++) {
+      const matches = table.querySelectorAll(
+        `[data-side="${side}"][data-line="${ln}"]`,
+      );
+      for (const el of matches) {
+        (el as HTMLElement).classList.add('highlight-anchor');
+        hoveredEls.push(el as HTMLElement);
+      }
+    }
+  });
 
   /** Pill state for drag-to-select intra-line comments. SBS has two
    *  tables — base and tip — and a selection lives in exactly one of
@@ -550,6 +606,27 @@
                   </button>
                 {/if}
               {/if}
+              {#if row.left?.base_line != null && showComments}
+                {@const ln = row.left.base_line}
+                {@const count = threadsAt('base', ln).length + annotationsAt('base', ln).length}
+                {@const folded = isThreadCollapsed('base', ln)}
+                {#if count > 0}
+                  <button
+                    type="button"
+                    class="thread-marker"
+                    class:folded
+                    aria-pressed={!folded}
+                    aria-label="{count} comment{count === 1 ? '' : 's'}; click to {folded ? 'expand' : 'collapse'}"
+                    title="{count} comment{count === 1 ? '' : 's'} — click to {folded ? 'expand' : 'collapse'}"
+                    onclick={() => toggleThreadFold('base', ln)}
+                    onmouseenter={() => {
+                      const r = foldedRangeAt('base', ln);
+                      hoveredAnchor = r ? { side: 'base', start: r.start, end: r.end } : null;
+                    }}
+                    onmouseleave={() => (hoveredAnchor = null)}
+                  ><Chevron dir={folded ? 'right' : 'down'} size={12} filled /></button>
+                {/if}
+              {/if}
               {row.left?.base_line ?? row.left?.tip_line ?? ''}
             </td>
             <td
@@ -577,29 +654,6 @@
             leftHasContent &&
             row.left?.base_line != null &&
             isThreadCollapsed('base', row.left.base_line)}
-          {#if leftHasContent && leftCollapsed}
-            <tr class="sbs-threads collapsed from-{row.left?.origin ?? 'context'}">
-              <td colspan="2" class="thread-cell">
-                <div class="thread-sticky" style="--gutter-offset: 65px">
-                  <button
-                    type="button"
-                    class="folded-marker"
-                    title="Click to expand"
-                    onclick={() => toggleThreadFold('base', row.left!.base_line!)}
-                  >
-                    <Bubble size={11} />
-                    <span class="count"
-                      >{leftThreads.length + leftNotes.length}
-                      {leftThreads.length + leftNotes.length === 1
-                        ? 'comment'
-                        : 'comments'}</span
-                    >
-                    <span class="chev">▸</span>
-                  </button>
-                </div>
-              </td>
-            </tr>
-          {/if}
           {#if (leftHasContent && !leftCollapsed) || leftAnnotating}
             <tr class="sbs-threads from-{row.left?.origin ?? 'context'}">
               <td colspan="2" class="thread-cell">
@@ -607,14 +661,6 @@
                      padding rather than an empty cell — see
                      HunkLines.svelte for the rationale. -->
                 <div class="thread-sticky" style="--gutter-offset: 65px">
-                  {#if leftHasContent && !leftCollapsed}
-                    <button
-                      type="button"
-                      class="collapse-thread"
-                      title="Collapse this thread"
-                      onclick={() => toggleThreadFold('base', row.left!.base_line!)}
-                    >▾</button>
-                  {/if}
                   {#each leftNotes as n (n.annotation_id)}
                     <AnnotationBubble
                       annotation={n}
@@ -709,6 +755,27 @@
                   </button>
                 {/if}
               {/if}
+              {#if row.right?.tip_line != null && showComments}
+                {@const ln = row.right.tip_line}
+                {@const count = threadsAt('tip', ln).length + annotationsAt('tip', ln).length}
+                {@const folded = isThreadCollapsed('tip', ln)}
+                {#if count > 0}
+                  <button
+                    type="button"
+                    class="thread-marker"
+                    class:folded
+                    aria-pressed={!folded}
+                    aria-label="{count} comment{count === 1 ? '' : 's'}; click to {folded ? 'expand' : 'collapse'}"
+                    title="{count} comment{count === 1 ? '' : 's'} — click to {folded ? 'expand' : 'collapse'}"
+                    onclick={() => toggleThreadFold('tip', ln)}
+                    onmouseenter={() => {
+                      const r = foldedRangeAt('tip', ln);
+                      hoveredAnchor = r ? { side: 'tip', start: r.start, end: r.end } : null;
+                    }}
+                    onmouseleave={() => (hoveredAnchor = null)}
+                  ><Chevron dir={folded ? 'right' : 'down'} size={12} filled /></button>
+                {/if}
+              {/if}
               {row.right?.tip_line ?? row.right?.base_line ?? ''}
             </td>
             <td
@@ -732,29 +799,6 @@
             rightHasContent &&
             row.right?.tip_line != null &&
             isThreadCollapsed('tip', row.right.tip_line)}
-          {#if rightHasContent && rightCollapsed}
-            <tr class="sbs-threads collapsed from-{row.right?.origin ?? 'context'}">
-              <td colspan="2" class="thread-cell">
-                <div class="thread-sticky" style="--gutter-offset: 65px">
-                  <button
-                    type="button"
-                    class="folded-marker"
-                    title="Click to expand"
-                    onclick={() => toggleThreadFold('tip', row.right!.tip_line!)}
-                  >
-                    <Bubble size={11} />
-                    <span class="count"
-                      >{rightThreads.length + rightNotes.length}
-                      {rightThreads.length + rightNotes.length === 1
-                        ? 'comment'
-                        : 'comments'}</span
-                    >
-                    <span class="chev">▸</span>
-                  </button>
-                </div>
-              </td>
-            </tr>
-          {/if}
           {#if (rightHasContent && !rightCollapsed) || rightAnnotating}
             <tr class="sbs-threads from-{row.right?.origin ?? 'context'}">
               <td colspan="2" class="thread-cell">
@@ -762,14 +806,6 @@
                      padding rather than an empty cell — see
                      HunkLines.svelte for the rationale. -->
                 <div class="thread-sticky" style="--gutter-offset: 65px">
-                  {#if rightHasContent && !rightCollapsed}
-                    <button
-                      type="button"
-                      class="collapse-thread"
-                      title="Collapse this thread"
-                      onclick={() => toggleThreadFold('tip', row.right!.tip_line!)}
-                    >▾</button>
-                  {/if}
                   {#each rightNotes as n (n.annotation_id)}
                     <AnnotationBubble
                       annotation={n}
@@ -1064,8 +1100,12 @@
   /* See HunkLines.svelte — match the adjacent diff row's tint so the
    * gutter and right-gap don't read as a dark stripe through the
    * column's color. */
+  /* Thread rows are excluded from text selection so dragging a
+   * vertical selection across them doesn't fragment the code-row
+   * highlights or pollute the copied text. See HunkLines.svelte. */
   .sbs-threads {
     background: transparent;
+    user-select: none;
   }
 
   .sbs-threads.from-added {
@@ -1081,40 +1121,41 @@
     background: transparent;
   }
 
-  /* Folded-thread marker — see HunkLines.svelte for rationale. */
-  .folded-marker {
+  /* Thread fold marker — stroke-only chevron pinned to the left
+   * edge of the gutter cell, vertically centered on the row
+   * boundary so a long line number can flow across the gutter
+   * without colliding. See HunkLines.svelte for the full design
+   * rationale. */
+  .thread-marker {
+    position: absolute;
+    left: -2px;
+    /* Centered on the row boundary — see HunkLines.svelte for the
+     * stacking-context rationale paired with the :has() rule below. */
+    bottom: 0;
+    transform: translateY(50%);
+    width: 14px;
+    height: 14px;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--link);
+    cursor: pointer;
+    user-select: none;
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    background: var(--link-bg);
-    border: 1px solid var(--link);
-    border-radius: 4px;
-    color: var(--link);
-    font-size: 11px;
-    padding: 2px 8px;
-    cursor: pointer;
-    font-family: ui-sans-serif, system-ui, sans-serif;
+    justify-content: center;
   }
-  .folded-marker:hover {
-    background: var(--link);
-    color: var(--on-accent);
-  }
-  .folded-marker .chev {
-    font-size: 10px;
+  /* Hover feedback comes from `.highlight-anchor` on the comment's
+   * anchored rows — see HunkLines.svelte. */
+
+  /* Raise z-index on rows that host a marker so its bottom half,
+   * which overflows into the next row's gutter cell, isn't clipped. */
+  .ln:has(.thread-marker) {
+    z-index: 2;
   }
 
-  .collapse-thread {
-    float: right;
-    background: transparent;
-    border: none;
-    color: var(--text-muted);
-    cursor: pointer;
-    font-size: 14px;
-    line-height: 1;
-    padding: 0 4px;
-  }
-  .collapse-thread:hover {
-    color: var(--link);
+  :global(.highlight-anchor) {
+    background: var(--link-bg) !important;
   }
 
   /* Blue tint + left stripe so inline threads visually separate from

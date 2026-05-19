@@ -18,6 +18,7 @@
     type AnnotationComposerTarget,
   } from './AnnotationComposer.svelte';
   import Bubble from './Bubble.svelte';
+  import Chevron from './Chevron.svelte';
   import CommentThread from './CommentThread.svelte';
   import { computeHunkWordDiff, wrapRanges } from '../lib/wordDiff';
   import {
@@ -146,6 +147,72 @@
     foldStore.set('thread', k, !currently);
     foldVersion++;
   }
+
+  /** Comments and annotations whose anchor still resolves to a row
+   *  on this side at this line. Used to drive the gutter marker
+   *  (which shows when any of these are folded) and the hover
+   *  highlight (which paints the underlying line range). */
+  function entriesFor(a: { side: Side; line: number }): {
+    threads: CommentView[];
+    notes: AnnotationView[];
+  } {
+    return {
+      threads: threadsFor(a),
+      notes: annotationsFor(a),
+    };
+  }
+
+  /** Aggregate anchor range covered by the folded threads/notes at
+   *  this row. Used so hovering the gutter marker can highlight the
+   *  full line range an anchor spans, not just the row the marker
+   *  itself sits on. */
+  function foldedRange(a: { side: Side; line: number }): { start: number; end: number } | null {
+    const { threads, notes } = entriesFor(a);
+    let start = Number.POSITIVE_INFINITY;
+    let end = Number.NEGATIVE_INFINITY;
+    for (const c of threads) {
+      const eff =
+        c.anchor.kind === 'moved' || c.anchor.kind === 'drifted'
+          ? c.anchor.new_lines
+          : c.lines;
+      if (!eff) continue;
+      if (eff.start < start) start = eff.start;
+      if (eff.end > end) end = eff.end;
+    }
+    for (const n of notes) {
+      const eff =
+        n.anchor.kind === 'moved' || n.anchor.kind === 'drifted'
+          ? n.anchor.new_lines
+          : n.lines;
+      if (!eff) continue;
+      if (eff.start < start) start = eff.start;
+      if (eff.end > end) end = eff.end;
+    }
+    if (!Number.isFinite(start)) return null;
+    return { start, end };
+  }
+
+  /** Hover-on-marker highlight state. Painted onto matching
+   *  `[data-side][data-line]` cells via a `.highlight-anchor` class
+   *  using the same direct-DOM trick as `dragSelected` — keeps the
+   *  reactive cost off the per-row template. */
+  let hoveredAnchor: { side: Side; start: number; end: number } | null = $state.raw(null);
+  let hoveredEls: HTMLElement[] = [];
+  $effect(() => {
+    for (const el of hoveredEls) el.classList.remove('highlight-anchor');
+    hoveredEls = [];
+    if (!tableEl || !hoveredAnchor) return;
+    const { side, start, end } = hoveredAnchor;
+    for (let ln = start; ln <= end; ln++) {
+      const matches = tableEl.querySelectorAll(
+        `[data-side="${side}"][data-line="${ln}"]`,
+      );
+      for (const el of matches) {
+        (el as HTMLElement).classList.add('highlight-anchor');
+        hoveredEls.push(el as HTMLElement);
+      }
+    }
+  });
 
   const showBase = $derived(lineNumberMode !== 'tip');
   const showTip = $derived(lineNumberMode !== 'base');
@@ -474,6 +541,15 @@
       {@const a = anchor(line)}
       {@const stripped = line.content.replace(/\n$/, '')}
       {@const html = htmlWithWordDiff(line, i)}
+      <!-- Gutter-marker bookkeeping, hoisted up so the gutter cells
+           below render the marker without recomputing per-cell.
+           `markerCount === 0` means no comments at all on this row;
+           `markerFolded` distinguishes folded vs expanded so the
+           marker can show two visual states + serve as the single
+           fold control in both directions. -->
+      {@const markerCount =
+        showComments && a ? threadsFor(a).length + annotationsFor(a).length : 0}
+      {@const markerFolded = a != null && isThreadCollapsed(a.side, a.line)}
       <tr class={`${rowClass(line.origin)}${isCommented(a) ? ' commented' : ''}`}>
         {#if showBase}
           <!-- data-side/data-line are also on the gutter cell so that the
@@ -507,6 +583,22 @@
                 </button>
               {/if}
             {/if}
+            {#if a && !showTip && markerCount > 0}
+              <button
+                type="button"
+                class="thread-marker"
+                class:folded={markerFolded}
+                aria-pressed={!markerFolded}
+                aria-label="{markerCount} comment{markerCount === 1 ? '' : 's'}; click to {markerFolded ? 'expand' : 'collapse'}"
+                title="{markerCount} comment{markerCount === 1 ? '' : 's'} — click to {markerFolded ? 'expand' : 'collapse'}"
+                onclick={() => toggleThreadFold(a.side, a.line)}
+                onmouseenter={() => {
+                  const r = foldedRange(a);
+                  hoveredAnchor = r ? { side: a.side, start: r.start, end: r.end } : null;
+                }}
+                onmouseleave={() => (hoveredAnchor = null)}
+              ><Chevron dir={markerFolded ? 'right' : 'down'} size={12} filled /></button>
+            {/if}
             {line.base_line ?? ''}
           </td>
         {/if}
@@ -525,6 +617,22 @@
               >
                 <Bubble size={12} />
               </button>
+            {/if}
+            {#if a && markerCount > 0}
+              <button
+                type="button"
+                class="thread-marker"
+                class:folded={markerFolded}
+                aria-pressed={!markerFolded}
+                aria-label="{markerCount} comment{markerCount === 1 ? '' : 's'}; click to {markerFolded ? 'expand' : 'collapse'}"
+                title="{markerCount} comment{markerCount === 1 ? '' : 's'} — click to {markerFolded ? 'expand' : 'collapse'}"
+                onclick={() => toggleThreadFold(a.side, a.line)}
+                onmouseenter={() => {
+                  const r = foldedRange(a);
+                  hoveredAnchor = r ? { side: a.side, start: r.start, end: r.end } : null;
+                }}
+                onmouseleave={() => (hoveredAnchor = null)}
+              ><Chevron dir={markerFolded ? 'right' : 'down'} size={12} filled /></button>
             {/if}
             {line.tip_line ?? ''}
           </td>
@@ -563,36 +671,6 @@
         {@const notes = annotationsFor(a)}
         {@const hasContent = threads.length > 0 || notes.length > 0}
         {@const collapsed = hasContent && isThreadCollapsed(a.side, a.line)}
-        {#if hasContent && collapsed}
-          <!-- Folded-thread marker row. Compact one-liner with a
-               count + click target that expands the full thread.
-               Same `from-<origin>` tint as the expanded thread-row
-               so the eye doesn't jump when toggling. -->
-          <tr class="thread-row collapsed from-{line.origin}">
-            <td colspan={colspan} class="thread-cell">
-              <div
-                class="thread-sticky"
-                style="--gutter-offset: {lnCols * 65}px"
-              >
-                <button
-                  type="button"
-                  class="folded-marker"
-                  title="Click to expand"
-                  onclick={() => toggleThreadFold(a.side, a.line)}
-                >
-                  <Bubble size={11} />
-                  <span class="count"
-                    >{threads.length + notes.length}
-                    {threads.length + notes.length === 1
-                      ? 'comment'
-                      : 'comments'}</span
-                  >
-                  <span class="chev">▸</span>
-                </button>
-              </div>
-            </td>
-          </tr>
-        {/if}
         {#if hasContent && !collapsed}
           <tr class="thread-row from-{line.origin}">
             <td colspan={colspan} class="thread-cell">
@@ -607,12 +685,6 @@
                 class="thread-sticky"
                 style="--gutter-offset: {lnCols * 65}px"
               >
-                <button
-                  type="button"
-                  class="collapse-thread"
-                  title="Collapse this thread"
-                  onclick={() => toggleThreadFold(a.side, a.line)}
-                >▾</button>
                 {#each notes as n (n.annotation_id)}
                   <AnnotationBubble
                     annotation={n}
@@ -886,8 +958,15 @@
    * match the adjacent diff row's row-level color makes the thread
    * read as embedded in the (added/removed) hunk rather than
    * floating over the page background. */
+  /* Thread rows interleave between code rows. Without this, dragging
+   * a selection across them adds an awkward highlighted bar for each
+   * thread that happens to sit in the middle of the selection — the
+   * actual code rows look fragmented as a result. Threads are not
+   * code, so excluding them from text selection is the right thing
+   * for both visual continuity and copy-as-text. */
   .thread-row {
     background: transparent;
+    user-select: none;
   }
 
   .thread-row.from-added {
@@ -903,46 +982,64 @@
     background: transparent;
   }
 
-  /* Folded-thread marker — one slim row with comment-bubble icon, a
-   * count, and a chevron. Click anywhere to expand. Replaces the
-   * full thread block when the per-thread fold is on (whether from
-   * `diffs` mode default or an explicit user collapse). */
-  .folded-marker {
+  /* Thread fold marker — a solid disclosure triangle pinned to the
+   * left edge of the sticky gutter, vertically centered on the row's
+   * *bottom* boundary so it sits where the expanded thread will drop
+   * down. Two design forces drive that placement:
+   *
+   *  - No bubble background. A filled bubble was reading as the
+   *    same affordance as the chat-bubble "add a comment" glyph on
+   *    the gutter's right edge; a bare solid triangle disambiguates
+   *    while staying small and clickable on a clean diff.
+   *  - On the bottom boundary, not centered on the line. The line-
+   *    number text is vertically centered inside each row, so a
+   *    4-or-more-digit number can flow across the gutter without
+   *    the triangle overlapping it. Sitting on the bottom edge
+   *    also visually points the eye at where the expanded thread
+   *    will appear next.
+   *
+   * Triangle direction (▶ folded → ▼ expanded) is the only state
+   * cue — color stays constant, so the affordance reads the same
+   * whether folded or expanded. Hover gets a subtle tint so the
+   * click target is discoverable. */
+  .thread-marker {
+    position: absolute;
+    left: -2px;
+    /* Centered exactly on the row boundary — half above, half below
+     * — so the triangle reads as "between this line and the next."
+     * Without raising the parent `.ln`'s z-index (rule below), the
+     * bottom half would be painted over by the next sticky cell. */
+    bottom: 0;
+    transform: translateY(50%);
+    width: 14px;
+    height: 14px;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--link);
+    cursor: pointer;
+    user-select: none;
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    background: var(--link-bg);
-    border: 1px solid var(--link);
-    border-radius: 4px;
-    color: var(--link);
-    font-size: 11px;
-    padding: 2px 8px;
-    cursor: pointer;
-    font-family: ui-sans-serif, system-ui, sans-serif;
+    justify-content: center;
   }
-  .folded-marker:hover {
-    background: var(--link);
-    color: var(--on-accent);
-  }
-  .folded-marker .chev {
-    font-size: 10px;
+  /* No hover tint on the marker itself — the `.highlight-anchor`
+   * paint on the rows the comment covers is the hover feedback. */
+
+  /* All sticky `.ln` cells share z-index: 1, so adjacent rows paint
+   * in DOM order and a marker that overflows the row's bottom edge
+   * gets clipped by the next row's cell. Raising the z-index just
+   * for rows that actually host a marker keeps the bottom half
+   * visible without otherwise changing the gutter's stacking. */
+  .ln:has(.thread-marker) {
+    z-index: 2;
   }
 
-  /* "Collapse this thread" affordance in the expanded thread block.
-   * Lives in the sticky wrapper's top-right corner so it doesn't
-   * compete with the thread content for the eye. */
-  .collapse-thread {
-    float: right;
-    background: transparent;
-    border: none;
-    color: var(--text-muted);
-    cursor: pointer;
-    font-size: 14px;
-    line-height: 1;
-    padding: 0 4px;
-  }
-  .collapse-thread:hover {
-    color: var(--link);
+  /* Hover-highlight painted onto the rows an anchor covers. Applied
+   * imperatively via `hoveredEls` (see the $effect) to keep per-row
+   * reactivity off the bulk path. */
+  :global(.highlight-anchor) {
+    background: var(--link-bg) !important;
   }
 
   /* The sticky wrapper lets the thread stay at the visible viewport while

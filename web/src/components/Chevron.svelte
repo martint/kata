@@ -3,12 +3,18 @@
   //! as a centered stroke so it lines up inside the button regardless
   //! of the surrounding font's metrics — the Unicode ‹ › glyphs sit
   //! off-baseline in most fonts and look misaligned in square buttons.
+  //!
+  //! `filled` switches the geometry from an open chevron to a solid
+  //! disclosure triangle — used by the thread-fold marker, where the
+  //! tiny stroked chevron disappeared against the surrounding diff
+  //! and didn't read as a clickable affordance on a clean row.
 
   interface Props {
     dir: 'left' | 'right' | 'up' | 'down';
     size?: number;
+    filled?: boolean;
   }
-  const { dir, size = 14 }: Props = $props();
+  const { dir, size = 14, filled = false }: Props = $props();
 
   const rotation = $derived(
     dir === 'left' ? 180 : dir === 'right' ? 0 : dir === 'up' ? -90 : 90,
@@ -24,14 +30,18 @@
   focusable="false"
   style:transform="rotate({rotation}deg)"
 >
-  <path
-    d="M6 4 L10 8 L6 12"
-    stroke="currentColor"
-    stroke-width="1.6"
-    fill="none"
-    stroke-linecap="round"
-    stroke-linejoin="round"
-  />
+  {#if filled}
+    <polygon points="5,3 12,8 5,13" fill="currentColor" />
+  {:else}
+    <path
+      d="M6 4 L10 8 L6 12"
+      stroke="currentColor"
+      stroke-width="1.6"
+      fill="none"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    />
+  {/if}
 </svg>
 
 <style>
