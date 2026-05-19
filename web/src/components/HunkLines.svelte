@@ -22,7 +22,6 @@
   import Chevron from './Chevron.svelte';
   import CommentThread from './CommentThread.svelte';
   import { computeHunkWordDiff, wrapRanges } from '../lib/wordDiff';
-  import { diffSelectionFor, type DiffSelection } from '../lib/diffSelection';
 
   interface Props {
     hunk: Hunk;
@@ -266,55 +265,6 @@
   let tableEl: HTMLTableElement | undefined = $state();
   let dragSelected: HTMLElement[] = [];
 
-  /** "Comment on selection" pill state: present iff the user has a
-   *  text selection inside this hunk's `.content` cells (a single
-   *  row). Cleared on outside mousedown or when the selection
-   *  changes to something we can't anchor (multi-row, collapsed,
-   *  outside this table). Click → open the line composer with the
-   *  intra-line `columns` range prefilled. */
-  let selectionPill: DiffSelection | null = $state.raw(null);
-  $effect(() => {
-    if (!tableEl) return;
-    function onMouseUp() {
-      // The selection isn't always finalised by the time the
-      // mouseup handler runs; defer so the browser settles first.
-      requestAnimationFrame(() => {
-        if (!tableEl) return;
-        selectionPill = diffSelectionFor(tableEl);
-      });
-    }
-    function onMouseDown(e: MouseEvent) {
-      // Mousedown on the pill itself shouldn't dismiss it — let the
-      // click handler fire first. Anything else clears so the next
-      // mouseup re-evaluates against a fresh selection.
-      const t = e.target as HTMLElement | null;
-      if (t?.closest('.intra-line-pill')) return;
-      selectionPill = null;
-    }
-    document.addEventListener('mouseup', onMouseUp);
-    document.addEventListener('mousedown', onMouseDown);
-    return () => {
-      document.removeEventListener('mouseup', onMouseUp);
-      document.removeEventListener('mousedown', onMouseDown);
-    };
-  });
-
-  function commentOnSelection() {
-    const s = selectionPill;
-    if (!s) return;
-    onstartcompose({
-      kind: 'line',
-      file: filePath,
-      side: s.side,
-      startLine: s.startLine,
-      endLine: s.endLine,
-      columns: { start: s.startCol, end: s.endCol },
-    });
-    selectionPill = null;
-    // Clear the underlying text selection too so it doesn't sit
-    // there as visual noise once the composer takes over.
-    window.getSelection()?.removeAllRanges();
-  }
 
   /** Apply the `.selected` class directly to matching rows when dragging.
    *  We bypass per-row Svelte reactivity here because toggling a top-level
@@ -392,15 +342,21 @@
 
   /** Column ranges to highlight on this row from any line-level
    *  comment with `columns` set whose anchor is still Valid or
-   *  Moved. We can't honour columns when the line has Drifted or
-   *  gone Outdated — the character offsets index a different
-   *  string than the one being rendered. */
+   *  Moved. Drifted / outdated comments can't honour columns — the
+   *  character offsets index a different string than the one being
+   *  rendered, so those degrade to plain line-level marks.
+   *
+   *  Multi-line comments contribute differently per row:
+   *  - first line: from `columns.start` to end-of-line (text-editor-
+   *    style "from where the user clicked through the rest of the
+   *    line");
+   *  - middle lines: the whole line;
+   *  - last line: from beginning-of-line to `columns.end`. */
   function columnAnchorsFor(a: { side: Side; line: number }): { start: number; end: number }[] {
     const out: { start: number; end: number }[] = [];
     for (const c of comments) {
       if (c.side !== a.side) continue;
       if (!c.columns) continue;
-      // Single-line columns only — server enforces this on write.
       const effective =
         c.anchor.kind === 'moved'
           ? c.anchor.new_lines
@@ -408,9 +364,22 @@
             ? c.lines
             : null;
       if (!effective) continue;
-      if (effective.start !== effective.end) continue;
-      if (effective.end !== a.line) continue;
-      out.push({ start: c.columns.start, end: c.columns.end });
+      if (a.line < effective.start || a.line > effective.end) continue;
+      if (effective.start === effective.end) {
+        // Single-line comment — half-open `[start, end)` within the line.
+        out.push({ start: c.columns.start, end: c.columns.end });
+      } else if (a.line === effective.start) {
+        // First line of a multi-line range: from the user's start col
+        // through to EOL. `Number.MAX_SAFE_INTEGER` lets `wrapRanges`
+        // clamp to the actual line length without us having to know it.
+        out.push({ start: c.columns.start, end: Number.MAX_SAFE_INTEGER });
+      } else if (a.line === effective.end) {
+        // Last line: BOL to the user's end col.
+        out.push({ start: 0, end: c.columns.end });
+      } else {
+        // Middle line: entirely covered.
+        out.push({ start: 0, end: Number.MAX_SAFE_INTEGER });
+      }
     }
     return out;
   }
@@ -773,19 +742,6 @@
   </tbody>
 </table>
 
-{#if selectionPill}
-  <button
-    type="button"
-    class="intra-line-pill"
-    style:top="{selectionPill.rect.top + window.scrollY - 30}px"
-    style:left="{selectionPill.rect.left + window.scrollX}px"
-    onclick={commentOnSelection}
-    onmousedown={(e) => e.preventDefault()}
-  >
-    Comment on selection
-  </button>
-{/if}
-
 <style>
   .hunk {
     width: max-content;
@@ -863,23 +819,6 @@
   /* Floating "Comment on selection" pill positioned in document
    * (not viewport) coordinates so it stays anchored to the text
    * during page scroll without a scroll listener. */
-  .intra-line-pill {
-    position: absolute;
-    z-index: 10;
-    background: var(--link);
-    color: var(--on-accent);
-    border: none;
-    border-radius: 4px;
-    padding: 4px 10px;
-    font-size: 12px;
-    font-family: ui-sans-serif, system-ui, sans-serif;
-    cursor: pointer;
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.18);
-  }
-  .intra-line-pill:hover {
-    filter: brightness(1.1);
-  }
-
   .row.context {
     background: var(--bg);
   }

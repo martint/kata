@@ -118,9 +118,16 @@ export function diffSelectionFor(root: HTMLElement): DiffSelection | null {
 }
 
 /** Walk up from `node` and return the nearest ancestor `.content`
- *  cell, but only if it sits inside `bound` — keeps selections that
- *  started outside the table from being misattributed. */
+ *  cell, but only if it sits inside `bound`. Critical edge case:
+ *  when the selection extends into a sibling file's DOM, the walk
+ *  must NOT return a `.content` cell from that other file — that
+ *  would let cross-file drag-selects masquerade as same-file ones
+ *  and produce a `DiffSelection` whose `endLine` doesn't exist in
+ *  the current file's hunks. We verify containment via
+ *  `bound.contains(node)` before descending; if the node isn't
+ *  even inside `bound`, bail immediately. */
 function closestContentCell(node: Node | null, bound: HTMLElement): HTMLElement | null {
+  if (!node || !bound.contains(node)) return null;
   let cur: Node | null = node;
   while (cur && cur !== bound) {
     if (cur.nodeType === Node.ELEMENT_NODE) {

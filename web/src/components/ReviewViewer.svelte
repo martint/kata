@@ -1715,7 +1715,7 @@
       // Produced by SelectionPopup's "Copy permalink" button.
       const link = parseLineRangeHash(hash);
       if (!link) return;
-      void scrollToLineRange(link.file, link.side, link.startLine);
+      void scrollToLineRange(link.file, link.side, link.startLine, link.endLine);
     }
   }
 
@@ -2053,19 +2053,21 @@
     window.scrollTo({ top: Math.max(0, target), behavior: 'auto' });
   }
 
-  /** Scroll a specific diff row into view. Used by the `#L:` permalink
-   *  handler — locates the row by its `data-side` + `data-line`
-   *  attributes (both `.ln` and `.content` cells carry these so
-   *  picking either matches), mounting the file slot first if it's
-   *  been virtualized away. Mirrors `scrollToComment`'s mount-wait
-   *  pattern so a link landing on a far-away file still works after
-   *  the slot's diff fetch resolves and the layout re-flows. */
+  /** Scroll a specific diff line range into view, highlighting each
+   *  row in the range so the reader can see what the permalink
+   *  pointed at. Used by the `#L:` permalink handler — locates the
+   *  start row by its `data-side` + `data-line` attributes, mounting
+   *  the file slot first if it's been virtualized away. Mirrors
+   *  `scrollToComment`'s mount-wait pattern so a link landing on a
+   *  far-away file still works after the slot's diff fetch resolves
+   *  and the layout re-flows. Highlight auto-clears after 4 s. */
   async function scrollToLineRange(
     path: string,
     side: 'base' | 'tip',
-    line: number,
+    startLine: number,
+    endLine: number,
   ) {
-    const lineSel = `[data-side="${side}"][data-line="${line}"]`;
+    const lineSel = `[data-side="${side}"][data-line="${startLine}"]`;
     let row = document.querySelector(lineSel) as HTMLElement | null;
     if (!row) {
       // Mount the file's slot, then poll for the row to appear.
@@ -2087,7 +2089,23 @@
     ) {
       treeCollapsed = true;
     }
-    scrollTopOf(row);
+    // Park below BOTH sticky bars (app header + file header) plus a
+    // bit of breathing room — same shape as `commentParkTarget`, so
+    // a line permalink lands at the same visual position as a comment
+    // permalink. Plain `scrollTopOf` only subtracted the app-header
+    // height, leaving the row tucked under the file header (or past
+    // the top once the layout settled).
+    const parkRow = (el: HTMLElement) => {
+      const rect = el.getBoundingClientRect();
+      const fileHeader = el
+        .closest('.file-diff')
+        ?.querySelector('.file-header') as HTMLElement | null;
+      const fhExtra = fileHeader?.offsetHeight ?? 0;
+      const target =
+        rect.top + window.scrollY - stickyTop() - fhExtra - COMMENT_CONTEXT;
+      window.scrollTo({ top: Math.max(0, target), behavior: 'auto' });
+    };
+    parkRow(row);
     // Stabilization loop: as virtualized slots above the row mount in,
     // the document re-flows and the row drifts. Re-aim until the row
     // is at a stable position.
@@ -2102,10 +2120,29 @@
         stableFrames++;
       } else {
         stableFrames = 0;
-        scrollTopOf(cur);
+        parkRow(cur);
       }
       lastTop = top;
     }
+    // Highlight every row in the range so the reader can see what
+    // the link points at. The `.highlight-anchor` class is the same
+    // hover-feedback paint used by the comment gutter marker — re-
+    // using it keeps the visual language consistent. Auto-clear
+    // after 4 s so it doesn't linger forever; the next mousedown
+    // outside the range also feels natural to drop it.
+    const highlighted: HTMLElement[] = [];
+    for (let ln = startLine; ln <= endLine; ln++) {
+      const cells = document.querySelectorAll(
+        `[data-side="${side}"][data-line="${ln}"]`,
+      );
+      for (const c of cells) {
+        (c as HTMLElement).classList.add('highlight-anchor');
+        highlighted.push(c as HTMLElement);
+      }
+    }
+    setTimeout(() => {
+      for (const el of highlighted) el.classList.remove('highlight-anchor');
+    }, 4000);
   }
 
   async function scrollToFile(path: string) {

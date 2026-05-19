@@ -198,6 +198,38 @@ describe('diffSelectionFor', () => {
     expect(diffSelectionFor(table)).toBeNull();
   });
 
+  test('returns null when the selection spans into a sibling file', () => {
+    // The caller wires one diffSelectionFor per file (bound to that
+    // file's hunks wrapper). When the user drag-selects past the
+    // current file into the next file's diff, the closest-content-
+    // cell walker must NOT return a .content cell from the OTHER
+    // file's table — otherwise the resolver would produce a fake
+    // "valid" DiffSelection whose endLine doesn't exist in the
+    // current file's hunks, and the composer effect can't find it.
+    document.body.insertAdjacentHTML(
+      'beforeend',
+      `<table id="other-file">
+         <tbody>
+           <tr><td class="content" data-side="tip" data-line="999"><pre>other file line</pre></td></tr>
+         </tbody>
+       </table>`,
+    );
+    const otherTable = document.getElementById('other-file') as HTMLTableElement;
+    const startCell = table.querySelector<HTMLElement>(`[data-line="42"]`)!;
+    const endCell = otherTable.querySelector<HTMLElement>(`[data-line="999"]`)!;
+    const start = locate(startCell, 0);
+    const endNode = endCell.querySelector('pre')!.firstChild!;
+    const range = document.createRange();
+    range.setStart(start.node, start.offset);
+    range.setEnd(endNode, 5);
+    const sel = window.getSelection()!;
+    sel.removeAllRanges();
+    sel.addRange(range);
+    // Bound is the original `table` — must reject because the end
+    // cell lives outside it.
+    expect(diffSelectionFor(table)).toBeNull();
+  });
+
   test('includes the selection rect for popup positioning', () => {
     // jsdom returns zero-rects from getBoundingClientRect, but the
     // shape must still be a DOMRect (not undefined) so the caller's

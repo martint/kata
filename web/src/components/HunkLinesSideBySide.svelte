@@ -23,7 +23,6 @@
   import CommentThread from './CommentThread.svelte';
   import { computeHunkWordDiff, wrapRanges } from '../lib/wordDiff';
   import { alignBlock, alignedRows } from '../lib/hunkAlign';
-  import { diffSelectionFor, type DiffSelection } from '../lib/diffSelection';
 
   interface Props {
     hunk: Hunk;
@@ -278,47 +277,6 @@
     }
   });
 
-  /** Pill state for drag-to-select intra-line comments. SBS has two
-   *  tables — base and tip — and a selection lives in exactly one of
-   *  them; we try both on mouseup and use whichever resolves. See
-   *  HunkLines.svelte for the per-mode design rationale. */
-  let selectionPill: DiffSelection | null = $state.raw(null);
-  $effect(() => {
-    if (!pairEl) return;
-    function onMouseUp() {
-      requestAnimationFrame(() => {
-        const fromBase = baseTableEl ? diffSelectionFor(baseTableEl) : null;
-        const fromTip = !fromBase && tipTableEl ? diffSelectionFor(tipTableEl) : null;
-        selectionPill = fromBase ?? fromTip;
-      });
-    }
-    function onMouseDown(e: MouseEvent) {
-      const t = e.target as HTMLElement | null;
-      if (t?.closest('.intra-line-pill')) return;
-      selectionPill = null;
-    }
-    document.addEventListener('mouseup', onMouseUp);
-    document.addEventListener('mousedown', onMouseDown);
-    return () => {
-      document.removeEventListener('mouseup', onMouseUp);
-      document.removeEventListener('mousedown', onMouseDown);
-    };
-  });
-
-  function commentOnSelection() {
-    const s = selectionPill;
-    if (!s) return;
-    onstartcompose({
-      kind: 'line',
-      file: filePath,
-      side: s.side,
-      startLine: s.startLine,
-      endLine: s.endLine,
-      columns: { start: s.startCol, end: s.endCol },
-    });
-    selectionPill = null;
-    window.getSelection()?.removeAllRanges();
-  }
 
   /** Drag the gutter between the base and tip sides. Pointer X within
    *  `pairEl` becomes the new base-side fraction; the parent clamps
@@ -571,8 +529,9 @@
     return out;
   }
 
-  /** See HunkLines.svelte's columnAnchorsFor — same rule: only Valid
-   *  or Moved single-line anchors contribute a highlight. */
+  /** See HunkLines.svelte's columnAnchorsFor — same multi-line role
+   *  split (first → start col..EOL; middle → whole line; last →
+   *  BOL..end col). */
   function columnAnchorsFor(side: Side, line: number): { start: number; end: number }[] {
     const out: { start: number; end: number }[] = [];
     for (const c of comments) {
@@ -585,9 +544,16 @@
             ? c.lines
             : null;
       if (!effective) continue;
-      if (effective.start !== effective.end) continue;
-      if (effective.end !== line) continue;
-      out.push({ start: c.columns.start, end: c.columns.end });
+      if (line < effective.start || line > effective.end) continue;
+      if (effective.start === effective.end) {
+        out.push({ start: c.columns.start, end: c.columns.end });
+      } else if (line === effective.start) {
+        out.push({ start: c.columns.start, end: Number.MAX_SAFE_INTEGER });
+      } else if (line === effective.end) {
+        out.push({ start: 0, end: c.columns.end });
+      } else {
+        out.push({ start: 0, end: Number.MAX_SAFE_INTEGER });
+      }
     }
     return out;
   }
@@ -903,19 +869,6 @@
   </div>
 </div>
 
-{#if selectionPill}
-  <button
-    type="button"
-    class="intra-line-pill"
-    style:top="{selectionPill.rect.top + window.scrollY - 30}px"
-    style:left="{selectionPill.rect.left + window.scrollX}px"
-    onclick={commentOnSelection}
-    onmousedown={(e) => e.preventDefault()}
-  >
-    Comment on selection
-  </button>
-{/if}
-
 <style>
   .sbs-pair {
     display: flex;
@@ -1055,24 +1008,6 @@
   :global(.content .column-anchor) {
     box-shadow: inset 0 -2px 0 var(--link);
     cursor: pointer;
-  }
-
-  /* "Comment on selection" pill — see HunkLines.svelte. */
-  .intra-line-pill {
-    position: absolute;
-    z-index: 10;
-    background: var(--link);
-    color: var(--on-accent);
-    border: none;
-    border-radius: 4px;
-    padding: 4px 10px;
-    font-size: 12px;
-    font-family: ui-sans-serif, system-ui, sans-serif;
-    cursor: pointer;
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.18);
-  }
-  .intra-line-pill:hover {
-    filter: brightness(1.1);
   }
 
   .ln.empty,

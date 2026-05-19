@@ -21,12 +21,17 @@
     type LineHighlights,
   } from '../lib/highlight.svelte';
   import { isThreadFolded } from '../lib/resolution';
+  import { diffSelectionFor, type DiffSelection } from '../lib/diffSelection';
+  import { plainTextForSelection } from '../lib/diffCopy';
+  import { lineRangeHash } from '../lib/linkHash';
+  import { installSelectionClamp } from '../lib/selectionClamp';
   import Bubble from './Bubble.svelte';
   import Chevron from './Chevron.svelte';
   import CommentComposer from './CommentComposer.svelte';
   import CommentThread from './CommentThread.svelte';
   import HunkLines from './HunkLines.svelte';
   import HunkLinesSideBySide from './HunkLinesSideBySide.svelte';
+  import SelectionPopup from './SelectionPopup.svelte';
   import type { AnnotationComposerTarget } from './AnnotationComposer.svelte';
 
   import type { DraftResponseInput, ResolutionAction, ResponseView } from '../lib/types';
@@ -230,6 +235,165 @@
   /** Vertical position of the line composer overlay relative to
    *  `hunksWrapperEl`. Null while no line composer is open. */
   let composerTop: number | null = $state(null);
+
+  /** Floating-selection-popup state. Lives at the file level rather
+   *  than per-hunk so a selection that spans hunk boundaries (the
+   *  startContainer is in one HunkLines table, the endContainer in
+   *  another) still resolves — per-hunk handlers can't see across.
+   *  Resolved against `hunksWrapperEl` which covers every hunk's
+   *  content cell + every separator's neighbours. */
+  let selectionPopup: DiffSelection | null = $state.raw(null);
+  /** Viewport-coord anchor for the floating popup — captured from
+   *  the mouseup's `clientX/Y` so the popup lands where the user
+   *  released the pointer rather than at some far corner of the
+   *  selection's bounding rect (which for a multi-line drag spans
+   *  hundreds of px and pushes the popup off-screen). */
+  let popupAnchorX = $state(0);
+  let popupAnchorY = $state(0);
+  /** True while a drag-to-select is in progress inside this file's
+   *  diff. Used (together with `selectionPopup`) to hide the per-row
+   *  `+ comment` / `+ note` gutter buttons so they don't compete
+   *  visually with the text-selection workflow. */
+  let dragSelecting = $state(false);
+  /** Hide the gutter affordances while EITHER the user is dragging a
+   *  text selection or the SelectionPopup is open — the two
+   *  affordances are mutually exclusive paths to "make a comment",
+   *  and the gutter button hovering in mid-drag (or sitting under
+   *  the popup) reads as visual noise. */
+  const hideGutterAffordances = $derived(
+    dragSelecting || selectionPopup !== null,
+  );
+  $effect(() => {
+    if (!hunksWrapperEl) return;
+    function onMouseUp(e: MouseEvent) {
+      // Clear the drag-selecting flag on any mouseup. Deferred via
+      // setTimeout so the gutter buttons don't briefly reappear
+      // between mouseup and the popup-appearance handler below — the
+      // popup itself takes over the hide-affordance role once it
+      // mounts.
+      setTimeout(() => {
+        dragSelecting = false;
+      }, 0);
+      // Skip when the mouseup is on the popup itself — the popup's
+      // own click handlers (commentOnSelection / copySelection /
+      // copySelectionPermalink) manage `selectionPopup` directly.
+      // Without this guard the rAF below re-runs `diffSelectionFor`
+      // against the still-alive selection (e.g. after the permalink
+      // button, where we deliberately keep the selection visible)
+      // and re-sets `selectionPopup` to the same DiffSelection,
+      // making the popup reappear right after the click action set
+      // it to null.
+      const t = e.target as HTMLElement | null;
+      if (t?.closest('.selection-popup')) return;
+      const x = e.clientX;
+      const y = e.clientY;
+      // Defer to next frame: the selection isn't always finalised by
+      // the time mouseup fires. A second deferral (via setTimeout)
+      // covers browsers that finalise after the rAF callback for
+      // long multi-line drags.
+      requestAnimationFrame(() => {
+        setTimeout(() => {
+          if (!hunksWrapperEl) return;
+          const sel = diffSelectionFor(hunksWrapperEl);
+          if (sel) {
+            popupAnchorX = x;
+            popupAnchorY = y;
+          }
+          selectionPopup = sel;
+        }, 0);
+      });
+    }
+    function onMouseDown(e: MouseEvent) {
+      // Mousedown on the popup itself shouldn't dismiss it — let the
+      // click handler fire first. Anything else clears so the next
+      // mouseup re-evaluates against a fresh selection.
+      const t = e.target as HTMLElement | null;
+      if (t?.closest('.selection-popup')) return;
+      selectionPopup = null;
+      // Activate the drag-selecting flag only when the drag starts
+      // inside a content cell — that's the only place a text-select
+      // drag is meaningful. Gutter / thread / separator clicks
+      // wouldn't trigger a text selection, so the gutter buttons
+      // shouldn't hide there.
+      if (t?.closest('.content')) {
+        dragSelecting = true;
+      }
+    }
+    document.addEventListener('mouseup', onMouseUp);
+    document.addEventListener('mousedown', onMouseDown);
+    return () => {
+      document.removeEventListener('mouseup', onMouseUp);
+      document.removeEventListener('mousedown', onMouseDown);
+    };
+  });
+
+  /** Keep drag-select bounded to the table the drag started in. Stops
+   *  the selection from spilling across the SBS divider (mixing base
+   *  + tip) or across hunk boundaries in unified mode (no useful
+   *  anchor across an inter-hunk gap). The clamp listens on `document`
+   *  internally so it can react to selection changes wherever the
+   *  pointer goes; activation is gated on a mousedown inside
+   *  `hunksWrapperEl`. */
+  $effect(() => {
+    if (!hunksWrapperEl) return;
+    return installSelectionClamp(hunksWrapperEl);
+  });
+
+  function commentOnSelection() {
+    const s = selectionPopup;
+    if (!s) return;
+    onstartcompose({
+      kind: 'line',
+      file: file.path,
+      side: s.side,
+      startLine: s.startLine,
+      endLine: s.endLine,
+      columns: { start: s.startCol, end: s.endCol },
+    });
+    selectionPopup = null;
+    // Intentionally keep the native browser selection alive — the
+    // row-level `.selected` tint (added by composeSelected below) is
+    // a per-LINE highlight and would obscure the column-precise
+    // range the reader actually drag-selected. The browser's native
+    // selection paint sits on top of the tint and is what tells the
+    // reader "your comment is anchored to exactly this text". The
+    // next mousedown collapses it naturally.
+  }
+
+  async function copySelection() {
+    if (!selectionPopup) return;
+    const range = window.getSelection()?.getRangeAt(0);
+    if (!range) return;
+    const text = plainTextForSelection(range);
+    if (text != null) {
+      await copyText(text);
+    }
+    selectionPopup = null;
+    window.getSelection()?.removeAllRanges();
+  }
+
+  async function copySelectionPermalink() {
+    const s = selectionPopup;
+    if (!s) return;
+    const hash = lineRangeHash({
+      file: file.path,
+      side: s.side,
+      startLine: s.startLine,
+      endLine: s.endLine,
+    });
+    // Origin + path + hash so the link works pasted anywhere.
+    // `location.pathname + location.search` preserves the current
+    // review's repo / number and any patchset/scope query params, so
+    // the link reopens the same view the user copied from.
+    const url = `${window.location.origin}${window.location.pathname}${window.location.search}${hash}`;
+    await copyText(url);
+    selectionPopup = null;
+    // Intentionally NOT clearing the underlying text selection: the
+    // user just copied a pointer to this range, so leave the
+    // highlight visible as feedback for "this is what your link
+    // points at". The next mousedown the browser handles naturally
+    // collapses the old selection on its own.
+  }
   let hunksEl: HTMLDivElement | undefined = $state();
   let composeSelected: HTMLElement[] = [];
 
@@ -362,7 +526,14 @@
     }
     if (!sectionEl || !hunksWrapperEl) return;
 
-    const target = sectionEl.querySelector(
+    // Query against `hunksWrapperEl` — the same element the
+    // SelectionPopup's resolver was bound to. Querying against
+    // `sectionEl` could theoretically pick up rows from somewhere
+    // else inside the section (file-level threads etc.) that share
+    // the same data-line/data-side; staying inside the hunks
+    // wrapper guarantees we get the row that actually backed the
+    // selection.
+    const target = hunksWrapperEl.querySelector(
       `[data-side="${composing.side}"][data-line="${composing.endLine}"]`,
     ) as HTMLElement | null;
     if (!target) return;
@@ -1320,7 +1491,11 @@
     {:else if !file.hunks}
       <p class="placeholder">Diff omitted (file may exceed the size limit).</p>
     {:else}
-      <div class="hunks-wrapper" bind:this={hunksWrapperEl}>
+      <div
+        class="hunks-wrapper"
+        class:hide-gutter-affordances={hideGutterAffordances}
+        bind:this={hunksWrapperEl}
+      >
         <div class="hunks" bind:this={hunksEl}>
         {#each file.hunks as _, i (i)}
           {@const eh = withContext(file.hunks[i], i)}
@@ -1526,6 +1701,15 @@
     {/if}
   {/if}
 </section>
+
+<SelectionPopup
+  selection={selectionPopup}
+  anchorX={popupAnchorX}
+  anchorY={popupAnchorY}
+  oncomment={commentOnSelection}
+  oncopy={copySelection}
+  onpermalink={copySelectionPermalink}
+/>
 
 <style>
   .file-diff {
@@ -1821,6 +2005,21 @@
 
   .hunks-wrapper {
     position: relative;
+  }
+
+  /* When the reader is mid drag-select OR the SelectionPopup is
+   * open, suppress the per-row `+ comment` / `+ note` gutter
+   * buttons. The two "make a comment" affordances (gutter click vs
+   * selection popup) should never both be live — without this rule
+   * the gutter buttons keep firing their `.row:hover` rule as the
+   * pointer slides across rows during a text drag, and they sit
+   * under / next to the popup once it appears. `:global` because
+   * the buttons live in HunkLines / HunkLinesSideBySide; `!important`
+   * to beat the `.row:hover .add-comment { visibility: visible }`
+   * rule in those components. */
+  .hunks-wrapper.hide-gutter-affordances :global(.add-comment),
+  .hunks-wrapper.hide-gutter-affordances :global(.add-note) {
+    visibility: hidden !important;
   }
 
   .line-composer-overlay {

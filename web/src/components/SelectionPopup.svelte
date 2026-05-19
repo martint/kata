@@ -16,6 +16,13 @@
 
   interface Props {
     selection: DiffSelection | null;
+    /** Viewport-coord anchor for the popup. Caller passes the
+     *  mouseup pointer position so the popup lands where the user
+     *  actually let go — `selection.rect` is the whole selection's
+     *  bounding box, which for multi-line drags can be hundreds of
+     *  pixels wide and put the popup off-screen. */
+    anchorX: number;
+    anchorY: number;
     /** Open the comment composer anchored to the selection's line
      *  range (and column range for multi-line). */
     oncomment: () => void;
@@ -25,13 +32,36 @@
      *  to the clipboard. */
     onpermalink: () => void;
   }
-  const { selection, oncomment, oncopy, onpermalink }: Props = $props();
+  const { selection, anchorX, anchorY, oncomment, oncopy, onpermalink }: Props = $props();
 
-  // Document-coord positioning (page scroll added) since the popup is
-  // absolutely positioned at the page level and selections come from
-  // viewport-relative DOMRects.
-  const top = $derived(selection ? selection.rect.bottom + window.scrollY + 4 : 0);
-  const left = $derived(selection ? selection.rect.right + window.scrollX + 4 : 0);
+  // Approximate popup footprint — three 26-px buttons + 2-px gaps +
+  // 3-px padding on each side. Used to flip the popup above / left
+  // of the anchor when it would otherwise overflow the viewport.
+  const POPUP_W = 90;
+  const POPUP_H = 32;
+  const GAP = 6;
+
+  // Viewport-coord positioning. The popup uses `position: fixed` so
+  // its coord system is the viewport directly — `position: absolute`
+  // would offset by the nearest positioned ancestor (`.hunks-wrapper`
+  // here), which sits at an unpredictable document-y once the file
+  // is scrolled, landing the popup off-screen for any file below
+  // the first one.
+  const top = $derived.by(() => {
+    if (!selection || typeof window === 'undefined') return 0;
+    // Below the pointer by default; flip above if we'd overflow the
+    // viewport bottom.
+    if (anchorY + GAP + POPUP_H <= window.innerHeight) return anchorY + GAP;
+    return Math.max(0, anchorY - GAP - POPUP_H);
+  });
+  const left = $derived.by(() => {
+    if (!selection || typeof window === 'undefined') return 0;
+    // Right of the pointer by default; flip left if we'd overflow
+    // the viewport right edge. Clamp to a small margin so the popup
+    // is never glued to the very edge.
+    if (anchorX + GAP + POPUP_W <= window.innerWidth) return anchorX + GAP;
+    return Math.max(4, anchorX - GAP - POPUP_W);
+  });
 </script>
 
 {#if selection}
@@ -42,20 +72,13 @@
     tabindex="-1"
     style:top="{top}px"
     style:left="{left}px"
-    onmousedown={(e) => {
-      // Mousedown on the popup itself shouldn't clear the underlying
-      // text selection (which the parent's dismissal handler keys
-      // off). `preventDefault` keeps the browser from collapsing the
-      // selection on the click; the parent's handler also short-
-      // circuits when the click target is inside `.selection-popup`.
-      e.preventDefault();
-    }}
   >
     <button
       type="button"
       class="popup-btn"
       title="Comment on selection"
       aria-label="Comment on selection"
+      onmousedown={(e) => e.preventDefault()}
       onclick={oncomment}
     >
       <Bubble size={14} />
@@ -65,6 +88,7 @@
       class="popup-btn"
       title="Copy selected text"
       aria-label="Copy selected text"
+      onmousedown={(e) => e.preventDefault()}
       onclick={oncopy}
     >
       <!-- Stacked-rectangle "copy" glyph: the standard two-overlapping-
@@ -91,6 +115,7 @@
       class="popup-btn"
       title="Copy permalink"
       aria-label="Copy permalink"
+      onmousedown={(e) => e.preventDefault()}
       onclick={onpermalink}
     >
       <!-- Two-link-segments "chain" glyph for permalink. -->
@@ -116,7 +141,11 @@
 
 <style>
   .selection-popup {
-    position: absolute;
+    /* `fixed` so the popup's coord system matches the viewport-
+     * relative rect we get from `getBoundingClientRect`. See the
+     * comment in the script block — `absolute` would offset by
+     * whatever positioned ancestor we end up inside. */
+    position: fixed;
     z-index: 11;
     display: inline-flex;
     align-items: center;

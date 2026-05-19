@@ -27,6 +27,8 @@ function renderPopup(props: Partial<ComponentProps<typeof SelectionPopup>> = {})
   return render(SelectionPopup, {
     props: {
       selection: selection(),
+      anchorX: 100,
+      anchorY: 200,
       oncomment: () => {},
       oncopy: () => {},
       onpermalink: () => {},
@@ -69,18 +71,32 @@ describe('SelectionPopup', () => {
     expect(onpermalink).toHaveBeenCalledOnce();
   });
 
-  test('positions itself relative to the selection rect (in document coords)', () => {
-    const { container } = renderPopup({
-      selection: selection({
-        rect: { top: 50, left: 100, right: 220, bottom: 70, width: 120, height: 20, x: 100, y: 50, toJSON: () => ({}) } as DOMRect,
-      }),
-    });
-    // Scroll offsets default to 0 in jsdom, so positions equal the
-    // raw rect's bottom + 4 / right + 4 (the popup's "below + right
-    // of selection end" placement).
+  test('positions itself just below+right of the anchor (mouseup pointer)', () => {
+    // Popup uses `position: fixed`, so positions equal the anchor
+    // coords offset by GAP (6 px). Window dimensions in jsdom are
+    // large enough that no flip-to-above/left logic kicks in.
+    const { container } = renderPopup({ anchorX: 100, anchorY: 200 });
     const popup = container.querySelector('.selection-popup') as HTMLElement;
-    expect(popup.style.top).toBe('74px');
-    expect(popup.style.left).toBe('224px');
+    expect(popup.style.top).toBe('206px');
+    expect(popup.style.left).toBe('106px');
+  });
+
+  test('flips above the anchor when the default placement would overflow the viewport bottom', () => {
+    // jsdom's innerHeight defaults to 768. An anchor near the
+    // bottom must flip the popup above the pointer.
+    const { container } = renderPopup({ anchorX: 100, anchorY: 760 });
+    const popup = container.querySelector('.selection-popup') as HTMLElement;
+    // 760 - 6 - 32 (POPUP_H) = 722. Clamped >= 0.
+    expect(popup.style.top).toBe('722px');
+  });
+
+  test('flips left of the anchor when the default placement would overflow the viewport right', () => {
+    // jsdom's innerWidth defaults to 1024. An anchor near the right
+    // edge must flip the popup to the left of the pointer.
+    const { container } = renderPopup({ anchorX: 1020, anchorY: 200 });
+    const popup = container.querySelector('.selection-popup') as HTMLElement;
+    // 1020 - 6 - 90 (POPUP_W) = 924. Clamped >= 4.
+    expect(popup.style.left).toBe('924px');
   });
 
   test('exposes a toolbar role for assistive tech', () => {
