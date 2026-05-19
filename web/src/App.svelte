@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from './lib/api';
+  import { installDiffCopyHandler } from './lib/diffCopy';
   import { subscribe as subscribeEvents } from './lib/events';
   import type {
     RepoSummary,
@@ -230,9 +231,15 @@
     }
   }
 
-  /** App-level back button: just defer to the browser. */
-  function back() {
-    history.back();
+  /** Navigate to the per-repo review list (the "home" screen). Used
+   *  by the Kata logo in the header; pushes history so the browser
+   *  back button still works to return to the review the user came
+   *  from. */
+  function goHome() {
+    if (location.pathname + location.search !== '/') {
+      history.pushState({}, '', '/');
+    }
+    void syncFromUrl();
   }
 
   async function switchRepo(name: string) {
@@ -269,6 +276,11 @@
   }
 
   onMount(() => {
+    // Rewrite the clipboard payload when copying inside a diff so
+    // the result pastes as plain code, not as the underlying HTML
+    // table. Installed once for the app lifetime; the handler is a
+    // no-op when the selection isn't inside a diff cell.
+    const uninstallDiffCopy = installDiffCopyHandler();
     const unsubscribe = subscribeEvents((event) => {
       if (
         screen.kind === 'list' &&
@@ -290,7 +302,10 @@
       }
       await syncFromUrl();
     })();
-    return unsubscribe;
+    return () => {
+      unsubscribe();
+      uninstallDiffCopy();
+    };
   });
 </script>
 
@@ -308,11 +323,23 @@
       >☰</button>
     {/if}
     <h1>
-      <img class="app-icon" src="/favicon.svg" alt="" width="22" height="22" />
-      Kata
+      <a
+        href="/"
+        class="home-link"
+        onclick={(e) => {
+          // Intercept so the in-app router takes the navigation;
+          // a full `<a href="/">` reload would discard the SPA
+          // state and force a fresh fetch.
+          e.preventDefault();
+          goHome();
+        }}
+        aria-label="Kata — back to review list"
+      >
+        <img class="app-icon" src="/favicon.svg" alt="" width="22" height="22" />
+        Kata
+      </a>
     </h1>
     {#if screen.kind === 'review'}
-      <button onclick={back} aria-label="Back to review list">← <span class="lbl">Back</span></button>
       <button
         onclick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
         title="Scroll to the top of the review"
