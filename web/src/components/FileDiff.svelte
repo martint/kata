@@ -1839,7 +1839,7 @@
         {lastVisitAt}
         {viewer}
         {defaultThreadsCollapsed}
-        showFold={fileLevelComments.length > 1}
+        showFold
         {onreply}
         {onstatus}
         {ondelete}
@@ -1892,7 +1892,7 @@
           {lastVisitAt}
           {viewer}
           {defaultThreadsCollapsed}
-          showFold={orphanLineComments.length > 1}
+          showFold
           {onreply}
           {onstatus}
           {ondelete}
