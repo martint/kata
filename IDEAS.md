@@ -369,6 +369,55 @@ at file X right quick" or "what did this used to look like before
 the rewrite". Until then the make-a-review escape hatch covers the
 case, awkwardly.
 
+## In-app search across the diff
+
+Browser find (Ctrl/Cmd+F) doesn't work usefully against a Kata
+review. `FileSlot` virtualises files outside the viewport — their
+hunks aren't in the DOM at all — and file-fold collapses hide
+content even for the file the user is currently looking at. So
+the native search reaches a fraction of what's actually in the
+review, with no signal about what it's missing.
+
+A proper fix is an in-app search box that knows the structure:
+
+- **Scope**: live against the *whole* review, not just what's
+  rendered. The review's full diff is already in
+  `current.diff.files[*].hunks[*].lines` on the client (modulo
+  lazy-loaded files — those can be force-loaded on first search,
+  cached afterward).
+- **Surface**: a `/` keyboard shortcut + a search field in the
+  top header (next to the comment-nav cluster). Pressing Esc
+  closes; `n` / `Shift-n` walk results.
+- **Matches**: per-file count + a jump list. Clicking a result
+  scrolls the file into view, expanding it if folded and
+  scrolling to the matching line. The matched substring is
+  highlighted in place.
+- **Scope filters**: at minimum "search base+tip" / "tip only"
+  / "comments and annotations". A second pass could add file-
+  path filtering — useful on big reviews.
+
+Two implementation calls to make before building:
+
+- **Virtualisation strategy.** Today `FileSlot` mounts/unmounts
+  via IntersectionObserver, so off-screen files are *not in the
+  DOM at all*. Switching to `content-visibility: auto` would
+  keep content in the DOM (and in the find/accessibility tree)
+  while deferring paint — but it changes the height-estimation
+  story and the SSR-ish placeholder model `FileSlot` currently
+  relies on. Worth seeing if an in-app search can sidestep this
+  by reading the in-memory `FileChange.hunks` directly without
+  needing the DOM to be live.
+- **Comment / annotation bodies as search targets.** Reviewers
+  searching for a word in a thread expect Cmd+F to find it.
+  Whether comment bodies live in the same index as diff text or
+  in a separate "discussions" tab is a UX call — probably one
+  index with a chip filter, but worth confirming.
+
+Lands when reviewers report missing search results, or once
+reviews routinely exceed a screen of diff (the demo's three-file
+review masks the problem because everything fits in the
+viewport).
+
 ## Other ideas
 
 _(add new entries above this line as they come up)_
