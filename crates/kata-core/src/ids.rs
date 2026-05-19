@@ -245,3 +245,29 @@ impl FromStr for LineRange {
 #[derive(Debug, thiserror::Error)]
 #[error("not a valid line range: {0:?}")]
 pub struct LineRangeParseError(String);
+
+/// 0-based, half-open UTF-16 column range within a single line —
+/// `[start, end)`. UTF-16 because that's what `String.length` /
+/// `Range.startOffset` use in browsers, and the frontend's
+/// drag-to-select translation does its arithmetic in those units.
+/// Backend code generally treats columns as opaque integers; the
+/// only domain rule is `start < end`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ColumnRange {
+    pub start: u32,
+    pub end: u32,
+}
+
+impl ColumnRange {
+    pub fn new(start: u32, end: u32) -> Self {
+        assert!(start < end, "ColumnRange start must be < end");
+        Self { start, end }
+    }
+}
+
+impl fmt::Display for ColumnRange {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}-{}", self.start, self.end)
+    }
+}

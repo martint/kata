@@ -6,8 +6,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{
-    AnnotationId, Author, ChangeId, CommentId, CommitId, LineRange, RepoId, ResponseId, ReviewId,
-    RevSet, SessionId, Side,
+    AnnotationId, Author, ChangeId, ColumnRange, CommentId, CommitId, LineRange, RepoId,
+    ResponseId, ReviewId, RevSet, SessionId, Side,
 };
 
 pub const SCHEMA_VERSION: u32 = 1;
@@ -80,6 +80,16 @@ pub struct Comment {
     /// Omitted for whole-file comments.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lines: Option<LineRange>,
+
+    /// Optional intra-line character range, scoping the comment to a
+    /// region within a single line rather than the whole line. Only
+    /// valid when `lines` is set and `lines.start == lines.end` (you
+    /// can't pick a sub-region across multiple lines — those drop
+    /// back to line-level). UTF-16 offsets. Inherits the line
+    /// anchor's revival state — when the line is Drifted or Outdated
+    /// the column highlight degrades to a plain line-level mark.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub columns: Option<ColumnRange>,
 
     /// True for "review-wide" comments — file/lines/side are all `None`
     /// and the comment is intentionally about the whole review rather

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use kata_core::{
-    AnnotationId, Author, ChangeId, CommentId, CommitId, Flag, LineRange, RepoId,
+    AnnotationId, Author, ChangeId, ColumnRange, CommentId, CommitId, Flag, LineRange, RepoId,
     ResolutionAction, ReviewId, RevSet, SessionId, Side,
 };
 use kata_service::{
@@ -208,7 +208,7 @@ impl ReviewMcp {
     // ---- comments ------------------------------------------------------
 
     #[tool(
-        description = "Draft a line-level comment. Auto-starts a session if none is open. Use `flag` to mark severity: must-do, suggestion, or question."
+        description = "Draft a line-level comment. Auto-starts a session if none is open. Use `flag` to mark severity: must-do, suggestion, or question. Pass `columns` (UTF-16 `[start, end)` inside the line) to scope the comment to a region within the line — only valid when `lines` is a single line."
     )]
     async fn draft_line_comment(
         &self,
@@ -222,6 +222,7 @@ impl ReviewMcp {
             file,
             side,
             lines,
+            columns,
             flag,
             body,
         } = args;
@@ -237,6 +238,7 @@ impl ReviewMcp {
             file: Some(file),
             side: Some(side),
             lines: Some(lines),
+            columns,
             review_wide: false,
             flag,
             body: body.unwrap_or_default(),
@@ -282,6 +284,7 @@ impl ReviewMcp {
             file: Some(file),
             side: None,
             lines: None,
+            columns: None,
             review_wide: false,
             flag,
             body: body.unwrap_or_default(),
@@ -356,6 +359,7 @@ impl ReviewMcp {
             file: None,
             side: None,
             lines: None,
+            columns: None,
             review_wide: true,
             flag,
             body: body.unwrap_or_default(),
@@ -725,6 +729,10 @@ pub struct DraftLineCommentArgs {
     pub file: String,
     pub side: Side,
     pub lines: LineRange,
+    /// Optional intra-line character range (UTF-16, `[start, end)`).
+    /// When set, `lines` must be a single line. Omit for whole-line.
+    #[serde(default)]
+    pub columns: Option<ColumnRange>,
     pub flag: Flag,
     #[serde(default)]
     pub body: Option<String>,

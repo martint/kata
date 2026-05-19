@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use kata_core::{
-    Annotation, AnnotationId, Author, Bookmark, ChangeId, ChangeStatus, Comment, CommentId,
-    CommitId, CommitInfo, Diff, Flag, LineRange, OpSummary, PairDiffCounts, Patchset,
+    Annotation, AnnotationId, Author, Bookmark, ChangeId, ChangeStatus, ColumnRange, Comment,
+    CommentId, CommitId, CommitInfo, Diff, Flag, LineRange, OpSummary, PairDiffCounts, Patchset,
     PatchsetCompareView, PatchsetEndpoints, PatchsetPair, RepoId, RepoSummary, ResolutionAction,
     Response, ResponseId, ReviewId, ReviewManifest, RevSet, SCHEMA_VERSION, Session, SessionId,
     Side,
@@ -1409,6 +1409,7 @@ impl ReviewService {
             file: input.file,
             side: input.side,
             lines: input.lines,
+            columns: input.columns,
             review_wide: input.review_wide,
             flag: input.flag,
             body: input.body,
@@ -1445,6 +1446,7 @@ impl ReviewService {
             file: existing.file.clone(),
             side: existing.side.clone(),
             lines: existing.lines.clone(),
+            columns: existing.columns,
             review_wide: existing.review_wide,
             flag,
             body,
@@ -1620,6 +1622,11 @@ pub struct DraftCommentInput {
     pub side: Option<Side>,
     #[serde(default)]
     pub lines: Option<LineRange>,
+    /// Optional intra-line character range within a single line. Only
+    /// valid when `lines.start == lines.end`; rejected by
+    /// `validate_anchor` otherwise. Omit for whole-line comments.
+    #[serde(default)]
+    pub columns: Option<ColumnRange>,
     /// `true` for review-wide comments (no specific file or commit
     /// scope). Must be `false` when `file` or `lines` is set.
     #[serde(default)]
@@ -1778,6 +1785,24 @@ fn validate_anchor(input: &DraftCommentInput) -> ServiceResult<()> {
     }
     if input.lines.is_some() && input.side.is_none() {
         return Err(ServiceError::BadRequest("lines provided without side".into()));
+    }
+    if let Some(cols) = input.columns {
+        // Columns are scoped to a single line. If the caller asks for
+        // a multi-line *and* column range, we'd have to decide which
+        // line owns the slice — better to reject up front and let the
+        // frontend fall back to line-level. Same logic for
+        // columns-without-lines: nothing to anchor against.
+        let lines = input
+            .lines
+            .ok_or_else(|| ServiceError::BadRequest("columns provided without lines".into()))?;
+        if lines.start != lines.end {
+            return Err(ServiceError::BadRequest(
+                "columns only valid on single-line comments".into(),
+            ));
+        }
+        if cols.end <= cols.start {
+            return Err(ServiceError::BadRequest("column end must be > start".into()));
+        }
     }
     Ok(())
 }

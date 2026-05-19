@@ -20,9 +20,9 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use chrono::Utc;
 use kata_core::{
-    Annotation, AnnotationId, Author, ChangeId, Comment, CommentId, CommitId, LineRange, OpId,
-    RepoId, RepoManifest, Response, ResponseId, ReviewId, ReviewManifest, RevSet, SCHEMA_VERSION,
-    Session, SessionId, SessionStatus,
+    Annotation, AnnotationId, Author, ChangeId, ColumnRange, Comment, CommentId, CommitId,
+    LineRange, OpId, RepoId, RepoManifest, Response, ResponseId, ReviewId, ReviewManifest, RevSet,
+    SCHEMA_VERSION, Session, SessionId, SessionStatus,
 };
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 
@@ -192,7 +192,8 @@ impl SqliteStorage {
             let mut stmt = conn.prepare(
                 "SELECT comment_id, session_id, review_id, schema_version, author,
                         created_at, patchset, anchor_change_id, anchor_commit_id,
-                        file, side, line_start, line_end, review_wide, flag, body
+                        file, side, line_start, line_end, col_start, col_end, review_wide,
+                        flag, body
                  FROM comments WHERE session_id = ?1 ORDER BY created_at",
             )?;
             let rows = stmt.query_map(params![session_str], comment_from_row)?;
@@ -731,12 +732,16 @@ impl Storage for SqliteStorage {
                 Some(LineRange { start, end }) => (Some(*start), Some(*end)),
                 None => (None, None),
             };
+            let (col_start, col_end) = match &comment.columns {
+                Some(ColumnRange { start, end }) => (Some(*start), Some(*end)),
+                None => (None, None),
+            };
             tx.execute(
                 "INSERT INTO comments
                     (comment_id, repo_id, review_id, session_id, schema_version, author,
                      created_at, patchset, anchor_change_id, anchor_commit_id, file, side,
-                     line_start, line_end, review_wide, flag, body)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+                     line_start, line_end, col_start, col_end, review_wide, flag, body)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
                  ON CONFLICT(comment_id) DO UPDATE SET
                     schema_version = excluded.schema_version,
                     author = excluded.author,
@@ -748,6 +753,8 @@ impl Storage for SqliteStorage {
                     side = excluded.side,
                     line_start = excluded.line_start,
                     line_end = excluded.line_end,
+                    col_start = excluded.col_start,
+                    col_end = excluded.col_end,
                     review_wide = excluded.review_wide,
                     flag = excluded.flag,
                     body = excluded.body",
@@ -766,6 +773,8 @@ impl Storage for SqliteStorage {
                     comment.side.map(side_to_str),
                     line_start,
                     line_end,
+                    col_start,
+                    col_end,
                     comment.review_wide as i64,
                     flag_to_str(comment.flag),
                     comment.body,
@@ -886,7 +895,8 @@ impl Storage for SqliteStorage {
             let mut stmt = conn.prepare(
                 "SELECT c.comment_id, c.session_id, c.review_id, c.schema_version, c.author,
                         c.created_at, c.patchset, c.anchor_change_id, c.anchor_commit_id,
-                        c.file, c.side, c.line_start, c.line_end, c.review_wide, c.flag, c.body
+                        c.file, c.side, c.line_start, c.line_end, c.col_start, c.col_end,
+                        c.review_wide, c.flag, c.body
                  FROM comments c
                  JOIN sessions s ON s.session_id = c.session_id
                  WHERE c.repo_id = ?1 AND c.review_id = ?2 AND s.status = 'published'
@@ -1068,7 +1078,8 @@ impl Storage for SqliteStorage {
             let mut comment_stmt = conn.prepare(
                 "SELECT comment_id, session_id, review_id, schema_version, author,
                         created_at, patchset, anchor_change_id, anchor_commit_id,
-                        file, side, line_start, line_end, review_wide, flag, body
+                        file, side, line_start, line_end, col_start, col_end, review_wide,
+                        flag, body
                  FROM comments WHERE session_id = ?1 ORDER BY created_at",
             )?;
             let comments: Vec<Comment> = comment_stmt
@@ -1194,8 +1205,10 @@ fn comment_from_row(row: &Row<'_>) -> rusqlite::Result<Comment> {
     let side: Option<String> = row.get(10)?;
     let line_start: Option<u32> = row.get(11)?;
     let line_end: Option<u32> = row.get(12)?;
-    let review_wide: i64 = row.get(13)?;
-    let flag_str: String = row.get(14)?;
+    let col_start: Option<u32> = row.get(13)?;
+    let col_end: Option<u32> = row.get(14)?;
+    let review_wide: i64 = row.get(15)?;
+    let flag_str: String = row.get(16)?;
     let side = match side {
         Some(s) => Some(side_from_str(&s).map_err(|e| {
             rusqlite::Error::FromSqlConversionFailure(
@@ -1210,8 +1223,12 @@ fn comment_from_row(row: &Row<'_>) -> rusqlite::Result<Comment> {
         (Some(s), Some(e)) => Some(LineRange::new(s, e)),
         _ => None,
     };
+    let columns = match (col_start, col_end) {
+        (Some(s), Some(e)) if e > s => Some(ColumnRange::new(s, e)),
+        _ => None,
+    };
     let flag = flag_from_str(&flag_str).map_err(|e| {
-        rusqlite::Error::FromSqlConversionFailure(14, rusqlite::types::Type::Text, Box::new(e))
+        rusqlite::Error::FromSqlConversionFailure(16, rusqlite::types::Type::Text, Box::new(e))
     })?;
     Ok(Comment {
         comment_id: CommentId::new(row.get::<_, String>(0)?),
@@ -1226,9 +1243,10 @@ fn comment_from_row(row: &Row<'_>) -> rusqlite::Result<Comment> {
         file: row.get(9)?,
         side,
         lines,
+        columns,
         review_wide: review_wide != 0,
         flag,
-        body: row.get(15)?,
+        body: row.get(17)?,
     })
 }
 

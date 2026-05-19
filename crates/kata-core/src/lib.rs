@@ -14,7 +14,7 @@ pub use documents::{
     SCHEMA_VERSION, Session, SessionStatus,
 };
 pub use ids::{
-    AnnotationId, Author, Bookmark, ChangeId, CommentId, CommitId, CommitInfo, LineRange,
-    LineRangeParseError, OpId, OpKind, OpSummary, RepoId, RepoSummary, ResponseId, ReviewId,
-    RevSet, SessionId, Side,
+    AnnotationId, Author, Bookmark, ChangeId, ColumnRange, CommentId, CommitId, CommitInfo,
+    LineRange, LineRangeParseError, OpId, OpKind, OpSummary, RepoId, RepoSummary, ResponseId,
+    ReviewId, RevSet, SessionId, Side,
 };
