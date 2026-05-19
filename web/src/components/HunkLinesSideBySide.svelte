@@ -1032,6 +1032,15 @@
     flex: 0 1 auto;
     min-width: 0;
     overflow-x: auto;
+    /* `overflow-y: visible` would be coerced to `auto` by the CSS
+     * "if one axis is non-visible, the other becomes auto" quirk,
+     * giving each side an independent vertical scrollbar — the
+     * one bug we never want in a side-by-side diff. `clip` is the
+     * one value that legally pairs with `overflow-x: auto`. The
+     * sides' natural height already equals their content height
+     * (the flex parent uses `align-items: flex-start`), so clip
+     * has nothing to clip. */
+    overflow-y: clip;
     overscroll-behavior-x: contain;
   }
 
