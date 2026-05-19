@@ -23,7 +23,6 @@
   import { isThreadFolded } from '../lib/resolution';
   import { diffSelectionFor, type DiffSelection } from '../lib/diffSelection';
   import { plainTextForSelection } from '../lib/diffCopy';
-  import { lineRangeHash } from '../lib/linkHash';
   import { installSelectionClamp } from '../lib/selectionClamp';
   import Bubble from './Bubble.svelte';
   import Chevron from './Chevron.svelte';
@@ -275,14 +274,12 @@
         dragSelecting = false;
       }, 0);
       // Skip when the mouseup is on the popup itself — the popup's
-      // own click handlers (commentOnSelection / copySelection /
-      // copySelectionPermalink) manage `selectionPopup` directly.
-      // Without this guard the rAF below re-runs `diffSelectionFor`
-      // against the still-alive selection (e.g. after the permalink
-      // button, where we deliberately keep the selection visible)
-      // and re-sets `selectionPopup` to the same DiffSelection,
-      // making the popup reappear right after the click action set
-      // it to null.
+      // own click handlers (commentOnSelection / copySelection)
+      // manage `selectionPopup` directly. Without this guard the
+      // rAF below re-runs `diffSelectionFor` against the still-
+      // alive selection and re-sets `selectionPopup` to the same
+      // DiffSelection, making the popup reappear right after the
+      // click action set it to null.
       const t = e.target as HTMLElement | null;
       if (t?.closest('.selection-popup')) return;
       // Skip when the mouseup is on a button or other interactive
@@ -422,28 +419,6 @@
     window.getSelection()?.removeAllRanges();
   }
 
-  async function copySelectionPermalink() {
-    const s = selectionPopup;
-    if (!s) return;
-    const hash = lineRangeHash({
-      file: file.path,
-      side: s.side,
-      startLine: s.startLine,
-      endLine: s.endLine,
-    });
-    // Origin + path + hash so the link works pasted anywhere.
-    // `location.pathname + location.search` preserves the current
-    // review's repo / number and any patchset/scope query params, so
-    // the link reopens the same view the user copied from.
-    const url = `${window.location.origin}${window.location.pathname}${window.location.search}${hash}`;
-    await copyText(url);
-    selectionPopup = null;
-    // Intentionally NOT clearing the underlying text selection: the
-    // user just copied a pointer to this range, so leave the
-    // highlight visible as feedback for "this is what your link
-    // points at". The next mousedown the browser handles naturally
-    // collapses the old selection on its own.
-  }
   let hunksEl: HTMLDivElement | undefined = $state();
   let composeSelected: HTMLElement[] = [];
 
@@ -1765,7 +1740,6 @@
   anchorY={popupAnchorY}
   oncomment={commentOnSelection}
   oncopy={copySelection}
-  onpermalink={copySelectionPermalink}
 />
 
 <style>

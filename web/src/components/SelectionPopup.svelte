@@ -28,16 +28,13 @@
     oncomment: () => void;
     /** Copy the selected text to the clipboard as plain text. */
     oncopy: () => void;
-    /** Copy a permalink URL pointing at the selection's line range
-     *  to the clipboard. */
-    onpermalink: () => void;
   }
-  const { selection, anchorX, anchorY, oncomment, oncopy, onpermalink }: Props = $props();
+  const { selection, anchorX, anchorY, oncomment, oncopy }: Props = $props();
 
-  // Approximate popup footprint — three 26-px buttons + 2-px gaps +
+  // Approximate popup footprint — two 26-px buttons + 2-px gap +
   // 3-px padding on each side. Used to flip the popup above / left
   // of the anchor when it would otherwise overflow the viewport.
-  const POPUP_W = 90;
+  const POPUP_W = 62;
   const POPUP_H = 32;
   const GAP = 6;
 
@@ -108,32 +105,6 @@
       >
         <rect x="5" y="5" width="9" height="10" rx="1.2" />
         <path d="M11 5 V3.2 A1.2 1.2 0 0 0 9.8 2 H3.2 A1.2 1.2 0 0 0 2 3.2 V9.8 A1.2 1.2 0 0 0 3.2 11 H5" />
-      </svg>
-    </button>
-    <button
-      type="button"
-      class="popup-btn"
-      title="Copy permalink"
-      aria-label="Copy permalink"
-      onmousedown={(e) => e.preventDefault()}
-      onclick={onpermalink}
-    >
-      <!-- Two-link-segments "chain" glyph for permalink. -->
-      <svg
-        width="14"
-        height="14"
-        viewBox="0 0 16 16"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="1.5"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-        aria-hidden="true"
-        focusable="false"
-      >
-        <path d="M6.5 10.5 L9.5 7.5" />
-        <path d="M9.5 4 L10.5 3 a2.5 2.5 0 0 1 3.5 3.5 L13 7.5" />
-        <path d="M6.5 14 L5.5 15 a2.5 2.5 0 0 1 -3.5 -3.5 L3 10.5" />
       </svg>
     </button>
   </div>

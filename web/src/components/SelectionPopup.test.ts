@@ -31,7 +31,6 @@ function renderPopup(props: Partial<ComponentProps<typeof SelectionPopup>> = {})
       anchorY: 200,
       oncomment: () => {},
       oncopy: () => {},
-      onpermalink: () => {},
       ...props,
     },
   });
@@ -43,11 +42,10 @@ describe('SelectionPopup', () => {
     expect(container.querySelector('.selection-popup')).toBeNull();
   });
 
-  test('renders all three action buttons when a selection is present', () => {
+  test('renders both action buttons when a selection is present', () => {
     renderPopup();
     expect(screen.getByLabelText('Comment on selection')).toBeTruthy();
     expect(screen.getByLabelText('Copy selected text')).toBeTruthy();
-    expect(screen.getByLabelText('Copy permalink')).toBeTruthy();
   });
 
   test('routes the comment button to oncomment', async () => {
@@ -62,13 +60,6 @@ describe('SelectionPopup', () => {
     renderPopup({ oncopy });
     await fireEvent.click(screen.getByLabelText('Copy selected text'));
     expect(oncopy).toHaveBeenCalledOnce();
-  });
-
-  test('routes the permalink button to onpermalink', async () => {
-    const onpermalink = vi.fn();
-    renderPopup({ onpermalink });
-    await fireEvent.click(screen.getByLabelText('Copy permalink'));
-    expect(onpermalink).toHaveBeenCalledOnce();
   });
 
   test('positions itself just below+right of the anchor (mouseup pointer)', () => {
@@ -95,8 +86,8 @@ describe('SelectionPopup', () => {
     // edge must flip the popup to the left of the pointer.
     const { container } = renderPopup({ anchorX: 1020, anchorY: 200 });
     const popup = container.querySelector('.selection-popup') as HTMLElement;
-    // 1020 - 6 - 90 (POPUP_W) = 924. Clamped >= 4.
-    expect(popup.style.left).toBe('924px');
+    // 1020 - 6 - 62 (POPUP_W) = 952. Clamped >= 4.
+    expect(popup.style.left).toBe('952px');
   });
 
   test('exposes a toolbar role for assistive tech', () => {
