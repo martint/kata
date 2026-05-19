@@ -2560,6 +2560,17 @@
     /* Disable the browser's overscroll-bounce so users can't drag past
      * the diff's left/right edges. */
     overscroll-behavior-x: contain;
+    /* Per CSS, `overflow-x: auto` implies `overflow-y: auto` (the
+     * other axis can't stay `visible`), so the last hunk's row
+     * gutter would clip any element that overflows downward. The
+     * outdated-comment chevron is positioned at the bottom of its
+     * row with `translateY(50%)` so half of it overflows past the
+     * row's bottom edge — fine for any row above an inter-hunk
+     * separator (the chevron paints over the separator), but on
+     * the last row of the last hunk it would land in this
+     * clipped area. Reserve 8px of room so the overflow stays
+     * visible. */
+    padding-bottom: 8px;
   }
 
   /* PROTOTYPE: precise selection paint. The browser's native
