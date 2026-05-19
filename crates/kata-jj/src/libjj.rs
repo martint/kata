@@ -16,30 +16,34 @@
 //! store. Callers should run it inside `tokio::task::spawn_blocking`
 //! to keep the async runtime responsive.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use jj_lib::repo::Repo as _;
-use kata_core::CommitId as KataCommitId;
+use async_trait::async_trait;
+use jj_lib::object_id::ObjectId as _;
+use jj_lib::repo::{ReadonlyRepo, Repo as _, RepoLoader};
+use jj_lib::settings::UserSettings;
+use kata_core::{
+    Bookmark, ChangeId as KataChangeId, CommitId as KataCommitId, CommitInfo, FileChange,
+    FileStatus, OpId, OpKind, OpSummary,
+};
 
+use crate::backend::{Endpoint, JjBackend, ReviewRange};
 use crate::error::{Error, Result};
 
-/// Open a jj repo at the given workspace path. Returns a handle the
-/// caller can use to look up commits and run rebases. Synchronous —
-/// callers should wrap in `spawn_blocking`.
-pub fn open_repo(workspace_path: &Path) -> Result<JjRepoHandle> {
+/// Build the [`UserSettings`] every libjj entry point uses. The kata
+/// review server never creates commits, so the synthetic
+/// `"kata"` / `kata@invalid` identity is only here to satisfy
+/// jj-lib's constructor — it would only land in a commit object if
+/// someone called `Store::write_commit`, which this codebase never
+/// does. Sharing the constructor between [`open_repo`] and
+/// [`JjLib`] keeps the identity story in one place.
+fn build_settings() -> Result<UserSettings> {
     use jj_lib::config::{ConfigLayer, ConfigSource, StackedConfig};
-    use jj_lib::repo::StoreFactories;
-    use jj_lib::settings::UserSettings;
-
-    // Start from jj-lib's bundled defaults (operation.username,
-    // signing.behavior, etc. — lots of fields jj insists on). Layer
-    // synthetic user identity on top; values are never persisted
-    // because the rebase transaction is always dropped.
     let mut config = StackedConfig::with_defaults();
     let mut identity = ConfigLayer::empty(ConfigSource::Default);
     for (key, value) in [
-        ("user.name", "kata interdiff"),
+        ("user.name", "kata"),
         ("user.email", "kata@invalid"),
     ] {
         identity
@@ -47,24 +51,51 @@ pub fn open_repo(workspace_path: &Path) -> Result<JjRepoHandle> {
             .map_err(|e| Error::Parse(format!("libjj config {key}: {e}")))?;
     }
     config.add_layer(identity);
-    let settings = UserSettings::from_config(config)
-        .map_err(|e| Error::Parse(format!("libjj settings: {e}")))?;
+    UserSettings::from_config(config)
+        .map_err(|e| Error::Parse(format!("libjj settings: {e}")))
+}
 
+/// Open a jj workspace and return its [`RepoLoader`] plus the
+/// workspace name + root. The loader is cheap to keep around —
+/// `RepoLoader::load_at_head` rereads the op-heads on disk every
+/// call, so methods that need fresh state can trigger a reload
+/// without re-running `Workspace::load`. The workspace identity is
+/// kept around so revset parsing can resolve `@` to this workspace's
+/// working-copy commit. Shared between [`open_repo`] and
+/// [`JjLib::new`].
+fn open_loader(
+    settings: &UserSettings,
+    workspace_path: &Path,
+) -> Result<OpenedWorkspace> {
+    use jj_lib::repo::StoreFactories;
     let workspace = jj_lib::workspace::Workspace::load(
-        &settings,
+        settings,
         workspace_path,
         &StoreFactories::default(),
         &jj_lib::workspace::default_working_copy_factories(),
     )
     .map_err(|e| Error::Parse(format!("libjj workspace load: {e}")))?;
-    let repo_loader = workspace.repo_loader();
-    // jj-lib 0.41 made these async; we synchronously block here
-    // because the whole module is meant to run inside
-    // tokio::task::spawn_blocking. `futures::executor::block_on`
-    // works on any future without dragging in a tokio runtime.
-    let repo = futures::executor::block_on(repo_loader.load_at_head())
-        .map_err(|e| Error::Parse(format!("libjj repo load_at_head: {e}")))?;
+    Ok(OpenedWorkspace {
+        loader: Arc::new(workspace.repo_loader().clone()),
+        workspace_name: workspace.workspace_name().to_owned(),
+        workspace_root: workspace.workspace_root().to_path_buf(),
+    })
+}
 
+struct OpenedWorkspace {
+    loader: Arc<RepoLoader>,
+    workspace_name: jj_lib::ref_name::WorkspaceNameBuf,
+    workspace_root: PathBuf,
+}
+
+/// Open a jj repo at the given workspace path. Returns a handle the
+/// caller can use to look up commits and run rebases. Synchronous —
+/// callers should wrap in `spawn_blocking`.
+pub fn open_repo(workspace_path: &Path) -> Result<JjRepoHandle> {
+    let settings = build_settings()?;
+    let opened = open_loader(&settings, workspace_path)?;
+    let repo = futures::executor::block_on(opened.loader.load_at_head())
+        .map_err(|e| Error::Parse(format!("libjj repo load_at_head: {e}")))?;
     Ok(JjRepoHandle {
         repo,
         _settings: settings,
@@ -358,6 +389,711 @@ impl JjRepoHandle {
             merged,
             jj_lib::conflict_labels::ConflictLabels::from_vec(Vec::new()),
         ))
+    }
+}
+
+/// In-process jj backend built on `jj-lib`. Replaces the subprocess
+/// `JjCli` backend: every method runs inside `spawn_blocking` and
+/// talks to jj-lib's `RepoLoader` directly. `load_at_head` is called
+/// on every operation so the backend always sees the latest op
+/// (matching JjCli's semantic — each subprocess call rereads the
+/// repo from scratch).
+pub struct JjLib {
+    workspace_path: PathBuf,
+    _settings: UserSettings,
+    /// Cached so we skip the cost of re-running `Workspace::load`
+    /// on every method call. `load_at_head` still rereads the op
+    /// heads file off disk, so fresh state is picked up.
+    loader: Arc<RepoLoader>,
+    /// Workspace identity, needed by the revset parser to resolve
+    /// `@` to this workspace's working-copy commit.
+    workspace_name: Arc<jj_lib::ref_name::WorkspaceNameBuf>,
+    workspace_root: Arc<PathBuf>,
+}
+
+impl JjLib {
+    pub fn new(workspace_path: impl Into<PathBuf>) -> Result<Self> {
+        let workspace_path = workspace_path.into();
+        let settings = build_settings()?;
+        let opened = open_loader(&settings, &workspace_path)?;
+        Ok(Self {
+            workspace_path,
+            _settings: settings,
+            loader: opened.loader,
+            workspace_name: Arc::new(opened.workspace_name),
+            workspace_root: Arc::new(opened.workspace_root),
+        })
+    }
+}
+
+#[async_trait]
+impl JjBackend for JjLib {
+    fn repo_path(&self) -> &Path {
+        &self.workspace_path
+    }
+
+    async fn list_bookmarks(&self) -> Result<Vec<Bookmark>> {
+        let loader = self.loader.clone();
+        tokio::task::spawn_blocking(move || -> Result<Vec<Bookmark>> {
+            let repo = futures::executor::block_on(loader.load_at_head())
+                .map_err(|e| Error::Parse(format!("libjj load_at_head: {e}")))?;
+            let view = repo.view();
+            let store = repo.store();
+            let mut out = Vec::new();
+            for (name, target) in view.local_bookmarks() {
+                // Skip conflicted bookmarks (multiple targets); jj's
+                // CLI template emits nothing for them too via the
+                // `if(normal_target, ...)` guard.
+                let Some(commit_id) = target.as_normal() else {
+                    continue;
+                };
+                let commit = store
+                    .get_commit(commit_id)
+                    .map_err(|e| Error::Parse(format!("libjj get_commit: {e}")))?;
+                let ts = format_jj_timestamp(&commit.author().timestamp);
+                out.push(Bookmark {
+                    name: name.as_str().to_string(),
+                    change_id: KataChangeId::new(commit.change_id().reverse_hex()),
+                    commit_id: KataCommitId::new(commit_id.hex()),
+                    commit_timestamp: ts,
+                });
+            }
+            // Newest-first by commit timestamp — matches JjCli's
+            // sort so the create-review screen reads identically.
+            out.sort_by(|a, b| b.commit_timestamp.cmp(&a.commit_timestamp));
+            Ok(out)
+        })
+        .await
+        .map_err(|e| Error::Parse(format!("spawn_blocking: {e}")))?
+    }
+
+    async fn change_to_commit(
+        &self,
+        change: &KataChangeId,
+    ) -> Result<Option<KataCommitId>> {
+        let loader = self.loader.clone();
+        let change = change.clone();
+        let workspace_name = self.workspace_name.clone();
+        let workspace_root = self.workspace_root.clone();
+        tokio::task::spawn_blocking(move || -> Result<Option<KataCommitId>> {
+            let repo = futures::executor::block_on(loader.load_at_head())
+                .map_err(|e| Error::Parse(format!("libjj load_at_head: {e}")))?;
+            // Round-trip through the revset string parser:
+            // `latest(change_id_prefix(<reverse-hex>))` matches the
+            // commit (most recent if the change is divergent) the
+            // way JjCli's `latest(change_id(...))` does. Going
+            // through `parse` keeps us on one revset code path
+            // (parse → resolve → evaluate) for every call.
+            let expr = format!("latest(change_id({}))", change.as_str());
+            let ws = Some((workspace_name.as_ref().as_ref(), workspace_root.as_path()));
+            let Some(rs) = evaluate_user_revset(&repo, &expr, ws)? else {
+                return Ok(None);
+            };
+            let mut iter = rs.commit_change_ids();
+            match iter.next() {
+                None => Ok(None),
+                Some(Err(e)) => Err(Error::Parse(format!("libjj iter: {e}"))),
+                Some(Ok((commit_id, _))) => Ok(Some(KataCommitId::new(commit_id.hex()))),
+            }
+        })
+        .await
+        .map_err(|e| Error::Parse(format!("spawn_blocking: {e}")))?
+    }
+
+    async fn resolve_endpoint(&self, expr: &str) -> Result<Option<Endpoint>> {
+        let loader = self.loader.clone();
+        let expr = expr.to_string();
+        let workspace_name = self.workspace_name.clone();
+        let workspace_root = self.workspace_root.clone();
+        tokio::task::spawn_blocking(move || -> Result<Option<Endpoint>> {
+            let repo = futures::executor::block_on(loader.load_at_head())
+                .map_err(|e| Error::Parse(format!("libjj load_at_head: {e}")))?;
+            let ws = Some((workspace_name.as_ref().as_ref(), workspace_root.as_path()));
+            match evaluate_user_revset(&repo, &expr, ws)? {
+                None => Ok(None),
+                Some(revset) => {
+                    let mut iter = revset.commit_change_ids();
+                    match iter.next() {
+                        None => Ok(None),
+                        Some(Err(e)) => Err(Error::Parse(format!("libjj iter: {e}"))),
+                        Some(Ok((commit_id, change_id))) => Ok(Some(Endpoint {
+                            change_id: KataChangeId::new(change_id.reverse_hex()),
+                            commit_id: KataCommitId::new(commit_id.hex()),
+                        })),
+                    }
+                }
+            }
+        })
+        .await
+        .map_err(|e| Error::Parse(format!("spawn_blocking: {e}")))?
+    }
+
+    async fn read_file(
+        &self,
+        commit: &KataCommitId,
+        path: &str,
+    ) -> Result<Option<Vec<u8>>> {
+        let loader = self.loader.clone();
+        let commit = commit.clone();
+        let path = path.to_string();
+        tokio::task::spawn_blocking(move || -> Result<Option<Vec<u8>>> {
+            let repo = futures::executor::block_on(loader.load_at_head())
+                .map_err(|e| Error::Parse(format!("libjj load_at_head: {e}")))?;
+            read_file_at_commit(&repo, &commit, &path)
+        })
+        .await
+        .map_err(|e| Error::Parse(format!("spawn_blocking: {e}")))?
+    }
+
+    async fn read_files(
+        &self,
+        pairs: &[(KataCommitId, String)],
+    ) -> Result<Vec<Option<Vec<u8>>>> {
+        if pairs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let loader = self.loader.clone();
+        let pairs = pairs.to_vec();
+        tokio::task::spawn_blocking(move || -> Result<Vec<Option<Vec<u8>>>> {
+            let repo = futures::executor::block_on(loader.load_at_head())
+                .map_err(|e| Error::Parse(format!("libjj load_at_head: {e}")))?;
+            // Sequential reads. Each read is in-process disk I/O —
+            // no subprocess overhead to amortise. If profiling shows
+            // this hot, swap for a futures::stream::iter().buffered()
+            // pattern via the store's async API.
+            let mut out = Vec::with_capacity(pairs.len());
+            for (commit, path) in &pairs {
+                out.push(read_file_at_commit(&repo, commit, path)?);
+            }
+            Ok(out)
+        })
+        .await
+        .map_err(|e| Error::Parse(format!("spawn_blocking: {e}")))?
+    }
+
+    async fn changed_files(
+        &self,
+        base: &KataCommitId,
+        tip: &KataCommitId,
+    ) -> Result<Vec<FileChange>> {
+        let loader = self.loader.clone();
+        let base = base.clone();
+        let tip = tip.clone();
+        tokio::task::spawn_blocking(move || -> Result<Vec<FileChange>> {
+            use futures::{StreamExt, TryStreamExt};
+            use jj_lib::copies::{CopyOperation, CopyRecords};
+            use jj_lib::matchers::EverythingMatcher;
+            let repo = futures::executor::block_on(loader.load_at_head())
+                .map_err(|e| Error::Parse(format!("libjj load_at_head: {e}")))?;
+            let base_commit = lookup_commit(&repo, &base)?;
+            let tip_commit = lookup_commit(&repo, &tip)?;
+            let base_tree = base_commit.tree();
+            let tip_tree = tip_commit.tree();
+            // Populate copy records from the backend so renamed files
+            // come back as `Renamed { old_path }` instead of the
+            // raw `Added` + `Deleted` pair `diff_stream` would emit.
+            // The git backend implements `get_copy_records` via
+            // git's rename detection (`git diff -M`); other backends
+            // return an empty stream so the diff still works, just
+            // without rename info.
+            let mut copy_records = CopyRecords::default();
+            let copy_stream = repo
+                .store()
+                .get_copy_records(
+                    None,
+                    base_commit.id(),
+                    tip_commit.id(),
+                )
+                .map_err(|e| Error::Parse(format!("libjj get_copy_records: {e}")))?;
+            let records: Vec<_> = futures::executor::block_on(copy_stream.try_collect())
+                .map_err(|e| Error::Parse(format!("libjj copy records: {e}")))?;
+            copy_records.add_records(records);
+            let matcher = EverythingMatcher;
+            let mut stream = base_tree.diff_stream_with_copies(
+                &tip_tree,
+                &matcher,
+                &copy_records,
+            );
+            let mut out = Vec::new();
+            while let Some(entry) = futures::executor::block_on(stream.next()) {
+                let target = entry.path.target().as_internal_file_string().to_string();
+                let source_op = entry.path.copy_operation();
+                let values = entry
+                    .values
+                    .map_err(|e| Error::Parse(format!("libjj diff entry: {e}")))?;
+                let before_present = values
+                    .before
+                    .as_resolved()
+                    .map(|opt| opt.is_some())
+                    .unwrap_or(false);
+                let after_present = values
+                    .after
+                    .as_resolved()
+                    .map(|opt| opt.is_some())
+                    .unwrap_or(false);
+                let status = match (before_present, after_present, source_op) {
+                    // Rename: the source path is recorded; jj uses
+                    // `CopyOperation::Rename` for the
+                    // delete-and-add pair, `Copy` when the source
+                    // sticks around.
+                    (_, true, Some(CopyOperation::Rename)) => FileStatus::Renamed {
+                        old_path: entry
+                            .path
+                            .source()
+                            .as_internal_file_string()
+                            .to_string(),
+                    },
+                    // Copy: source still exists; treat the target
+                    // as a plain addition, matching JjCli's
+                    // `copied → Added` mapping.
+                    (_, true, Some(CopyOperation::Copy)) => FileStatus::Added,
+                    (true, true, None) => FileStatus::Modified,
+                    (false, true, None) => FileStatus::Added,
+                    (true, false, None) => FileStatus::Deleted,
+                    _ => continue,
+                };
+                out.push(FileChange {
+                    path: target,
+                    status,
+                    hunks: None,
+                    binary: false,
+                    added: 0,
+                    removed: 0,
+                });
+            }
+            Ok(out)
+        })
+        .await
+        .map_err(|e| Error::Parse(format!("spawn_blocking: {e}")))?
+    }
+
+    async fn resolve_range(
+        &self,
+        revset: &kata_core::RevSet,
+    ) -> Result<ReviewRange> {
+        let loader = self.loader.clone();
+        let revset = revset.clone();
+        let workspace_name = self.workspace_name.clone();
+        let workspace_root = self.workspace_root.clone();
+        tokio::task::spawn_blocking(move || -> Result<ReviewRange> {
+            let repo = futures::executor::block_on(loader.load_at_head())
+                .map_err(|e| Error::Parse(format!("libjj load_at_head: {e}")))?;
+            let ws = Some((workspace_name.as_ref().as_ref(), workspace_root.as_path()));
+            let tip = solo_endpoint(
+                &repo,
+                &format!("heads({revset})"),
+                &revset,
+                ws,
+            )?;
+            let base = solo_endpoint(
+                &repo,
+                &format!("roots({revset})-"),
+                &revset,
+                ws,
+            )?;
+            Ok(ReviewRange { base, tip })
+        })
+        .await
+        .map_err(|e| Error::Parse(format!("spawn_blocking: {e}")))?
+    }
+
+    async fn list_commits(
+        &self,
+        revset: &kata_core::RevSet,
+    ) -> Result<Vec<CommitInfo>> {
+        let loader = self.loader.clone();
+        let revset_str = revset.to_string();
+        let workspace_name = self.workspace_name.clone();
+        let workspace_root = self.workspace_root.clone();
+        tokio::task::spawn_blocking(move || -> Result<Vec<CommitInfo>> {
+            use futures::StreamExt;
+            use jj_lib::matchers::EverythingMatcher;
+            let repo = futures::executor::block_on(loader.load_at_head())
+                .map_err(|e| Error::Parse(format!("libjj load_at_head: {e}")))?;
+            let ws = Some((workspace_name.as_ref().as_ref(), workspace_root.as_path()));
+            let Some(rs) = evaluate_user_revset(&repo, &revset_str, ws)? else {
+                return Ok(Vec::new());
+            };
+            // jj's default order is newest-first; our trait contract
+            // matches that. `--reversed` (oldest-first) is JjCli's
+            // override for the commits panel; the service flips at
+            // its own layer, so we honour the trait's documented
+            // order here.
+            let mut out: Vec<CommitInfo> = Vec::new();
+            let store = repo.store();
+            for item in rs.commit_change_ids() {
+                let (commit_id, _change_id) = item
+                    .map_err(|e| Error::Parse(format!("libjj iter: {e}")))?;
+                let commit = store.get_commit(&commit_id).map_err(|e| {
+                    Error::Parse(format!("libjj get_commit: {e}"))
+                })?;
+                let description = commit.description().to_string();
+                let first_line = description
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .to_string();
+                // changed_files = files touched relative to first
+                // parent; mirrors what JjCli pulls from the
+                // `diff.files()` template fragment.
+                let changed_files = if let Some(parent_id) = commit.parent_ids().first() {
+                    let parent = store.get_commit(parent_id).map_err(|e| {
+                        Error::Parse(format!("libjj get_commit (parent): {e}"))
+                    })?;
+                    let matcher = EverythingMatcher;
+                    let mut stream = parent.tree().diff_stream(&commit.tree(), &matcher);
+                    let mut files = Vec::new();
+                    while let Some(entry) = futures::executor::block_on(stream.next()) {
+                        files.push(entry.path.as_internal_file_string().to_string());
+                    }
+                    files
+                } else {
+                    Vec::new()
+                };
+                out.push(CommitInfo {
+                    change_id: KataChangeId::new(commit.change_id().reverse_hex()),
+                    commit_id: KataCommitId::new(commit_id.hex()),
+                    author_email: commit.author().email.clone(),
+                    author_timestamp: format_jj_timestamp(&commit.author().timestamp),
+                    description_first_line: first_line,
+                    description,
+                    changed_files,
+                });
+            }
+            Ok(out)
+        })
+        .await
+        .map_err(|e| Error::Parse(format!("spawn_blocking: {e}")))?
+    }
+
+    async fn is_ancestor(
+        &self,
+        ancestor: &KataCommitId,
+        descendant: &KataCommitId,
+    ) -> Result<bool> {
+        if ancestor == descendant {
+            return Ok(true);
+        }
+        let loader = self.loader.clone();
+        let ancestor = ancestor.clone();
+        let descendant = descendant.clone();
+        tokio::task::spawn_blocking(move || -> Result<bool> {
+            let repo = futures::executor::block_on(loader.load_at_head())
+                .map_err(|e| Error::Parse(format!("libjj load_at_head: {e}")))?;
+            let ancestor_id = parse_commit_id(&ancestor)?;
+            let descendant_id = parse_commit_id(&descendant)?;
+            repo.index()
+                .is_ancestor(&ancestor_id, &descendant_id)
+                .map_err(|e| Error::Parse(format!("libjj is_ancestor: {e}")))
+        })
+        .await
+        .map_err(|e| Error::Parse(format!("spawn_blocking: {e}")))?
+    }
+
+    async fn current_op_id(&self) -> Result<OpId> {
+        let loader = self.loader.clone();
+        tokio::task::spawn_blocking(move || -> Result<OpId> {
+            let repo = futures::executor::block_on(loader.load_at_head())
+                .map_err(|e| Error::Parse(format!("libjj load_at_head: {e}")))?;
+            Ok(OpId::new(repo.op_id().hex()))
+        })
+        .await
+        .map_err(|e| Error::Parse(format!("spawn_blocking: {e}")))?
+    }
+
+    async fn ops_between(
+        &self,
+        prev: &OpId,
+        current: &OpId,
+    ) -> Result<Vec<OpSummary>> {
+        if prev == current {
+            return Ok(Vec::new());
+        }
+        let loader = self.loader.clone();
+        let prev = prev.clone();
+        let current = current.clone();
+        tokio::task::spawn_blocking(move || -> Result<Vec<OpSummary>> {
+            use futures::{StreamExt, TryStreamExt};
+            use jj_lib::op_store::OperationId;
+            let repo = futures::executor::block_on(loader.load_at_head())
+                .map_err(|e| Error::Parse(format!("libjj load_at_head: {e}")))?;
+            let op_store = repo.op_store();
+            let load_op = |id_hex: &str| -> Result<jj_lib::operation::Operation> {
+                let bytes = hex::decode(id_hex).map_err(|e| {
+                    Error::Parse(format!("op-id not hex: {e}"))
+                })?;
+                let id = OperationId::new(bytes);
+                let stored =
+                    futures::executor::block_on(op_store.read_operation(&id))
+                        .map_err(|e| Error::Parse(format!("libjj read_operation: {e}")))?;
+                Ok(jj_lib::operation::Operation::new(
+                    op_store.clone(),
+                    id,
+                    stored,
+                ))
+            };
+            let current_op = load_op(current.as_str())?;
+            let prev_op = load_op(prev.as_str()).ok();
+            // The two `walk_ancestors*` functions return distinct
+            // opaque `impl Stream` types, so we box them through a
+            // common trait object before storing in a binding.
+            let stream: std::pin::Pin<
+                Box<dyn futures::Stream<Item = jj_lib::op_store::OpStoreResult<jj_lib::operation::Operation>>>,
+            > = if let Some(prev_op) = &prev_op {
+                Box::pin(jj_lib::op_walk::walk_ancestors_range(
+                    std::slice::from_ref(&current_op),
+                    std::slice::from_ref(prev_op),
+                ))
+            } else {
+                Box::pin(jj_lib::op_walk::walk_ancestors(std::slice::from_ref(
+                    &current_op,
+                )))
+            };
+            // jj's CLI walk used a 200-op window; match it so we
+            // don't blow up on pathological history. `walk_ancestors_range`
+            // already excludes ancestors of `prev_op`, so this is
+            // just a safety cap on degenerate inputs.
+            const WINDOW: usize = 200;
+            let collected: Vec<jj_lib::operation::Operation> =
+                futures::executor::block_on(
+                    stream.take(WINDOW).try_collect::<Vec<_>>(),
+                )
+                .map_err(|e| Error::Parse(format!("libjj op walk: {e}")))?;
+            // walk_ancestors_range yields newest-first; the trait
+            // returns oldest-first to mirror JjCli.
+            let mut summaries: Vec<OpSummary> = Vec::with_capacity(collected.len());
+            for op in collected.into_iter().rev() {
+                let meta = op.metadata();
+                if meta.is_snapshot {
+                    continue;
+                }
+                let description = meta.description.clone();
+                let kind = classify_op(&description);
+                summaries.push(OpSummary {
+                    op_id: OpId::new(op.id().hex()),
+                    kind,
+                    time: format_jj_timestamp(&meta.time.end),
+                    description,
+                });
+            }
+            Ok(summaries)
+        })
+        .await
+        .map_err(|e| Error::Parse(format!("spawn_blocking: {e}")))?
+    }
+}
+
+/// Look up a kata `CommitId` (hex string) inside an open repo.
+fn lookup_commit(
+    repo: &Arc<ReadonlyRepo>,
+    id: &KataCommitId,
+) -> Result<jj_lib::commit::Commit> {
+    let backend_id = parse_commit_id(id)?;
+    repo.store()
+        .get_commit(&backend_id)
+        .map_err(|e| Error::Parse(format!("libjj get_commit: {e}")))
+}
+
+fn parse_commit_id(id: &KataCommitId) -> Result<jj_lib::backend::CommitId> {
+    let bytes = hex::decode(id.as_str())
+        .map_err(|e| Error::Parse(format!("commit-id not hex: {e}")))?;
+    Ok(jj_lib::backend::CommitId::new(bytes))
+}
+
+/// Read `path` at `commit`. Returns `Ok(None)` when the file
+/// doesn't exist at that commit — same contract as JjCli's
+/// `run_or_missing`-wrapped `jj file show`.
+fn read_file_at_commit(
+    repo: &Arc<ReadonlyRepo>,
+    commit: &KataCommitId,
+    path: &str,
+) -> Result<Option<Vec<u8>>> {
+    let commit = lookup_commit(repo, commit)?;
+    let repo_path = jj_lib::repo_path::RepoPathBuf::from_internal_string(path)
+        .map_err(|e| Error::Parse(format!("libjj repo_path: {e}")))?;
+    let value = futures::executor::block_on(commit.tree().path_value(repo_path.as_ref()))
+        .map_err(|e| Error::Parse(format!("libjj path_value: {e}")))?;
+    let Some(Some(tv)) = value.as_resolved() else {
+        return Ok(None);
+    };
+    match tv {
+        jj_lib::backend::TreeValue::File { id, .. } => {
+            let bytes = read_file_bytes(repo.store(), repo_path.as_ref(), id)?;
+            Ok(Some(bytes))
+        }
+        // Symlink / submodule / tree at this path — not a file we
+        // can read. Reported as absent so callers fall back to the
+        // "missing file" path rather than handing back garbage.
+        _ => Ok(None),
+    }
+}
+
+/// Resolve a single-commit-revset expression (`heads(X)` /
+/// `roots(X)-`) to its endpoint. Errors when the expression
+/// resolves to zero commits (`EmptyRevset`) or more than one
+/// (`MultipleHeads`) — same contract as JjCli's `solo_endpoint`.
+fn solo_endpoint(
+    repo: &Arc<ReadonlyRepo>,
+    expr: &str,
+    revset: &kata_core::RevSet,
+    workspace: Option<(&jj_lib::ref_name::WorkspaceName, &Path)>,
+) -> Result<Endpoint> {
+    let Some(rs) = evaluate_user_revset(repo, expr, workspace)? else {
+        return Err(Error::EmptyRevset {
+            revset: revset.to_string(),
+        });
+    };
+    let mut iter = rs.commit_change_ids();
+    let first = match iter.next() {
+        None => {
+            return Err(Error::EmptyRevset {
+                revset: revset.to_string(),
+            });
+        }
+        Some(Err(e)) => return Err(Error::Parse(format!("libjj iter: {e}"))),
+        Some(Ok(pair)) => pair,
+    };
+    if iter.next().is_some() {
+        return Err(Error::MultipleHeads {
+            revset: revset.to_string(),
+        });
+    }
+    Ok(Endpoint {
+        change_id: KataChangeId::new(first.1.reverse_hex()),
+        commit_id: KataCommitId::new(first.0.hex()),
+    })
+}
+
+/// Parse a user-supplied revset string, resolve symbols against the
+/// repo, and evaluate. Returns `Ok(None)` when the parser succeeds
+/// but the expression evaluates to no commits — mirrors JjCli's
+/// `run_or_missing` semantics on the `log -r <expr>` path.
+fn evaluate_user_revset<'a>(
+    repo: &'a Arc<ReadonlyRepo>,
+    expr: &str,
+    workspace: Option<(&jj_lib::ref_name::WorkspaceName, &Path)>,
+) -> Result<Option<Box<dyn jj_lib::revset::Revset + 'a>>> {
+    use jj_lib::fileset::FilesetAliasesMap;
+    use jj_lib::repo_path::RepoPathUiConverter;
+    use jj_lib::revset::{
+        RevsetAliasesMap, RevsetDiagnostics, RevsetExtensions, RevsetParseContext,
+        RevsetWorkspaceContext, SymbolResolver,
+    };
+    // jj-cli's bundled config defines a handful of stock revset
+    // aliases (trunk(), immutable_heads(), etc.); jj-lib doesn't.
+    // Without these, any user revset that calls `trunk()`
+    // (overwhelmingly common in real configs) errors out with
+    // "Function `trunk` doesn't exist". Reproduce the most-used
+    // ones here. The `present(...)` arms make the alias work in
+    // demo / single-user repos that don't have an `origin` remote,
+    // matching what most users mean by "trunk" when there's no
+    // upstream — the local bookmark of the same name.
+    let mut aliases_map = RevsetAliasesMap::new();
+    for (decl, defn) in [
+        (
+            "trunk()",
+            "latest(\
+                remote_bookmarks(exact:\"main\", remote=exact:\"origin\") | \
+                remote_bookmarks(exact:\"master\", remote=exact:\"origin\") | \
+                remote_bookmarks(exact:\"trunk\", remote=exact:\"origin\") | \
+                present(main) | present(master) | present(trunk)\
+            )",
+        ),
+        ("immutable_heads()", "builtin_immutable_heads()"),
+        ("builtin_immutable_heads()", "trunk()"),
+    ] {
+        aliases_map
+            .insert(decl, defn)
+            .map_err(|e| Error::Parse(format!("libjj alias {decl}: {e}")))?;
+    }
+    let fileset_aliases_map = FilesetAliasesMap::new();
+    let extensions = RevsetExtensions::default();
+    // Build the workspace context if we know the workspace. Without
+    // it, `@` in a revset can't resolve. The path converter only
+    // matters for `file(path)` revsets, which kata doesn't use —
+    // give it the workspace root for both cwd and base so any such
+    // input resolves consistently.
+    let path_converter = workspace.map(|(_, root)| RepoPathUiConverter::Fs {
+        cwd: root.to_path_buf(),
+        base: root.to_path_buf(),
+    });
+    let workspace_ctx = match (workspace, path_converter.as_ref()) {
+        (Some((name, _)), Some(converter)) => Some(RevsetWorkspaceContext {
+            path_converter: converter,
+            workspace_name: name,
+        }),
+        _ => None,
+    };
+    let ctx = RevsetParseContext {
+        aliases_map: &aliases_map,
+        local_variables: std::collections::HashMap::new(),
+        // kata never evaluates author/committer filters that depend
+        // on `mine`, so a placeholder email is fine. The setting
+        // exists because jj-lib's parser unconditionally captures
+        // it from the user context.
+        user_email: "kata@invalid",
+        date_pattern_context: chrono::Utc::now().fixed_offset().into(),
+        default_ignored_remote: Some("git".as_ref()),
+        fileset_aliases_map: &fileset_aliases_map,
+        use_glob_by_default: false,
+        extensions: &extensions,
+        workspace: workspace_ctx,
+    };
+    let mut diags = RevsetDiagnostics::new();
+    let parsed = jj_lib::revset::parse(&mut diags, expr, &ctx)
+        .map_err(|e| Error::Parse(format!("libjj parse revset {expr:?}: {e}")))?;
+    // `&[]` alone doesn't tell rustc which `SymbolResolverExtension`
+    // element type to infer; spell it out so it picks the empty-
+    // extensions branch.
+    let extensions: [Box<dyn jj_lib::revset::SymbolResolverExtension>; 0] = [];
+    let symbol_resolver =
+        SymbolResolver::new(repo.as_ref() as &dyn jj_lib::repo::Repo, &extensions);
+    let resolved = parsed
+        .resolve_user_expression(repo.as_ref() as &dyn jj_lib::repo::Repo, &symbol_resolver)
+        .map_err(|e| Error::Parse(format!("libjj resolve revset {expr:?}: {e}")))?;
+    let rs = resolved
+        .evaluate(repo.as_ref() as &dyn jj_lib::repo::Repo)
+        .map_err(|e| Error::Parse(format!("libjj evaluate revset {expr:?}: {e}")))?;
+    if rs.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(rs))
+    }
+}
+
+/// Format a jj-lib `Timestamp` the way the kata CLI templates emit it
+/// (`%+` = ISO 8601 with offset). Used wherever the trait returns
+/// a stringified timestamp.
+fn format_jj_timestamp(ts: &jj_lib::backend::Timestamp) -> String {
+    use chrono::{FixedOffset, TimeZone};
+    // jj's Timestamp is `(MillisSinceEpoch, FixedOffset minutes)`.
+    let offset =
+        FixedOffset::east_opt(ts.tz_offset * 60).unwrap_or(FixedOffset::east_opt(0).unwrap());
+    let dt = offset.timestamp_millis_opt(ts.timestamp.0).single();
+    match dt {
+        Some(dt) => dt.format("%+").to_string(),
+        None => String::new(),
+    }
+}
+
+/// Map a jj op description's first word to a [`OpKind`] bucket.
+/// jj's op descriptions all lead with the command verb (`amend
+/// commit X`, `rebase commit X onto Y`, `git fetch …`) so a single
+/// first-word match handles the common cases. Anything we don't
+/// recognise becomes [`OpKind::Other`] with the verb preserved.
+fn classify_op(description: &str) -> OpKind {
+    let first = description.split_whitespace().next().unwrap_or("");
+    match first {
+        "amend" => OpKind::Amend,
+        "rebase" => OpKind::Rebase,
+        "abandon" => OpKind::Abandon,
+        "describe" => OpKind::Describe,
+        "new" => OpKind::New,
+        "split" => OpKind::Split,
+        "squash" => OpKind::Squash,
+        "restore" => OpKind::Restore,
+        "git" => OpKind::Git,
+        _ => OpKind::Other(first.to_string()),
     }
 }
 

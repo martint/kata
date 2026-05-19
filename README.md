@@ -32,8 +32,9 @@ before it lands. Kata embraces that:
 ## Quick start
 
 ```sh
-# Build. Requires Rust 1.95+, `jj` on PATH, and `bun` for the embedded
-# web bundle.
+# Build. Requires Rust 1.95+ and `bun` for the embedded web bundle.
+# Kata talks to repositories through `jj-lib` in-process, so the `jj`
+# binary is not a runtime requirement.
 cargo build --release
 
 # Run against one or more workspaces. Each gets its own URL slug.
@@ -97,7 +98,7 @@ available slugs.
 | Crate          | Purpose                                                       |
 | -------------- | ------------------------------------------------------------- |
 | `kata-core`    | Domain types (`ReviewId`, `ChangeId`, `Flag`, …).             |
-| `kata-jj`      | `jj` CLI driver: bookmarks, revsets, diffs.                   |
+| `kata-jj`      | In-process `jj-lib` backend: bookmarks, revsets, diffs.       |
 | `kata-storage` | On-disk manifest + comment store.                             |
 | `kata-service` | Repo-agnostic review service shared by both transports.       |
 | `kata-server`  | `axum` HTTP server; serves the API and the embedded web app.  |

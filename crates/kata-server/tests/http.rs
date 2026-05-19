@@ -7,7 +7,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use kata_core::{Author, RepoManifest, SCHEMA_VERSION};
-use kata_jj::JjCli;
+use kata_jj::JjLib;
 use kata_server::{AppState, ReviewService, router};
 use kata_storage::sqlite::SqliteStorage;
 use kata_storage::{Storage, compute_repo_id, jj_repo_canonical_path};
@@ -50,7 +50,7 @@ impl Harness {
             })
             .await
             .unwrap();
-        let jj = Arc::new(JjCli::new(workspace.path().to_path_buf()));
+        let jj = Arc::new(JjLib::new(workspace.path().to_path_buf()).expect("open JjLib"));
         let mut builder = ReviewService::builder(storage.clone());
         builder
             .add_repo(

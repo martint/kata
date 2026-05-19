@@ -1,11 +1,14 @@
 //! Spins up a throwaway jj repo in a tempdir, lets a test populate it, then
-//! exercises the [`JjCli`] backend against it.
+//! exercises the [`JjLib`] backend against it. The fixture's setup still
+//! shells out to `jj` (init / describe / new / bookmark) — building those
+//! states through jj-lib's transaction API is more ceremony than it's
+//! worth for tests. The backend-under-test is in-process libjj.
 
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 
 use kata_core::{ChangeId, CommitId, FileStatus, LineRange, RevSet};
-use kata_jj::{AnchorResolution, FileCache, JjBackend, JjCli, build_diff, resolve_anchor};
+use kata_jj::{AnchorResolution, FileCache, JjBackend, JjLib, build_diff, resolve_anchor};
 use tempfile::TempDir;
 
 struct Fixture {
@@ -41,8 +44,8 @@ impl Fixture {
         run_jj(&self.root, args);
     }
 
-    fn cli(&self) -> JjCli {
-        JjCli::new(self.root.clone())
+    fn cli(&self) -> JjLib {
+        JjLib::new(self.root.clone()).expect("open JjLib")
     }
 }
 

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use kata_core::{Author, RepoManifest, SCHEMA_VERSION};
-use kata_jj::JjCli;
+use kata_jj::JjLib;
 use kata_server::{
     AppState, ServerConfig, router_with_assets, router_with_embedded_assets,
 };
@@ -269,7 +269,7 @@ async fn serve(
                 canonical_path: canonical_str.clone(),
             })
             .await?;
-        let jj = Arc::new(JjCli::new(path));
+        let jj = Arc::new(JjLib::new(path)?);
         builder.add_repo(name, repo_id, canonical_str, jj)?;
     }
 
