@@ -176,11 +176,16 @@ export function diffLines(removeLine: string, addLine: string): LineWordDiff | n
 }
 
 /** Wrap the syntax-highlighted HTML's text at the given character ranges
- *  with `<span class="wd-{kind}">` so the renderer's CSS can tint the
+ *  with `<span class="{className}">` so the renderer's CSS can tint the
  *  changed words on top of the existing color spans. Uses the browser's
  *  DOM to handle entity decoding, span splitting, and re-serialization
- *  so we don't have to write an HTML parser by hand. */
-export function wrapRanges(html: string, ranges: WordDiffRange[], kind: 'removed' | 'added'): string {
+ *  so we don't have to write an HTML parser by hand.
+ *
+ *  Originally hardcoded a `wd-` prefix for word-diff classes; now
+ *  takes the full class string so callers can layer other overlays
+ *  (e.g. intra-line comment column anchors → `'column-anchor'`)
+ *  through the same DOM-walk machinery. */
+export function wrapRanges(html: string, ranges: WordDiffRange[], className: string): string {
   if (ranges.length === 0) return html;
   if (typeof document === 'undefined') return html; // SSR safety; we don't render diffs server-side anyway
   const tpl = document.createElement('template');
@@ -224,7 +229,7 @@ export function wrapRanges(html: string, ranges: WordDiffRange[], kind: 'removed
           parent.insertBefore(document.createTextNode(before), node);
         }
         const span = document.createElement('span');
-        span.className = `wd-${kind}`;
+        span.className = className;
         span.appendChild(document.createTextNode(middle));
         parent.insertBefore(span, node);
         if (after.length === 0) {

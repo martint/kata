@@ -20,6 +20,10 @@
   import Bubble from './Bubble.svelte';
   import CommentThread from './CommentThread.svelte';
   import { computeHunkWordDiff, wrapRanges } from '../lib/wordDiff';
+  import {
+    intraLineSelectionFor,
+    type IntraLineSelection,
+  } from '../lib/intraLineSelection';
 
   interface Props {
     hunk: Hunk;
@@ -160,6 +164,56 @@
   let tableEl: HTMLTableElement | undefined = $state();
   let dragSelected: HTMLElement[] = [];
 
+  /** "Comment on selection" pill state: present iff the user has a
+   *  text selection inside this hunk's `.content` cells (a single
+   *  row). Cleared on outside mousedown or when the selection
+   *  changes to something we can't anchor (multi-row, collapsed,
+   *  outside this table). Click → open the line composer with the
+   *  intra-line `columns` range prefilled. */
+  let selectionPill: IntraLineSelection | null = $state.raw(null);
+  $effect(() => {
+    if (!tableEl) return;
+    function onMouseUp() {
+      // The selection isn't always finalised by the time the
+      // mouseup handler runs; defer so the browser settles first.
+      requestAnimationFrame(() => {
+        if (!tableEl) return;
+        selectionPill = intraLineSelectionFor(tableEl);
+      });
+    }
+    function onMouseDown(e: MouseEvent) {
+      // Mousedown on the pill itself shouldn't dismiss it — let the
+      // click handler fire first. Anything else clears so the next
+      // mouseup re-evaluates against a fresh selection.
+      const t = e.target as HTMLElement | null;
+      if (t?.closest('.intra-line-pill')) return;
+      selectionPill = null;
+    }
+    document.addEventListener('mouseup', onMouseUp);
+    document.addEventListener('mousedown', onMouseDown);
+    return () => {
+      document.removeEventListener('mouseup', onMouseUp);
+      document.removeEventListener('mousedown', onMouseDown);
+    };
+  });
+
+  function commentOnSelection() {
+    const s = selectionPill;
+    if (!s) return;
+    onstartcompose({
+      kind: 'line',
+      file: filePath,
+      side: s.side,
+      startLine: s.line,
+      endLine: s.line,
+      columns: { start: s.startOffset, end: s.endOffset },
+    });
+    selectionPill = null;
+    // Clear the underlying text selection too so it doesn't sit
+    // there as visual noise once the composer takes over.
+    window.getSelection()?.removeAllRanges();
+  }
+
   /** Apply the `.selected` class directly to matching rows when dragging.
    *  We bypass per-row Svelte reactivity here because toggling a top-level
    *  state like `composing` would otherwise re-evaluate every row's @const,
@@ -207,15 +261,56 @@
    *  Recomputed when the hunk lines change; cheap enough not to memo. */
   const wordDiff = $derived(computeHunkWordDiff(hunk.lines));
 
-  /** Apply the word-diff overlay (if any) to the row's existing
-   *  syntax-highlighted HTML. Falls back to the plain HTML when the
-   *  row has no overlay — most rows go straight through. */
+  /** Apply the word-diff overlay (if any) and any intra-line column
+   *  highlights from comments anchored to this row. Word-diff goes
+   *  on first (it has the loudest tint); column highlights layer on
+   *  top so they remain visible inside word-diff regions. Falls back
+   *  to the plain HTML when neither contributes — most rows go
+   *  straight through. */
   function htmlWithWordDiff(line: HunkLine, idx: number): string | undefined {
-    const base = htmlFor(line);
+    let base = htmlFor(line);
     if (!base) return base;
     const wd = wordDiff.get(idx);
-    if (!wd) return base;
-    return wrapRanges(base, wd.ranges, wd.kind);
+    if (wd) {
+      base = wrapRanges(base, wd.ranges, `wd-${wd.kind}`);
+    }
+    // Intra-line column anchors from any comment anchored to this
+    // line. Only the still-Valid/Moved comments contribute a
+    // highlight — drifted/outdated lines degrade to line-level
+    // (the column offsets no longer map cleanly to the new text).
+    const a = anchor(line);
+    if (a) {
+      const cols = columnAnchorsFor(a);
+      if (cols.length > 0) {
+        base = wrapRanges(base, cols, 'column-anchor');
+      }
+    }
+    return base;
+  }
+
+  /** Column ranges to highlight on this row from any line-level
+   *  comment with `columns` set whose anchor is still Valid or
+   *  Moved. We can't honour columns when the line has Drifted or
+   *  gone Outdated — the character offsets index a different
+   *  string than the one being rendered. */
+  function columnAnchorsFor(a: { side: Side; line: number }): { start: number; end: number }[] {
+    const out: { start: number; end: number }[] = [];
+    for (const c of comments) {
+      if (c.side !== a.side) continue;
+      if (!c.columns) continue;
+      // Single-line columns only — server enforces this on write.
+      const effective =
+        c.anchor.kind === 'moved'
+          ? c.anchor.new_lines
+          : c.anchor.kind === 'valid'
+            ? c.lines
+            : null;
+      if (!effective) continue;
+      if (effective.start !== effective.end) continue;
+      if (effective.end !== a.line) continue;
+      out.push({ start: c.columns.start, end: c.columns.end });
+    }
+    return out;
   }
 
   /** Which side+line a row anchors to. Removed → base side; added & context → tip. */
@@ -551,6 +646,19 @@
   </tbody>
 </table>
 
+{#if selectionPill}
+  <button
+    type="button"
+    class="intra-line-pill"
+    style:top="{selectionPill.rect.top + window.scrollY - 30}px"
+    style:left="{selectionPill.rect.left + window.scrollX}px"
+    onclick={commentOnSelection}
+    onmousedown={(e) => e.preventDefault()}
+  >
+    Comment on selection
+  </button>
+{/if}
+
 <style>
   .hunk {
     width: max-content;
@@ -605,6 +713,36 @@
   :global(.row.added .wd-added) {
     background: var(--add-word-bg);
     border-radius: 2px;
+  }
+
+  /* Intra-line comment column anchor. Subtle inset border on top + bottom
+   * (rather than a background tint that'd clash with word-diff highlights
+   * in the same region) so the highlight stays visible even when nested
+   * inside a wd-added/wd-removed run. Color picks up the comment palette
+   * so the eye links it to the inline thread below. */
+  :global(.content .column-anchor) {
+    box-shadow: inset 0 -2px 0 var(--link);
+    cursor: pointer;
+  }
+
+  /* Floating "Comment on selection" pill positioned in document
+   * (not viewport) coordinates so it stays anchored to the text
+   * during page scroll without a scroll listener. */
+  .intra-line-pill {
+    position: absolute;
+    z-index: 10;
+    background: var(--link);
+    color: var(--on-accent);
+    border: none;
+    border-radius: 4px;
+    padding: 4px 10px;
+    font-size: 12px;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    cursor: pointer;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.18);
+  }
+  .intra-line-pill:hover {
+    filter: brightness(1.1);
   }
 
   .row.context {

@@ -88,7 +88,7 @@ describe('computeHunkWordDiff', () => {
 describe('wrapRanges', () => {
   test('wraps a range inside a single span', () => {
     const html = '<span style="color:red">hello world</span>';
-    const out = wrapRanges(html, [{ start: 6, end: 11 }], 'added');
+    const out = wrapRanges(html, [{ start: 6, end: 11 }], 'wd-added');
     expect(out).toContain('<span class="wd-added">world</span>');
   });
 
@@ -96,7 +96,7 @@ describe('wrapRanges', () => {
     // Two adjacent shiki spans; the range crosses the boundary.
     const html =
       '<span style="color:red">let foo</span><span style="color:blue"> = 1</span>';
-    const out = wrapRanges(html, [{ start: 4, end: 9 }], 'removed');
+    const out = wrapRanges(html, [{ start: 4, end: 9 }], 'wd-removed');
     // "foo = " (positions 4-9) should be wrapped — split across both spans.
     // Verify a wd-removed span exists and the original color styles survive.
     expect(out).toMatch(/wd-removed/);
@@ -106,15 +106,24 @@ describe('wrapRanges', () => {
 
   test('passes through unchanged when ranges is empty', () => {
     const html = '<span style="color:red">hello</span>';
-    expect(wrapRanges(html, [], 'added')).toBe(html);
+    expect(wrapRanges(html, [], 'wd-added')).toBe(html);
   });
 
   test('escapes special characters when reserializing text', () => {
     const html = '<span style="color:red">a &lt; b</span>';
-    const out = wrapRanges(html, [{ start: 0, end: 1 }], 'added');
+    const out = wrapRanges(html, [{ start: 0, end: 1 }], 'wd-added');
     // The `<` we exposed was an entity in the source; if the wrapper
     // decodes-and-reescapes it should come back as `&lt;`, not `<`.
     expect(out).toContain('&lt;');
     expect(out).not.toMatch(/[^&]<\s/);
+  });
+
+  test('accepts arbitrary class names for non-word-diff overlays', () => {
+    // Intra-line comment column anchors and any future overlay layer
+    // come through the same wrapper. Verify the wrapper doesn't bake
+    // in the `wd-` prefix anymore.
+    const html = '<span>hello world</span>';
+    const out = wrapRanges(html, [{ start: 0, end: 5 }], 'column-anchor');
+    expect(out).toContain('<span class="column-anchor">hello</span>');
   });
 });

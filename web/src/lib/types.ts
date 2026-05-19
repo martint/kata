@@ -52,6 +52,15 @@ export type ResolutionAction = 'comment' | 'resolve' | 'unresolve' | 'wont-fix';
 export type FileStatusKind = 'added' | 'deleted' | 'modified' | 'renamed';
 export type LineOrigin = 'context' | 'added' | 'removed';
 
+/** UTF-16 character range within a single line, half-open: `[start, end)`.
+ *  Storage and the backend keep these as UTF-16 offsets because the
+ *  browser's drag-to-select arithmetic (`Range.startOffset`,
+ *  `String.length`) produces them natively. */
+export interface ColumnRange {
+  start: number;
+  end: number;
+}
+
 export interface Comment {
   schema_version: number;
   comment_id: CommentId;
@@ -66,6 +75,10 @@ export interface Comment {
   file?: string;
   side?: Side;
   lines?: LineRange;
+  /** Optional intra-line character range. Only set when `lines` is a
+   *  single line; the renderer falls back to a line-level highlight
+   *  when the line anchor is Drifted or Outdated. */
+  columns?: ColumnRange;
   /** True when the comment is about the whole review rather than a
    *  specific commit. UI groups these under the "All commits" row.
    *  Mutually exclusive with `file`/`lines`. */
@@ -369,6 +382,9 @@ export interface DraftCommentInput {
   file?: string;
   side?: Side;
   lines?: LineRange;
+  /** Optional intra-line character range. Required to be a single-line
+   *  range (start == end) when set; server rejects otherwise. */
+  columns?: ColumnRange;
   review_wide?: boolean;
   flag: Flag;
   body?: string;
@@ -406,7 +422,18 @@ export interface WhoAmI {
  *  creating a new one — submit goes via PUT and the anchor is the
  *  existing comment's anchor (kept verbatim). */
 export type ComposerTarget = (
-  | { kind: 'line'; file: string; side: Side; startLine: number; endLine: number }
+  | {
+      kind: 'line';
+      file: string;
+      side: Side;
+      startLine: number;
+      endLine: number;
+      /** Optional intra-line character range (UTF-16, `[start, end)`).
+       *  Only carried when the user drag-selected text within a
+       *  single line — gets persisted on the resulting comment as
+       *  `columns`. */
+      columns?: ColumnRange;
+    }
   | { kind: 'file'; file: string }
   | { kind: 'commit'; change_id: ChangeId; commit_id: CommitId }
   | { kind: 'review' }

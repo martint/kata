@@ -53,6 +53,11 @@
         file: target.file,
         side: target.side,
         lines: { start: target.startLine, end: target.endLine },
+        // Carry the column range when the composer was opened from
+        // a drag-text selection. Multi-line column targets are
+        // rejected upstream by the selection handler, so this is
+        // always a single-line slice when set.
+        columns: target.columns,
       };
     } else if (target.kind === 'file') {
       input = { ...base, file: target.file };

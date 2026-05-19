@@ -21,6 +21,10 @@
   import CommentThread from './CommentThread.svelte';
   import { computeHunkWordDiff, wrapRanges } from '../lib/wordDiff';
   import { alignBlock, alignedRows } from '../lib/hunkAlign';
+  import {
+    intraLineSelectionFor,
+    type IntraLineSelection,
+  } from '../lib/intraLineSelection';
 
   interface Props {
     hunk: Hunk;
@@ -184,6 +188,48 @@
   let pairEl: HTMLDivElement | undefined = $state();
   let dividerDragging = $state(false);
   let dragSelected: HTMLElement[] = [];
+
+  /** Pill state for drag-to-select intra-line comments. SBS has two
+   *  tables — base and tip — and a selection lives in exactly one of
+   *  them; we try both on mouseup and use whichever resolves. See
+   *  HunkLines.svelte for the per-mode design rationale. */
+  let selectionPill: IntraLineSelection | null = $state.raw(null);
+  $effect(() => {
+    if (!pairEl) return;
+    function onMouseUp() {
+      requestAnimationFrame(() => {
+        const fromBase = baseTableEl ? intraLineSelectionFor(baseTableEl) : null;
+        const fromTip = !fromBase && tipTableEl ? intraLineSelectionFor(tipTableEl) : null;
+        selectionPill = fromBase ?? fromTip;
+      });
+    }
+    function onMouseDown(e: MouseEvent) {
+      const t = e.target as HTMLElement | null;
+      if (t?.closest('.intra-line-pill')) return;
+      selectionPill = null;
+    }
+    document.addEventListener('mouseup', onMouseUp);
+    document.addEventListener('mousedown', onMouseDown);
+    return () => {
+      document.removeEventListener('mouseup', onMouseUp);
+      document.removeEventListener('mousedown', onMouseDown);
+    };
+  });
+
+  function commentOnSelection() {
+    const s = selectionPill;
+    if (!s) return;
+    onstartcompose({
+      kind: 'line',
+      file: filePath,
+      side: s.side,
+      startLine: s.line,
+      endLine: s.line,
+      columns: { start: s.startOffset, end: s.endOffset },
+    });
+    selectionPill = null;
+    window.getSelection()?.removeAllRanges();
+  }
 
   /** Drag the gutter between the base and tip sides. Pointer X within
    *  `pairEl` becomes the new base-side fraction; the parent clamps
@@ -419,11 +465,42 @@
 
   function withWordDiff(html: string | undefined, line: HunkLine | null): string | undefined {
     if (!html || !line) return html;
+    let out = html;
     const idx = hunkLineIndex(line);
-    if (idx == null) return html;
-    const wd = wordDiff.get(idx);
-    if (!wd) return html;
-    return wrapRanges(html, wd.ranges, wd.kind);
+    if (idx != null) {
+      const wd = wordDiff.get(idx);
+      if (wd) out = wrapRanges(out, wd.ranges, `wd-${wd.kind}`);
+    }
+    // Layer column-anchor overlays from any intra-line comments on this row.
+    const side: Side =
+      line.origin === 'removed' ? 'base' : line.tip_line != null ? 'tip' : 'base';
+    const lineNum = side === 'base' ? line.base_line : line.tip_line;
+    if (lineNum != null) {
+      const cols = columnAnchorsFor(side, lineNum);
+      if (cols.length > 0) out = wrapRanges(out, cols, 'column-anchor');
+    }
+    return out;
+  }
+
+  /** See HunkLines.svelte's columnAnchorsFor — same rule: only Valid
+   *  or Moved single-line anchors contribute a highlight. */
+  function columnAnchorsFor(side: Side, line: number): { start: number; end: number }[] {
+    const out: { start: number; end: number }[] = [];
+    for (const c of comments) {
+      if (c.side !== side) continue;
+      if (!c.columns) continue;
+      const effective =
+        c.anchor.kind === 'moved'
+          ? c.anchor.new_lines
+          : c.anchor.kind === 'valid'
+            ? c.lines
+            : null;
+      if (!effective) continue;
+      if (effective.start !== effective.end) continue;
+      if (effective.end !== line) continue;
+      out.push({ start: c.columns.start, end: c.columns.end });
+    }
+    return out;
   }
 </script>
 
@@ -736,6 +813,19 @@
   </div>
 </div>
 
+{#if selectionPill}
+  <button
+    type="button"
+    class="intra-line-pill"
+    style:top="{selectionPill.rect.top + window.scrollY - 30}px"
+    style:left="{selectionPill.rect.left + window.scrollX}px"
+    onclick={commentOnSelection}
+    onmousedown={(e) => e.preventDefault()}
+  >
+    Comment on selection
+  </button>
+{/if}
+
 <style>
   .sbs-pair {
     display: flex;
@@ -861,6 +951,30 @@
   :global(.content.added .wd-added) {
     background: var(--add-word-bg);
     border-radius: 2px;
+  }
+
+  /* See HunkLines.svelte for the column-anchor design rationale. */
+  :global(.content .column-anchor) {
+    box-shadow: inset 0 -2px 0 var(--link);
+    cursor: pointer;
+  }
+
+  /* "Comment on selection" pill — see HunkLines.svelte. */
+  .intra-line-pill {
+    position: absolute;
+    z-index: 10;
+    background: var(--link);
+    color: var(--on-accent);
+    border: none;
+    border-radius: 4px;
+    padding: 4px 10px;
+    font-size: 12px;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    cursor: pointer;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.18);
+  }
+  .intra-line-pill:hover {
+    filter: brightness(1.1);
   }
 
   .ln.empty,
