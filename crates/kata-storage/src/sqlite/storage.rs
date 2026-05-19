@@ -1365,3 +1365,248 @@ async fn flip_session_status(
         .await
 }
 
+#[cfg(test)]
+mod round_trip_tests {
+    //! Schema round-trip tests for fields added after V001 — annotation
+    //! storage plus the `columns` add-on for comments. These guard the
+    //! upsert / list / mapper paths against drift the way the existing
+    //! migrate tests guard the schema itself.
+
+    use super::*;
+    use chrono::{NaiveDateTime, TimeZone};
+    use kata_core::{Flag, Patchset, Side};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use uuid::{NoContext, Timestamp, Uuid};
+
+    /// Bump a per-process counter so two `seed_review` calls in the
+    /// same test process never collide on the per-repo `number`
+    /// uniqueness constraint when they happen to hit the same repo.
+    static SEED: AtomicU64 = AtomicU64::new(0);
+
+    fn fresh_id(prefix: &str) -> String {
+        let n = SEED.fetch_add(1, Ordering::Relaxed);
+        let uuid = Uuid::new_v7(Timestamp::now(NoContext));
+        format!("{prefix}-{n}-{uuid}")
+    }
+
+    fn ts(s: &str) -> chrono::DateTime<chrono::Utc> {
+        let naive = NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%SZ").unwrap();
+        chrono::Utc.from_utc_datetime(&naive)
+    }
+
+    async fn seed_review(
+        store: &SqliteStorage,
+    ) -> (RepoId, ReviewManifest, Author, SessionId) {
+        let repo = RepoId::new(fresh_id("repo"));
+        let review_id = ReviewId::new(fresh_id("rv"));
+        let author = Author::new("alice@example.com");
+
+        store
+            .ensure_repo(&RepoManifest {
+                schema_version: SCHEMA_VERSION,
+                repo_id: repo.clone(),
+                canonical_path: "/tmp/test".into(),
+            })
+            .await
+            .expect("ensure_repo");
+
+        let patchset = Patchset {
+            n: 1,
+            base_change: ChangeId::new("ch-base"),
+            base_commit: CommitId::new("co-base"),
+            tip_change: ChangeId::new("ch-tip"),
+            tip_commit: CommitId::new("co-tip"),
+            recorded_at: ts("2026-01-01T00:00:00Z"),
+            parent_patchset: None,
+        };
+        let manifest = ReviewManifest {
+            schema_version: SCHEMA_VERSION,
+            review_id: review_id.clone(),
+            number: 0,
+            name: "test review".into(),
+            revset: RevSet::new("trunk()..@"),
+            created_at: ts("2026-01-01T00:00:00Z"),
+            created_by: author.clone(),
+            bookmark: None,
+            summary: None,
+            patchsets: vec![patchset],
+            current_patchset: 1,
+            archived_at: None,
+        };
+        let manifest = store.create_review(&repo, &manifest).await.expect("create_review");
+
+        let session = store
+            .open_or_create_session(&repo, &review_id, &author)
+            .await
+            .expect("open_or_create_session");
+        (repo, manifest, author, session.session_id)
+    }
+
+    #[tokio::test]
+    async fn annotation_round_trips_all_fields() {
+        let store = SqliteStorage::open_in_memory().await.unwrap();
+        let (repo, manifest, author, _sid) = seed_review(&store).await;
+
+        let annotation = Annotation {
+            schema_version: SCHEMA_VERSION,
+            annotation_id: AnnotationId::new(fresh_id("an")),
+            review_id: manifest.review_id.clone(),
+            author: author.clone(),
+            created_at: ts("2026-01-02T00:00:00Z"),
+            updated_at: ts("2026-01-02T00:00:00Z"),
+            patchset: 1,
+            anchor_change_id: ChangeId::new("ch-tip"),
+            anchor_commit_id: CommitId::new("co-tip"),
+            file: Some("src/lib.rs".into()),
+            side: Some(Side::Tip),
+            lines: Some(LineRange::single(42)),
+            body: "context for the reviewer".into(),
+        };
+        store.upsert_annotation(&repo, &annotation).await.unwrap();
+
+        let list = store.list_annotations(&repo, &manifest.review_id).await.unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0], annotation, "annotation must round-trip byte-for-byte");
+    }
+
+    #[tokio::test]
+    async fn annotation_upsert_updates_in_place() {
+        // Same id, different body + updated_at — the second write
+        // should overwrite rather than insert a duplicate. Guards the
+        // ON CONFLICT clause on annotation_id.
+        let store = SqliteStorage::open_in_memory().await.unwrap();
+        let (repo, manifest, author, _sid) = seed_review(&store).await;
+        let id = AnnotationId::new(fresh_id("an"));
+
+        let mut annotation = Annotation {
+            schema_version: SCHEMA_VERSION,
+            annotation_id: id.clone(),
+            review_id: manifest.review_id.clone(),
+            author: author.clone(),
+            created_at: ts("2026-01-02T00:00:00Z"),
+            updated_at: ts("2026-01-02T00:00:00Z"),
+            patchset: 1,
+            anchor_change_id: ChangeId::new("ch-tip"),
+            anchor_commit_id: CommitId::new("co-tip"),
+            file: Some("src/lib.rs".into()),
+            side: Some(Side::Tip),
+            lines: Some(LineRange::single(7)),
+            body: "first draft".into(),
+        };
+        store.upsert_annotation(&repo, &annotation).await.unwrap();
+
+        annotation.body = "edited".into();
+        annotation.updated_at = ts("2026-01-03T00:00:00Z");
+        store.upsert_annotation(&repo, &annotation).await.unwrap();
+
+        let list = store.list_annotations(&repo, &manifest.review_id).await.unwrap();
+        assert_eq!(list.len(), 1, "second upsert must replace, not append");
+        assert_eq!(list[0].body, "edited");
+        assert_eq!(list[0].updated_at, ts("2026-01-03T00:00:00Z"));
+    }
+
+    #[tokio::test]
+    async fn delete_annotation_removes_the_row() {
+        let store = SqliteStorage::open_in_memory().await.unwrap();
+        let (repo, manifest, author, _sid) = seed_review(&store).await;
+
+        let id = AnnotationId::new(fresh_id("an"));
+        store
+            .upsert_annotation(
+                &repo,
+                &Annotation {
+                    schema_version: SCHEMA_VERSION,
+                    annotation_id: id.clone(),
+                    review_id: manifest.review_id.clone(),
+                    author,
+                    created_at: ts("2026-01-02T00:00:00Z"),
+                    updated_at: ts("2026-01-02T00:00:00Z"),
+                    patchset: 1,
+                    anchor_change_id: ChangeId::new("ch-tip"),
+                    anchor_commit_id: CommitId::new("co-tip"),
+                    file: None,
+                    side: None,
+                    lines: None,
+                    body: "review-wide".into(),
+                },
+            )
+            .await
+            .unwrap();
+        store.delete_annotation(&repo, &manifest.review_id, &id).await.unwrap();
+        let list = store.list_annotations(&repo, &manifest.review_id).await.unwrap();
+        assert!(list.is_empty(), "annotation must be gone after delete");
+    }
+
+    #[tokio::test]
+    async fn comment_with_columns_round_trips() {
+        // Guards V009's col_start / col_end serde path. Without
+        // these, an intra-line comment would silently degrade to
+        // line-level on the next read.
+        let store = SqliteStorage::open_in_memory().await.unwrap();
+        let (repo, manifest, author, sid) = seed_review(&store).await;
+
+        let comment = Comment {
+            schema_version: SCHEMA_VERSION,
+            comment_id: CommentId::new(fresh_id("cm")),
+            session_id: sid.clone(),
+            review_id: manifest.review_id.clone(),
+            author,
+            created_at: ts("2026-01-02T00:00:00Z"),
+            patchset: 1,
+            anchor_change_id: ChangeId::new("ch-tip"),
+            anchor_commit_id: CommitId::new("co-tip"),
+            file: Some("src/lib.rs".into()),
+            side: Some(Side::Tip),
+            lines: Some(LineRange::single(42)),
+            columns: Some(ColumnRange::new(4, 12)),
+            review_wide: false,
+            flag: Flag::Suggestion,
+            body: "this slice".into(),
+        };
+        store.upsert_draft_comment(&repo, &comment).await.unwrap();
+
+        let drafts = store
+            .list_drafts_for(&repo, &manifest.review_id, &comment.author)
+            .await
+            .unwrap();
+        assert_eq!(drafts.comments.len(), 1);
+        assert_eq!(drafts.comments[0].columns, Some(ColumnRange::new(4, 12)));
+        assert_eq!(drafts.comments[0], comment);
+    }
+
+    #[tokio::test]
+    async fn comment_without_columns_persists_null() {
+        // The other half: an old-style line-level comment must NOT
+        // gain spurious columns from the round-trip.
+        let store = SqliteStorage::open_in_memory().await.unwrap();
+        let (repo, manifest, author, sid) = seed_review(&store).await;
+
+        let comment = Comment {
+            schema_version: SCHEMA_VERSION,
+            comment_id: CommentId::new(fresh_id("cm")),
+            session_id: sid,
+            review_id: manifest.review_id.clone(),
+            author,
+            created_at: ts("2026-01-02T00:00:00Z"),
+            patchset: 1,
+            anchor_change_id: ChangeId::new("ch-tip"),
+            anchor_commit_id: CommitId::new("co-tip"),
+            file: Some("src/lib.rs".into()),
+            side: Some(Side::Tip),
+            lines: Some(LineRange::new(40, 45)),
+            columns: None,
+            review_wide: false,
+            flag: Flag::MustDo,
+            body: "whole-range".into(),
+        };
+        store.upsert_draft_comment(&repo, &comment).await.unwrap();
+
+        let drafts = store
+            .list_drafts_for(&repo, &manifest.review_id, &comment.author)
+            .await
+            .unwrap();
+        assert_eq!(drafts.comments.len(), 1);
+        assert_eq!(drafts.comments[0].columns, None);
+    }
+}
+

@@ -1995,3 +1995,230 @@ mod compare_tests {
         assert_eq!(pairs.len(), 4);
     }
 }
+
+#[cfg(test)]
+mod validate_anchor_tests {
+    use super::*;
+
+    fn base_input() -> DraftCommentInput {
+        // A valid single-line line-level comment input. Tests mutate
+        // selected fields to exercise the reject paths.
+        DraftCommentInput {
+            anchor_change_id: ChangeId::new("ch1"),
+            anchor_commit_id: CommitId::new("co1"),
+            file: Some("foo.rs".into()),
+            side: Some(Side::Tip),
+            lines: Some(LineRange::single(42)),
+            columns: None,
+            review_wide: false,
+            flag: Flag::Suggestion,
+            body: String::new(),
+        }
+    }
+
+    fn assert_bad_request(result: ServiceResult<()>, needle: &str) {
+        match result {
+            Err(ServiceError::BadRequest(msg)) => {
+                assert!(
+                    msg.contains(needle),
+                    "expected message containing {needle:?}, got: {msg:?}"
+                );
+            }
+            Err(other) => panic!("expected BadRequest, got {other:?}"),
+            Ok(()) => panic!("expected error, got Ok"),
+        }
+    }
+
+    #[test]
+    fn accepts_input_with_columns_on_a_single_line() {
+        let mut input = base_input();
+        input.columns = Some(ColumnRange::new(4, 12));
+        validate_anchor(&input).expect("valid single-line column anchor");
+    }
+
+    #[test]
+    fn accepts_input_without_columns() {
+        // The baseline path — columns is optional; the function must
+        // accept a normal line-level comment without one.
+        validate_anchor(&base_input()).expect("plain line-level comment is valid");
+    }
+
+    #[test]
+    fn rejects_columns_without_lines() {
+        let mut input = base_input();
+        input.lines = None;
+        input.columns = Some(ColumnRange::new(4, 12));
+        assert_bad_request(validate_anchor(&input), "columns provided without lines");
+    }
+
+    #[test]
+    fn rejects_columns_spanning_multiple_lines() {
+        // Multi-line + columns ambiguity: which line owns the slice?
+        // We reject so callers fall back to line-level.
+        let mut input = base_input();
+        input.lines = Some(LineRange::new(10, 15));
+        input.columns = Some(ColumnRange::new(4, 12));
+        assert_bad_request(
+            validate_anchor(&input),
+            "columns only valid on single-line comments",
+        );
+    }
+
+    #[test]
+    fn rejects_zero_width_column_range() {
+        // `ColumnRange::new` panics on `start >= end`, but a client
+        // posting raw JSON skips the constructor — guard the wire
+        // path here too by constructing the struct directly.
+        let mut input = base_input();
+        input.columns = Some(ColumnRange { start: 5, end: 5 });
+        assert_bad_request(validate_anchor(&input), "column end must be > start");
+    }
+}
+
+#[cfg(test)]
+mod annotation_creator_only_tests {
+    //! End-to-end test that the creator-only gate on
+    //! `upsert_annotation` / `delete_annotation` actually fires. The
+    //! frontend hides the affordances, but the service is the only
+    //! defence against a misbehaving MCP client or hand-rolled HTTP
+    //! call — these tests are what keeps that defence alive.
+
+    use super::*;
+    use chrono::{NaiveDateTime, TimeZone};
+    use kata_storage::sqlite::SqliteStorage;
+    use std::sync::Arc;
+
+    fn ts(s: &str) -> chrono::DateTime<chrono::Utc> {
+        let naive = NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%SZ").unwrap();
+        chrono::Utc.from_utc_datetime(&naive)
+    }
+
+    async fn seed(
+        storage: Arc<dyn Storage>,
+    ) -> (RepoId, ReviewManifest, Author) {
+        let repo = RepoId::new("repo");
+        let creator = Author::new("alice@example.com");
+        storage
+            .ensure_repo(&kata_core::RepoManifest {
+                schema_version: SCHEMA_VERSION,
+                repo_id: repo.clone(),
+                canonical_path: "/tmp/repo".into(),
+            })
+            .await
+            .unwrap();
+        let manifest = ReviewManifest {
+            schema_version: SCHEMA_VERSION,
+            review_id: ReviewId::new("rv1"),
+            number: 0,
+            name: "test".into(),
+            revset: RevSet::new("trunk()..@"),
+            created_at: ts("2026-01-01T00:00:00Z"),
+            created_by: creator.clone(),
+            bookmark: None,
+            summary: None,
+            patchsets: vec![Patchset {
+                n: 1,
+                base_change: ChangeId::new("ch-base"),
+                base_commit: CommitId::new("co-base"),
+                tip_change: ChangeId::new("ch-tip"),
+                tip_commit: CommitId::new("co-tip"),
+                recorded_at: ts("2026-01-01T00:00:00Z"),
+                parent_patchset: None,
+            }],
+            current_patchset: 1,
+            archived_at: None,
+        };
+        let manifest = storage.create_review(&repo, &manifest).await.unwrap();
+        (repo, manifest, creator)
+    }
+
+    fn line_input() -> AnnotationInput {
+        AnnotationInput {
+            anchor_change_id: ChangeId::new("ch-tip"),
+            anchor_commit_id: CommitId::new("co-tip"),
+            file: Some("src/lib.rs".into()),
+            side: Some(Side::Tip),
+            lines: Some(LineRange::single(42)),
+            body: "context".into(),
+        }
+    }
+
+    async fn service_for(storage: Arc<dyn Storage>) -> ReviewService {
+        // No repo registered in the builder — annotation methods
+        // don't touch the jj backend, only storage. Keeping the
+        // service jj-less avoids dragging a JjBackend mock into the
+        // test surface.
+        ReviewService::builder(storage).build()
+    }
+
+    #[tokio::test]
+    async fn creator_can_upsert_annotation() {
+        let storage = Arc::new(SqliteStorage::open_in_memory().await.unwrap());
+        let (repo, manifest, creator) = seed(storage.clone()).await;
+        let service = service_for(storage).await;
+        let annotation = service
+            .upsert_annotation(&repo, &manifest.review_id, &creator, None, line_input())
+            .await
+            .expect("creator should be allowed");
+        assert_eq!(annotation.author, creator);
+        assert_eq!(annotation.body, "context");
+    }
+
+    #[tokio::test]
+    async fn non_creator_cannot_upsert_annotation() {
+        let storage = Arc::new(SqliteStorage::open_in_memory().await.unwrap());
+        let (repo, manifest, _creator) = seed(storage.clone()).await;
+        let service = service_for(storage).await;
+        let bob = Author::new("bob@example.com");
+        let err = service
+            .upsert_annotation(&repo, &manifest.review_id, &bob, None, line_input())
+            .await
+            .expect_err("non-creator must be rejected");
+        match err {
+            ServiceError::BadRequest(msg) => {
+                assert!(
+                    msg.contains("only the review's creator"),
+                    "unexpected message: {msg:?}"
+                );
+            }
+            other => panic!("expected BadRequest, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn non_creator_cannot_delete_annotation() {
+        // Creator authors the annotation first; then we verify a
+        // different identity can't remove it even though the
+        // annotation_id is known.
+        let storage = Arc::new(SqliteStorage::open_in_memory().await.unwrap());
+        let (repo, manifest, creator) = seed(storage.clone()).await;
+        let service = service_for(storage).await;
+        let annotation = service
+            .upsert_annotation(&repo, &manifest.review_id, &creator, None, line_input())
+            .await
+            .unwrap();
+        let bob = Author::new("bob@example.com");
+        let err = service
+            .delete_annotation(&repo, &manifest.review_id, &bob, &annotation.annotation_id)
+            .await
+            .expect_err("non-creator must be rejected from delete too");
+        assert!(matches!(err, ServiceError::BadRequest(_)));
+    }
+
+    #[tokio::test]
+    async fn creator_can_delete_their_annotation() {
+        // Round-trip the happy path so we know the gate isn't
+        // blocking the intended caller either.
+        let storage = Arc::new(SqliteStorage::open_in_memory().await.unwrap());
+        let (repo, manifest, creator) = seed(storage.clone()).await;
+        let service = service_for(storage).await;
+        let annotation = service
+            .upsert_annotation(&repo, &manifest.review_id, &creator, None, line_input())
+            .await
+            .unwrap();
+        service
+            .delete_annotation(&repo, &manifest.review_id, &creator, &annotation.annotation_id)
+            .await
+            .expect("creator should be able to delete");
+    }
+}
