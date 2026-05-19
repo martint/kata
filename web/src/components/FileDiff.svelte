@@ -345,6 +345,64 @@
       }),
   );
 
+  /** One line of code shown above a comment in comments-only mode —
+   *  enough to remind the reader what the thread is about without
+   *  having to switch back to the diff view. */
+  interface ContextLine {
+    lineNum: number;
+    origin: 'context' | 'added' | 'removed';
+    text: string;
+    /** Pre-tokenized HTML. `undefined` means render `text` as plain. */
+    html?: string;
+  }
+
+  /** Code context for the line-level comment `c` to show above its
+   *  thread in comments-only mode. The lines are pulled from the
+   *  file's own hunks — comments anchored in the rendered region
+   *  share their syntax highlight with the inline diff. */
+  function contextLinesFor(c: CommentView): { lines: ContextLine[]; note?: string } {
+    // Outdated anchors: the lines on the current patchset no longer
+    // match what the comment was about; render the frozen original
+    // text the backend captured at write time.
+    if (c.anchor.kind === 'outdated') {
+      const lines = c.anchor.original_content
+        .split('\n')
+        .filter((l, i, all) => i < all.length - 1 || l.length > 0)
+        .map((text, i) => ({
+          lineNum: (c.lines?.start ?? 0) + i,
+          origin: 'context' as const,
+          text,
+        }));
+      return { lines, note: 'outdated — original lines shown' };
+    }
+    const effective =
+      c.anchor.kind === 'moved' || c.anchor.kind === 'drifted'
+        ? c.anchor.new_lines
+        : c.lines;
+    if (!effective || !c.side) return { lines: [] };
+    const side = c.side;
+    const lines: ContextLine[] = [];
+    for (const h of file.hunks ?? []) {
+      for (const ln of h.lines) {
+        const num = side === 'tip' ? ln.tip_line : ln.base_line;
+        if (num == null) continue;
+        if (num < effective.start || num > effective.end) continue;
+        lines.push({
+          lineNum: num,
+          origin: ln.origin,
+          text: ln.content.replace(/\n$/, ''),
+          html:
+            side === 'tip'
+              ? highlightsTip.get(num)
+              : highlightsBase.get(num),
+        });
+      }
+    }
+    lines.sort((a, b) => a.lineNum - b.lineNum);
+    const note = c.anchor.kind === 'drifted' ? 'lines have drifted' : undefined;
+    return { lines, note };
+  }
+
   /** Every (side, line) the file's hunks actually render. Inline
    *  comment threads attach next to a matching row, so a comment
    *  anchored to a line that fell outside the diff's surrounding
@@ -624,29 +682,54 @@
     return { above, below };
   }
   /** True when at least one source line is still skipped between
-   *  hunk `i`'s expanded end and hunk `i+1`'s expanded start (on
-   *  EITHER side — the gap separator is meaningful as soon as one
-   *  side has unrendered content). Hidden when the two hunks now
-   *  meet end-to-end. */
+   *  hunk `i`'s expanded end and hunk `i+1`'s expanded start. */
   function hasGapAfter(i: number): boolean {
+    return gapAfter(i) > 0;
+  }
+
+  /** Size (in source lines) of the unrendered gap between hunk `i`
+   *  and hunk `i+1`, taking the larger of the base / tip side gaps
+   *  so we don't under-report on renames. Returns 0 when the hunks
+   *  already meet end-to-end (or when one side is missing). */
+  function gapAfter(i: number): number {
     const hunks = file.hunks ?? [];
     const cur = hunks[i];
     const next = hunks[i + 1];
-    if (!cur?.tip_range || !next?.tip_range) return true;
+    if (!cur?.tip_range || !next?.tip_range) return 0;
     const curExp = clippedExpansions.get(i) ?? { above: 0, below: 0 };
     const nextExp = clippedExpansions.get(i + 1) ?? { above: 0, below: 0 };
-    const tipGap =
-      next.tip_range.start - nextExp.above - (cur.tip_range.end + curExp.below) - 1;
-    if (tipGap > 0) return true;
+    let gap = Math.max(
+      0,
+      next.tip_range.start - nextExp.above - (cur.tip_range.end + curExp.below) - 1,
+    );
     if (cur.base_range && next.base_range) {
       const baseGap =
         next.base_range.start -
         nextExp.above -
         (cur.base_range.end + curExp.below) -
         1;
-      if (baseGap > 0) return true;
+      gap = Math.max(gap, baseGap);
     }
-    return false;
+    return gap;
+  }
+
+  /** When the gap is small enough to fill with one click, collapse
+   *  the three-row "expand-below / … / expand-above" UI into a
+   *  single combined button. STEP is the chunk size each
+   *  directional expand uses; a gap at or below that is fully
+   *  cleared by one expansion in either direction. */
+  function fillableGapAfter(i: number): boolean {
+    const g = gapAfter(i);
+    return g > 0 && g <= STEP;
+  }
+
+  /** Expand the entire (small) gap between hunks `i` and `i+1` in
+   *  one click. Adding the gap size to `i.below` is enough — the
+   *  clipping in `clippedExpansions` keeps the next hunk from
+   *  double-claiming any line. */
+  function expandGapAfter(i: number) {
+    const g = gapAfter(i);
+    if (g > 0) expand(i, 'below', g);
   }
 
   function expand(i: number, direction: 'above' | 'below', amount: number) {
@@ -1027,6 +1110,7 @@
         {editingCommentId}
         {lastVisitAt}
         {viewer}
+        {defaultThreadsCollapsed}
         {onreply}
         {onstatus}
         {ondelete}
@@ -1061,6 +1145,7 @@
         {editingCommentId}
         {lastVisitAt}
         {viewer}
+        {defaultThreadsCollapsed}
         {onreply}
         {onstatus}
         {ondelete}
@@ -1086,10 +1171,29 @@
     {#if lineCommentsSorted.length > 0}
       <ul class="compact-line-list">
         {#each lineCommentsSorted as c (c.comment_id)}
+          {@const ctx = contextLinesFor(c)}
           <li>
-            <div class="compact-line-marker">
-              <code>L{c.lines?.start}{c.lines && c.lines.end !== c.lines.start ? `–${c.lines.end}` : ''}</code>
-              <span class="muted">{c.side ?? ''}</span>
+            <div class="compact-context">
+              <header class="compact-context-head">
+                <code
+                  >L{c.lines?.start}{c.lines && c.lines.end !== c.lines.start
+                    ? `–${c.lines.end}`
+                    : ''}</code
+                >
+                <span class="muted">{c.side ?? ''}</span>
+                {#if ctx.note}<span class="muted">· {ctx.note}</span>{/if}
+              </header>
+              {#if ctx.lines.length > 0}
+                <div class="compact-context-body">
+                  {#each ctx.lines as line (line.lineNum)}
+                    <div class="compact-context-row origin-{line.origin}">
+                      <span class="ln">{line.lineNum}</span>
+                      <pre
+                        class="content">{#if line.html}{@html line.html}{:else}{line.text || ' '}{/if}</pre>
+                    </div>
+                  {/each}
+                </div>
+              {/if}
             </div>
             <CommentThread
               comments={[c]}
@@ -1099,6 +1203,7 @@
               {editingCommentId}
               {lastVisitAt}
               {viewer}
+              {defaultThreadsCollapsed}
               {onreply}
               {onstatus}
               {ondelete}
@@ -1123,7 +1228,15 @@
         <div class="hunks" bind:this={hunksEl}>
         {#each file.hunks as _, i (i)}
           {@const eh = withContext(file.hunks[i], i)}
-          {#if canExpand && !wholeFile && canExpandAbove(eh, i)}
+          <!-- When the gap above us is small enough to be filled by a
+               single click, the previous hunk renders a combined
+               "expand entire gap" row in place of its own expand-
+               below. Skip our expand-above here so we don't stack
+               two affordances for the same gap. -->
+          {@const combinedAbove = i > 0 && fillableGapAfter(i - 1)}
+          {@const combinedBelow =
+            i < file.hunks.length - 1 && fillableGapAfter(i)}
+          {#if canExpand && !wholeFile && !combinedAbove && canExpandAbove(eh, i)}
             <div class="expand-row above">
               <button
                 onclick={() => expand(i, 'above', STEP)}
@@ -1219,7 +1332,7 @@
               {onselectpatchset}
             />
           {/if}
-          {#if canExpand && !wholeFile && canExpandBelow(eh, i)}
+          {#if canExpand && !wholeFile && !combinedBelow && canExpandBelow(eh, i)}
             <div class="expand-row below">
               <button
                 onclick={() => expand(i, 'below', STEP)}
@@ -1249,7 +1362,46 @@
               </button>
             </div>
           {/if}
-          {#if i < file.hunks.length - 1 && !wholeFile && hasGapAfter(i)}
+          {#if combinedBelow}
+            <!-- Single combined "expand the entire gap" row that
+                 replaces the 3-row expand-below / … / expand-above
+                 stack when the gap is small enough to be filled by
+                 one click. -->
+            {@const gap = gapAfter(i)}
+            <div class="expand-row combined">
+              <button
+                onclick={() => expandGapAfter(i)}
+                disabled={tipLines == null}
+                aria-label="Show all {gap} hidden line{gap === 1 ? '' : 's'}"
+                title="Show all {gap} hidden line{gap === 1 ? '' : 's'}"
+              >
+                <!-- Combined "expand the whole gap" icon: same
+                     outward-pointing geometry as the
+                     expand-whole-file button — a center spine with
+                     arrows pushing away from it on both sides — so
+                     the two affordances read as members of the same
+                     family. -->
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.25"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                  focusable="false"
+                >
+                  <path d="M6 4 L8 1 L10 4" />
+                  <line x1="8" y1="1" x2="8" y2="6" />
+                  <line x1="2" y1="8" x2="14" y2="8" />
+                  <line x1="8" y1="10" x2="8" y2="15" />
+                  <path d="M6 12 L8 15 L10 12" />
+                </svg>
+              </button>
+            </div>
+          {:else if i < file.hunks.length - 1 && !wholeFile && hasGapAfter(i)}
             <div class="hunk-gap">…</div>
           {/if}
         {/each}
@@ -1467,20 +1619,79 @@
     border-top: none;
   }
 
-  .compact-line-marker {
+  /* Comments-only mode: show the code lines the comment anchors to
+   * directly above its thread, so the reader doesn't have to flip
+   * back to the diff to see what the comment is about. Bordered
+   * panel echoes the diff hunk's visual weight without competing
+   * with the inline diff. */
+  .compact-context {
+    margin-bottom: 6px;
+    border: 1px solid var(--border-muted);
+    border-radius: 4px;
+    background: var(--bg-panel);
+    overflow: hidden;
+  }
+
+  .compact-context-head {
     display: flex;
     align-items: baseline;
     gap: 8px;
-    margin-bottom: 4px;
-    font-size: 12px;
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--border-muted);
+    font-size: 11px;
   }
 
-  .compact-line-marker code {
+  .compact-context-head code {
     background: var(--bg-elevated);
     color: var(--text-muted);
     padding: 1px 6px;
     border-radius: 3px;
     font-size: 11px;
+  }
+
+  .compact-context-body {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12.5px;
+    line-height: 1.6;
+  }
+
+  /* Mini diff row — line number gutter on the left, content on the
+   * right. Origin-class tints match HunkLines so an added line on
+   * this view reads as the same colour as in the full diff. */
+  .compact-context-row {
+    display: grid;
+    grid-template-columns: 48px 1fr;
+    align-items: baseline;
+  }
+
+  .compact-context-row .ln {
+    padding: 0 8px;
+    text-align: right;
+    color: var(--text-faint);
+    user-select: none;
+    font-size: 11px;
+    border-right: 1px solid var(--border-muted);
+  }
+
+  .compact-context-row .content {
+    margin: 0;
+    padding: 0 8px;
+    white-space: pre;
+    overflow-x: auto;
+    font: inherit;
+  }
+
+  .compact-context-row.origin-added {
+    background: var(--add-bg);
+  }
+  .compact-context-row.origin-added .ln {
+    background: var(--add-bg-strong);
+  }
+  .compact-context-row.origin-removed {
+    background: var(--remove-bg);
+  }
+  .compact-context-row.origin-removed .ln {
+    background: var(--remove-bg-strong);
   }
 
   .hunks-wrapper {
