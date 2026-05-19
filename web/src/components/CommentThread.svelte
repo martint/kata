@@ -3,6 +3,7 @@
   import { copyText } from '../lib/clipboard';
   import { renderMarkdown } from '../lib/markdown';
   import { isThreadFolded, resolutionFor } from '../lib/resolution';
+  import { preserveScrollAnchor } from '../lib/scrollAnchor';
   import type { FoldStore } from '../lib/foldStore';
   import Chevron from './Chevron.svelte';
   import type {
@@ -191,10 +192,19 @@
     return isThreadFolded(commentId, responses, foldStore, defaultThreadsCollapsed);
   }
   function toggleFold(commentId: string) {
-    const next = !isFolded(commentId);
-    foldStore.set('comment', commentId, next);
-    localFoldVersion++;
-    foldVersionCtx?.bump();
+    // Wrap the fold flip in `preserveScrollAnchor` so a chevron
+    // click on a thread above (or below) the viewport doesn't
+    // shift what the user is currently reading. The helper
+    // captures the topmost visible element's screen-Y, flushes
+    // the state change through Svelte's tick, then re-aligns
+    // scroll so that element lands at the same Y again. See
+    // `lib/scrollAnchor.ts`.
+    void preserveScrollAnchor(() => {
+      const next = !isFolded(commentId);
+      foldStore.set('comment', commentId, next);
+      localFoldVersion++;
+      foldVersionCtx?.bump();
+    });
   }
 </script>
 

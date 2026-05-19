@@ -23,6 +23,7 @@
   import CommentThread from './CommentThread.svelte';
   import { computeHunkWordDiff, wrapRanges } from '../lib/wordDiff';
   import { alignBlock, alignedRows } from '../lib/hunkAlign';
+  import { preserveScrollAnchor } from '../lib/scrollAnchor';
 
   interface Props {
     /** Always a `RegularHunk` — conflict hunks render via a
@@ -129,8 +130,10 @@
   }
   function toggleFoldOne(id: string) {
     if (!foldStore) return;
-    foldStore.set('comment', id, !isFolded(id));
-    foldVersionCtx?.bump();
+    void preserveScrollAnchor(() => {
+      foldStore.set('comment', id, !isFolded(id));
+      foldVersionCtx?.bump();
+    });
   }
 
   /** All threads + notes anchored at this (side, line). */
@@ -476,14 +479,16 @@
     if (!foldStore) return;
     const entries = outdatedEntriesFor(side, line);
     const target = !allOutdatedFoldedAt(side, line);
-    for (const en of entries) {
-      foldStore.set(
-        'comment',
-        en.kind === 'comment' ? en.c.comment_id : en.n.annotation_id,
-        target,
-      );
-    }
-    foldVersionCtx?.bump();
+    void preserveScrollAnchor(() => {
+      for (const en of entries) {
+        foldStore.set(
+          'comment',
+          en.kind === 'comment' ? en.c.comment_id : en.n.annotation_id,
+          target,
+        );
+      }
+      foldVersionCtx?.bump();
+    });
   }
 
   function isCommented(side: Side, line: number | null | undefined): boolean {
@@ -574,14 +579,16 @@
       }
     }
     const target = anyExpanded;
-    for (const en of entries) {
-      foldStore.set(
-        'comment',
-        en.kind === 'comment' ? en.c.comment_id : en.n.annotation_id,
-        target,
-      );
-    }
-    foldVersionCtx?.bump();
+    void preserveScrollAnchor(() => {
+      for (const en of entries) {
+        foldStore.set(
+          'comment',
+          en.kind === 'comment' ? en.c.comment_id : en.n.annotation_id,
+          target,
+        );
+      }
+      foldVersionCtx?.bump();
+    });
   }
 
   function onPointerDown(e: PointerEvent, side: Side, line: number) {

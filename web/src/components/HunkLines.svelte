@@ -22,6 +22,7 @@
   import Chevron from './Chevron.svelte';
   import CommentThread from './CommentThread.svelte';
   import { computeHunkWordDiff, wrapRanges } from '../lib/wordDiff';
+  import { preserveScrollAnchor } from '../lib/scrollAnchor';
 
   interface Props {
     /** Always a `RegularHunk` — conflict hunks render via a
@@ -188,11 +189,17 @@
 
   /** Toggle fold of one item (annotation or thread) by id. Used by
    *  the per-bubble chevron on AnnotationBubble; CommentThread has
-   *  its own self-contained toggle for comment threads. */
+   *  its own self-contained toggle for comment threads.
+   *
+   *  Wrapped in `preserveScrollAnchor` so the chevron click — which
+   *  may target an item above the current viewport — doesn't shift
+   *  what the user is reading. */
   function toggleFoldOne(id: string) {
     if (!foldStore) return;
-    foldStore.set('comment', id, !isFolded(id));
-    foldVersionCtx?.bump();
+    void preserveScrollAnchor(() => {
+      foldStore.set('comment', id, !isFolded(id));
+      foldVersionCtx?.bump();
+    });
   }
 
   /** Aggregate anchor range covered by the threads/notes at this
@@ -567,10 +574,12 @@
     if (!foldStore) return;
     const entries = outdatedEntriesFor(a);
     const target = !allOutdatedFoldedAt(a);
-    for (const e of entries) {
-      foldStore.set('comment', idOf(e), target);
-    }
-    foldVersionCtx?.bump();
+    void preserveScrollAnchor(() => {
+      for (const e of entries) {
+        foldStore.set('comment', idOf(e), target);
+      }
+      foldVersionCtx?.bump();
+    });
   }
 
   function isCommented(a: { side: Side; line: number } | null): boolean {
@@ -668,10 +677,12 @@
       }
     }
     const target = anyExpanded;
-    for (const e of entries) {
-      foldStore.set('comment', idOf(e), target);
-    }
-    foldVersionCtx?.bump();
+    void preserveScrollAnchor(() => {
+      for (const e of entries) {
+        foldStore.set('comment', idOf(e), target);
+      }
+      foldVersionCtx?.bump();
+    });
   }
 
   function onPointerDown(e: PointerEvent, side: Side, line: number) {

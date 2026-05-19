@@ -24,6 +24,7 @@
   import { diffSelectionFor, type DiffSelection } from '../lib/diffSelection';
   import { buildCopyText } from '../lib/diffCopy';
   import { installSelectionClamp } from '../lib/selectionClamp';
+  import { preserveScrollAnchor } from '../lib/scrollAnchor';
   import Bubble from './Bubble.svelte';
   import Chevron from './Chevron.svelte';
   import CommentComposer from './CommentComposer.svelte';
@@ -1730,7 +1731,10 @@
       <button
         class="toggle"
         aria-label={collapsed ? 'expand' : 'collapse'}
-        onclick={() => (collapsed = !collapsed)}
+        onclick={() =>
+          void preserveScrollAnchor(() => {
+            collapsed = !collapsed;
+          })}
         data-tour="file-fold"
       >
         {collapsed ? '▸' : '▾'}
