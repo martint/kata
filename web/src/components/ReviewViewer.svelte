@@ -23,6 +23,7 @@
   import { setTokenizationPaused } from '../lib/highlight.svelte';
   import { resolutionFor } from '../lib/resolution';
   import { createFoldStore, type FoldStore } from '../lib/foldStore';
+  import { parseLineRangeHash } from '../lib/linkHash';
   import Chevron from './Chevron.svelte';
   import CommitsPanel from './CommitsPanel.svelte';
   import FileSlot from './FileSlot.svelte';
@@ -1709,6 +1710,12 @@
     } else if (hash.startsWith('#file-')) {
       const path = decodeURIComponent(hash.slice(6));
       void scrollToFile(path);
+    } else if (hash.startsWith('#L:')) {
+      // Line-range permalink: `#L:<file>:<side>:<startLine>[-<endLine>]`.
+      // Produced by SelectionPopup's "Copy permalink" button.
+      const link = parseLineRangeHash(hash);
+      if (!link) return;
+      void scrollToLineRange(link.file, link.side, link.startLine);
     }
   }
 
@@ -2044,6 +2051,61 @@
   function scrollTopOf(el: HTMLElement): void {
     const target = el.getBoundingClientRect().top + window.scrollY - stickyTop();
     window.scrollTo({ top: Math.max(0, target), behavior: 'auto' });
+  }
+
+  /** Scroll a specific diff row into view. Used by the `#L:` permalink
+   *  handler — locates the row by its `data-side` + `data-line`
+   *  attributes (both `.ln` and `.content` cells carry these so
+   *  picking either matches), mounting the file slot first if it's
+   *  been virtualized away. Mirrors `scrollToComment`'s mount-wait
+   *  pattern so a link landing on a far-away file still works after
+   *  the slot's diff fetch resolves and the layout re-flows. */
+  async function scrollToLineRange(
+    path: string,
+    side: 'base' | 'tip',
+    line: number,
+  ) {
+    const lineSel = `[data-side="${side}"][data-line="${line}"]`;
+    let row = document.querySelector(lineSel) as HTMLElement | null;
+    if (!row) {
+      // Mount the file's slot, then poll for the row to appear.
+      const slot = document.querySelector(
+        `[data-file-path="${CSS.escape(path)}"]`,
+      ) as HTMLElement | null;
+      if (!slot) return;
+      scrollTopOf(slot);
+      const deadline = performance.now() + 10000;
+      while (!row && performance.now() < deadline) {
+        await new Promise((r) => requestAnimationFrame(r));
+        row = document.querySelector(lineSel) as HTMLElement | null;
+      }
+      if (!row) return;
+    }
+    if (
+      typeof window !== 'undefined' &&
+      window.matchMedia('(max-width: 640px)').matches
+    ) {
+      treeCollapsed = true;
+    }
+    scrollTopOf(row);
+    // Stabilization loop: as virtualized slots above the row mount in,
+    // the document re-flows and the row drifts. Re-aim until the row
+    // is at a stable position.
+    let stableFrames = 0;
+    let lastTop = Number.NaN;
+    for (let i = 0; i < 30 && stableFrames < 3; i++) {
+      await new Promise((r) => requestAnimationFrame(r));
+      const cur = document.querySelector(lineSel) as HTMLElement | null;
+      if (!cur) return;
+      const top = cur.getBoundingClientRect().top;
+      if (Number.isFinite(lastTop) && Math.abs(top - lastTop) < 0.5) {
+        stableFrames++;
+      } else {
+        stableFrames = 0;
+        scrollTopOf(cur);
+      }
+      lastTop = top;
+    }
   }
 
   async function scrollToFile(path: string) {
