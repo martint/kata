@@ -11,6 +11,7 @@
   } from './lib/types';
   import Chevron from './components/Chevron.svelte';
   import ReviewList from './components/ReviewList.svelte';
+  import ReviewSearch from './components/ReviewSearch.svelte';
   import ReviewViewer, { type ReviewToolbarState } from './components/ReviewViewer.svelte';
   import DemoOverlay from './demo/DemoOverlay.svelte';
 
@@ -518,6 +519,21 @@
            the nav or hint disappears (no comments, filter not empty),
            only the elements between the title spacer and the chips
            shift — the chips themselves keep their position. -->
+      {#if toolbar.search}
+        {@const s = toolbar.search}
+        <ReviewSearch
+          open={s.open}
+          query={s.query}
+          total={s.total}
+          position={s.position}
+          loading={s.loading}
+          onqueryInput={s.onQueryInput}
+          onnext={s.onNext}
+          onprev={s.onPrev}
+          onopen={s.onOpen}
+          onclose={s.onClose}
+        />
+      {/if}
       {#if toolbar.comments}
         {@const c = toolbar.comments}
         <div

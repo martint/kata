@@ -797,3 +797,31 @@ input[type='text'] {
 body.dragging-in-diff .file-header .path {
   user-select: none;
 }
+
+/* In-app search match highlighting. Two tints layered: `.search-match`
+ * paints every match in the active query a calm yellow; `.search-
+ * match-current` paints the focused result a stronger orange so the
+ * user's eye lands on the one prev/next walks to. Both render via
+ * `<span>` wrappers (search-engine + `wrapRanges`) injected into the
+ * line / comment / annotation HTML, so they inherit the underlying
+ * syntax-highlight colour rather than fighting it. */
+.search-match {
+  background: rgba(255, 220, 0, 0.4);
+  border-radius: 2px;
+}
+.search-match-current {
+  background: rgba(255, 150, 0, 0.7);
+  border-radius: 2px;
+  outline: 1px solid rgba(255, 150, 0, 0.9);
+}
+/* Dark-palette tweaks so the highlight reads on a dark background
+ * without burning the reader's retinas. */
+@media (prefers-color-scheme: dark) {
+  .search-match {
+    background: rgba(255, 220, 0, 0.28);
+  }
+  .search-match-current {
+    background: rgba(255, 150, 0, 0.5);
+    outline-color: rgba(255, 150, 0, 0.8);
+  }
+}

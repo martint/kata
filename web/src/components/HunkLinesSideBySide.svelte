@@ -24,6 +24,15 @@
   import { computeHunkWordDiff, wrapRanges } from '../lib/wordDiff';
   import { alignBlock, alignedRows } from '../lib/hunkAlign';
   import { preserveScrollAnchor } from '../lib/scrollAnchor';
+  import type { SearchMatch } from '../lib/search';
+
+  /** See HunkLines.svelte — same context shape. Wrapped accessors so
+   *  reads stay reactive across Svelte 5's plain-value context. */
+  interface SearchContext {
+    matches: () => readonly SearchMatch[];
+    currentMatch: () => SearchMatch | null;
+  }
+  const searchCtx = getContext<SearchContext | undefined>('kata-search');
 
   interface Props {
     /** Always a `RegularHunk` — conflict hunks render via a
@@ -686,7 +695,16 @@
       line.origin === 'removed' ? 'base' : line.tip_line != null ? 'tip' : 'base';
     const lineNum = side === 'base' ? line.base_line : line.tip_line;
     const cols = lineNum != null ? columnAnchorsFor(side, lineNum) : [];
-    if (!html && !wd && cols.length === 0) return html;
+    const searchOther = lineNum != null ? searchMatchesForLine(side, lineNum, false) : [];
+    const searchCurrent = lineNum != null ? searchMatchesForLine(side, lineNum, true) : [];
+    if (
+      !html &&
+      !wd &&
+      cols.length === 0 &&
+      searchOther.length === 0 &&
+      searchCurrent.length === 0
+    )
+      return html;
     // See HunkLines.svelte — fall through with escaped plain text
     // when there's a wrap to apply but syntax-highlighted HTML isn't
     // ready, so the in-progress composer's column anchor still
@@ -694,7 +712,39 @@
     let out = html ?? escapeHtml(line.content.replace(/\n$/, ''));
     if (wd) out = wrapRanges(out, wd.ranges, `wd-${wd.kind}`);
     if (cols.length > 0) out = wrapRanges(out, cols, 'column-anchor');
+    if (searchOther.length > 0) out = wrapRanges(out, searchOther, 'search-match');
+    if (searchCurrent.length > 0) out = wrapRanges(out, searchCurrent, 'search-match-current');
     return out;
+  }
+
+  /** See HunkLines.svelte — same shape, plus the `side` parameter
+   *  because SBS renders left and right cells separately and the
+   *  match's side determines which cell gets the highlight. */
+  function searchMatchesForLine(
+    side: Side,
+    lineNum: number,
+    current: boolean,
+  ): { start: number; end: number }[] {
+    if (!searchCtx) return [];
+    const cur = searchCtx.currentMatch();
+    const all = searchCtx.matches();
+    const ranges: { start: number; end: number }[] = [];
+    for (const m of all) {
+      if (m.kind !== 'line') continue;
+      if (m.file !== filePath) continue;
+      if (m.side !== side) continue;
+      if (m.line !== lineNum) continue;
+      const isCurrent =
+        cur != null &&
+        cur.kind === 'line' &&
+        cur.file === m.file &&
+        cur.side === m.side &&
+        cur.line === m.line &&
+        cur.matchStart === m.matchStart;
+      if (isCurrent !== current) continue;
+      ranges.push({ start: m.matchStart, end: m.matchEnd });
+    }
+    return ranges;
   }
 
   function escapeHtml(s: string): string {

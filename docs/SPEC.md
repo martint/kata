@@ -214,6 +214,8 @@ Row two appears only on a review and carries review-scoped state:
 - Review number + name, plus an **Archived** pill if archived.
 - **Patchset** picker (left) and **compared to** picker (right) —
   present only when the review has more than one patchset.
+- **Search**: a 🔍 button that expands to a Cmd+F-style strip
+  for in-review search. `/` opens; see §12.5.
 - **Comment navigation**: `← position/total →` for stepping through
   every comment in reading order.
 - **Filter chips**: status (draft / open / resolved) and severity
@@ -701,6 +703,55 @@ resolution would otherwise have it fold — the override is one of
 the system's strongest defaults, on the theory that a fresh
 response should never be hidden from the author of the original
 comment.
+
+### 12.5 Search
+
+The browser's built-in `Ctrl/Cmd+F` doesn't see most of a review
+— files outside the viewport are virtualised (their content isn't
+in the DOM) and file-fold collapses hide content even on the
+file the reader is looking at. Kata replaces it with an in-app
+search that knows the review's structure.
+
+The search bar lives in the row-2 header, between the patchset
+picker and the comment-nav cluster. Press **`/`** anywhere on
+the review page (outside an input or composer) to open it, or
+click the 🔍 button. **Esc** closes; **Enter** walks to the next
+match, **Shift+Enter** (or the chevron arrows) to the previous.
+
+The match counter on the right of the input shows `M of N` —
+the position of the current match in the result list, and the
+total. Empty query: blank. No matches: "no matches". Background
+loading on first open: "loading…" until every text file's hunks
+have been force-fetched, so the result list is complete from the
+first keystroke rather than growing as the user scrolls.
+
+Search scope (v1):
+- **Diff lines** in every loaded file's hunks (regular hunks
+  only; conflict regions are out of scope for the substring
+  match, but the conflict badge already surfaces them).
+- **Comment bodies** — both published and the viewer's own
+  drafts, so a reviewer can find their in-progress text.
+- **Annotation bodies** — author notes.
+
+Results are ordered by reading position: each file's diff
+matches come first, followed by comments and annotations
+anchored to that file (ordered by line). Review-wide comments
+land at the end.
+
+Navigation jumps the page to the current match: the diff scrolls
+the matched line just under the sticky header, expanding the
+file's fold if collapsed; for a comment or annotation, the
+relevant thread bubble scrolls into view. Matched substrings on
+diff lines are wrapped with a subtle yellow tint, with a
+brighter outlined tint on the currently-focused match.
+Comment / annotation matches tint the entire bubble (the
+in-body markdown rendering doesn't preserve raw-text offsets
+cleanly enough for substring-precision; the wrapper tint
+conveys "this one matches" and pairs with the scroll-to-match).
+
+Out of scope for v1: regex, case-sensitive toggle, scope filter
+chips (diff vs. comments only), file-path filter, file-tree
+match-count badges.
 
 ---
 

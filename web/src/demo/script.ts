@@ -10,7 +10,7 @@
 //!   3. Add a new `TourStep` here, in a position that respects the
 //!      script's narrative flow (start → list → review chrome →
 //!      diff → comments → annotations → folding → top-bar
-//!      filters → done).
+//!      filters / search / nav → done).
 //!
 //! Adding a step that points at content the demo seed doesn't
 //! produce is a bug — the spotlight will sit on an empty page. If
@@ -173,6 +173,20 @@ export const tour: TourStep[] = [
       "your attention.",
   },
   {
+    id: 'search',
+    target: '[data-tour=search]',
+    placement: 'bottom',
+    title: 'Search the whole review',
+    body:
+      "Press / (or click 🔍) to open a Cmd+F-style search that runs " +
+      "across every diff line, comment body, and annotation in the " +
+      "review — including files outside the viewport, which the " +
+      "browser's own find misses because they aren't in the DOM. " +
+      "Enter walks to the next match, Shift+Enter to the previous; " +
+      "matches in code are highlighted in place, matches in " +
+      "comments tint the whole bubble.",
+  },
+  {
     id: 'comment-nav',
     target: '[data-tour=comment-nav]',
     placement: 'bottom',
@@ -200,7 +214,7 @@ export const tour: TourStep[] = [
     title: "That's it for the tour",
     body:
       "You've seen the main moving parts: reviews, patchsets, the " +
-      "diff, threads, annotations, folding, filtering, and " +
+      "diff, threads, annotations, folding, filtering, search, and " +
       "navigation. Poke around — everything you saw is real data " +
       "the demo wrote through the normal service APIs. Hit Done to " +
       "leave the tour.",

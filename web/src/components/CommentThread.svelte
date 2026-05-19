@@ -5,6 +5,33 @@
   import { isThreadFolded, resolutionFor } from '../lib/resolution';
   import { preserveScrollAnchor } from '../lib/scrollAnchor';
   import type { FoldStore } from '../lib/foldStore';
+  import type { SearchMatch } from '../lib/search';
+
+  /** See HunkLines.svelte — reactive accessors for the in-app
+   *  search state. Optional because tests render CommentThread
+   *  standalone without the ReviewViewer wrapper. */
+  interface SearchContext {
+    matches: () => readonly SearchMatch[];
+    currentMatch: () => SearchMatch | null;
+  }
+  const searchCtx = getContext<SearchContext | undefined>('kata-search');
+
+  /** Does any match's `comment_id` equal this comment? Used to
+   *  tint the whole `<li>` so the reader's eye lands on the
+   *  comments that contain the query. */
+  function searchHasComment(commentId: string): boolean {
+    if (!searchCtx) return false;
+    for (const m of searchCtx.matches()) {
+      if (m.kind === 'comment' && m.comment_id === commentId) return true;
+    }
+    return false;
+  }
+
+  function searchIsCurrentComment(commentId: string): boolean {
+    if (!searchCtx) return false;
+    const cur = searchCtx.currentMatch();
+    return cur != null && cur.kind === 'comment' && cur.comment_id === commentId;
+  }
   import Chevron from './Chevron.svelte';
   import type {
     AnchorView,
@@ -224,10 +251,14 @@
          force-expand so a fresh response can't hide behind a fold
          the resolver set. -->
     {@const collapsed = isFolded(c.comment_id) && !unread}
+    {@const hasSearchMatch = searchHasComment(c.comment_id)}
+    {@const isCurrentSearchMatch = searchIsCurrentComment(c.comment_id)}
     <li
       class="comment {c.draft ? 'draft' : ''} {c.anchor.kind === 'outdated'
         ? 'outdated'
-        : ''} {collapsed ? 'collapsed' : ''} {unread ? 'unread' : ''}"
+        : ''} {collapsed ? 'collapsed' : ''} {unread ? 'unread' : ''} {hasSearchMatch
+        ? 'has-search-match'
+        : ''} {isCurrentSearchMatch ? 'is-current-search-match' : ''}"
       data-comment-id={c.comment_id}
     >
       <header>
@@ -445,6 +476,21 @@
   .comment.outdated {
     opacity: 0.85;
     border-style: dashed;
+  }
+
+  /* Search-match tint on the whole comment. Comment bodies are
+   * rendered markdown (entity-escaped, possibly with inline tags)
+   * so the per-character `<mark>` injection that works on diff
+   * lines doesn't translate; tinting the wrapper conveys "this
+   * comment matches" while leaving the body itself readable. The
+   * active-match variant gets a sharper outline so prev/next can
+   * land somewhere visible. */
+  .comment.has-search-match {
+    background: rgba(255, 220, 0, 0.18);
+  }
+  .comment.is-current-search-match {
+    box-shadow: inset 3px 0 0 rgba(255, 150, 0, 0.9);
+    background: rgba(255, 220, 0, 0.28);
   }
 
   /* Default-folded peek at the lines the comment was originally

@@ -24,6 +24,7 @@
   import { resolutionFor } from '../lib/resolution';
   import { createFoldStore, type FoldStore } from '../lib/foldStore';
   import { parseLineRangeHash } from '../lib/linkHash';
+  import { searchReview, type SearchMatch } from '../lib/search';
   import {
     annotationComposerSurvivesPatchset,
     composerSurvivesPatchset,
@@ -133,6 +134,24 @@
     /** File-tree visibility. The top bar surfaces this so phones can
      *  toggle the drawer-style tree without scrolling. */
     tree: { collapsed: boolean; toggle: () => void };
+    /** Cmd+F-style in-app search across diff lines, comments, and
+     *  annotations. The shell renders the icon button when `open`
+     *  is false, the expanded strip when true. State + callbacks
+     *  all live here so the search engine and the match navigation
+     *  stay co-located with the rest of the review's reactive
+     *  state. */
+    search: {
+      open: boolean;
+      query: string;
+      total: number;
+      position: number;
+      loading: boolean;
+      onQueryInput: (q: string) => void;
+      onNext: () => void;
+      onPrev: () => void;
+      onOpen: () => void;
+      onClose: () => void;
+    };
   }
 
   interface Props {
@@ -431,6 +450,203 @@
     } else {
       await rescrollNavComment();
     }
+  }
+
+  // ---- In-app search ----------------------------------------------
+  //
+  // Cmd+F-style search across the review's diff text, comment bodies,
+  // and annotation bodies. The data side lives in `lib/search.ts`;
+  // this component owns the state, the force-load that makes lazy
+  // files searchable, the prev/next walk, and the scroll-to-match.
+  // The actual rendering of the matched substring is in HunkLines /
+  // HunkLinesSideBySide / CommentThread / AnnotationBubble, which
+  // read the active match info from the `kata-search` context
+  // provided below.
+  let searchOpen = $state(false);
+  let searchQuery = $state('');
+  let searchLoading = $state(false);
+  /** 1-based index of the currently-focused match. 0 means "no
+   *  selection" (either no query or zero matches). The 1-based
+   *  shape matches what the toolbar UI displays ("M of N") and
+   *  what the comment-nav `position` field already uses, so the
+   *  shell doesn't have to do arithmetic. */
+  let searchPosition = $state(0);
+
+  /** Build the search source from the resolved-via-cache file list
+   *  plus comments + annotations. Comment / annotation lists are
+   *  pre-merged published + drafts so the user finds their own
+   *  unpublished text — they're the most likely thing to look for
+   *  while drafting a follow-up reply. */
+  const searchSource = $derived.by(() => {
+    const resolvedFiles = current.diff.files.map((f) => {
+      const key = compareWith != null
+        ? `${selectedPatchset}|${compareWith}|${f.path}`
+        : `${selectedPatchset}||${f.path}`;
+      return fileDiffCache.get(key) ?? f;
+    });
+    const allComments = [
+      ...current.comments,
+      ...current.drafts.comments,
+    ];
+    return {
+      files: resolvedFiles,
+      comments: allComments,
+      annotations: current.annotations ?? [],
+    };
+  });
+
+  const searchMatches: SearchMatch[] = $derived(
+    searchOpen ? searchReview(searchQuery, searchSource) : [],
+  );
+
+  const currentSearchMatch: SearchMatch | null = $derived(
+    searchPosition > 0 && searchPosition <= searchMatches.length
+      ? searchMatches[searchPosition - 1]
+      : null,
+  );
+
+  // Expose the active search state to descendants so the renderers
+  // (HunkLines / CommentThread / AnnotationBubble) can decide whether
+  // a given cell or comment body has a highlight to draw without
+  // each one having to be prop-drilled. The `currentMatch` reactive
+  // accessor is read by leaf components; Svelte 5's context is
+  // a plain getter, so wrapping in a function keeps it reactive.
+  setContext('kata-search', {
+    query: () => searchQuery,
+    matches: () => searchMatches,
+    currentMatch: () => currentSearchMatch,
+  });
+
+  /** Reset the position when the query changes; keep it on the
+   *  first match (1) if any matches were found, else 0. */
+  $effect(() => {
+    // Read both query and total so the effect re-runs on either.
+    const q = searchQuery;
+    const total = searchMatches.length;
+    if (q.length === 0 || total === 0) {
+      searchPosition = 0;
+      return;
+    }
+    if (searchPosition === 0) {
+      searchPosition = 1;
+    } else if (searchPosition > total) {
+      searchPosition = total;
+    }
+  });
+
+  /** Reactively jump to the current match whenever it changes —
+   *  via typing a new query, walking next/prev, or the
+   *  `searchOpen` flip restoring a stored query.
+   *
+   *  Wrapped in `tick()` so the file's hunks finish rendering
+   *  before we try to scroll to a `[data-comment-id]` /
+   *  `[data-line]` that might have just been mounted. */
+  $effect(() => {
+    const m = currentSearchMatch;
+    if (!m) return;
+    void (async () => {
+      await tick();
+      jumpToMatch(m);
+    })();
+  });
+
+  function jumpToMatch(m: SearchMatch) {
+    let el: HTMLElement | null = null;
+    if (m.kind === 'line') {
+      // Find any visible cell whose (side, line) matches; SBS
+      // emits two cells per line so we just pick the first.
+      el = document.querySelector<HTMLElement>(
+        `[data-side="${m.side}"][data-line="${m.line}"]`,
+      );
+    } else if (m.kind === 'comment') {
+      el = document.querySelector<HTMLElement>(
+        `[data-comment-id="${CSS.escape(m.comment_id)}"]`,
+      );
+    } else if (m.kind === 'annotation') {
+      el = document.querySelector<HTMLElement>(
+        `[data-annotation-id="${CSS.escape(m.annotation_id)}"]`,
+      );
+    }
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const headerBottom =
+      document.querySelector<HTMLElement>('header.app')
+        ?.getBoundingClientRect().bottom ?? 0;
+    // Smooth scroll so the user sees the page move — "the match
+    // is over here" reads better than an instant teleport.
+    const target = rect.top + window.scrollY - headerBottom - 16;
+    window.scrollTo({ top: Math.max(0, target), behavior: 'smooth' });
+  }
+
+  /** Force-load every text file's hunks so the search source has
+   *  full coverage. Binary files and already-loaded files are
+   *  skipped; the rest fire `api.fileDiff` in parallel and land in
+   *  `fileDiffCache` (which the search source reads via
+   *  `searchSource`). The user sees "loading…" in the search
+   *  counter until they all complete. */
+  async function forceLoadAllFilesForSearch(): Promise<void> {
+    const needed: { key: string; path: string }[] = [];
+    for (const f of current.diff.files) {
+      if (f.binary) continue;
+      if (f.hunks != null) continue;
+      const key = compareWith != null
+        ? `${selectedPatchset}|${compareWith}|${f.path}`
+        : `${selectedPatchset}||${f.path}`;
+      if (fileDiffCache.has(key)) continue;
+      needed.push({ key, path: f.path });
+    }
+    if (needed.length === 0) return;
+    searchLoading = true;
+    try {
+      await Promise.all(
+        needed.map(async ({ key, path }) => {
+          try {
+            const updated = await api.fileDiff(
+              repo,
+              current.manifest.number,
+              path,
+              selectedPatchset,
+              compareWith ?? undefined,
+            );
+            fileDiffCache.set(key, updated);
+          } catch {
+            // Best-effort: a single file failing shouldn't block the
+            // rest of the search. The file simply won't contribute
+            // matches.
+          }
+        }),
+      );
+    } finally {
+      searchLoading = false;
+    }
+  }
+
+  function openSearch() {
+    if (searchOpen) return;
+    searchOpen = true;
+    void forceLoadAllFilesForSearch();
+  }
+
+  function closeSearch() {
+    searchOpen = false;
+    searchQuery = '';
+    searchPosition = 0;
+  }
+
+  function setSearchQuery(q: string) {
+    searchQuery = q;
+  }
+
+  function searchNext() {
+    const total = searchMatches.length;
+    if (total === 0) return;
+    searchPosition = searchPosition >= total ? 1 : searchPosition + 1;
+  }
+
+  function searchPrev() {
+    const total = searchMatches.length;
+    if (total === 0) return;
+    searchPosition = searchPosition <= 1 ? total : searchPosition - 1;
   }
   /** Find the topmost diff content cell that's at least partially
    *  visible below the sticky app header. Returns the element + its
@@ -985,6 +1201,18 @@
       tree: {
         collapsed: treeCollapsed,
         toggle: () => (treeCollapsed = !treeCollapsed),
+      },
+      search: {
+        open: searchOpen,
+        query: searchQuery,
+        total: searchMatches.length,
+        position: searchPosition,
+        loading: searchLoading,
+        onQueryInput: setSearchQuery,
+        onNext: searchNext,
+        onPrev: searchPrev,
+        onOpen: openSearch,
+        onClose: closeSearch,
       },
     });
   });
@@ -1798,6 +2026,46 @@
       }
     }),
   );
+
+  /** Global keyboard shortcuts for the in-app search:
+   *  - `/` (anywhere outside an input / textarea / contenteditable)
+   *    opens the search bar and focuses its input.
+   *  - `Esc` (when the search is open) closes it.
+   *
+   *  Editable-target detection keeps the `/` shortcut from
+   *  hijacking the keystroke while the user is typing inside a
+   *  comment composer or any other input. */
+  onMount(() => {
+    function isEditableTarget(t: EventTarget | null): boolean {
+      const el = t as HTMLElement | null;
+      if (!el) return false;
+      const tag = el.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+      if (el.isContentEditable) return true;
+      return false;
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === '/' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        if (isEditableTarget(e.target)) return;
+        e.preventDefault();
+        openSearch();
+      } else if (e.key === 'Escape' && searchOpen) {
+        // Don't close on Esc while a composer / input is focused;
+        // that key is reserved for whatever the focused control
+        // wants to do with it.
+        if (isEditableTarget(e.target)) {
+          // …unless the focused thing is the search input itself,
+          // which is the case we DO want Esc to close from.
+          const el = e.target as HTMLElement | null;
+          if (!el?.classList?.contains?.('search-input')) return;
+        }
+        e.preventDefault();
+        closeSearch();
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
 
   /** Hash-routed scroll jumps. Two flavours:
    *  - `#c-<commentId>` for comment permalinks (Copy-Link button, or

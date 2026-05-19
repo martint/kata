@@ -23,6 +23,17 @@
   import CommentThread from './CommentThread.svelte';
   import { computeHunkWordDiff, wrapRanges } from '../lib/wordDiff';
   import { preserveScrollAnchor } from '../lib/scrollAnchor';
+  import type { SearchMatch } from '../lib/search';
+
+  /** Search-state accessors exposed by ReviewViewer via context.
+   *  Wrapped in functions so reads stay reactive — Svelte 5's
+   *  setContext stores values, not signals, so the parent has to
+   *  hand us reactive accessor closures. */
+  interface SearchContext {
+    matches: () => readonly SearchMatch[];
+    currentMatch: () => SearchMatch | null;
+  }
+  const searchCtx = getContext<SearchContext | undefined>('kata-search');
 
   interface Props {
     /** Always a `RegularHunk` — conflict hunks render via a
@@ -312,15 +323,19 @@
     const wd = wordDiff.get(idx);
     const a = anchor(line);
     const cols = a ? columnAnchorsFor(a) : [];
+    const searchOther = searchMatchesForLine(line, false);
+    const searchCurrent = searchMatchesForLine(line, true);
     // No highlighting from any source → caller renders plain text.
-    if (!base && !wd && cols.length === 0) return base;
-    // Need to wrap (word-diff or column-anchor) but the renderer hasn't
-    // produced syntax-highlighted HTML for this line yet (or never
-    // will — binary file, unsupported language). Use escaped plain
-    // text as the base so the wrap has something to apply against;
-    // otherwise the column-anchor wouldn't visualize the in-progress
-    // composer's range during the compose step and the reviewer
-    // would briefly lose sight of what they're commenting on.
+    if (!base && !wd && cols.length === 0 && searchOther.length === 0 && searchCurrent.length === 0)
+      return base;
+    // Need to wrap (word-diff or column-anchor or search-match) but
+    // the renderer hasn't produced syntax-highlighted HTML for this
+    // line yet (or never will — binary file, unsupported language).
+    // Use escaped plain text as the base so the wrap has something
+    // to apply against; otherwise the column-anchor wouldn't
+    // visualize the in-progress composer's range during the
+    // compose step and the reviewer would briefly lose sight of
+    // what they're commenting on.
     if (!base) base = escapeHtml(line.content.replace(/\n$/, ''));
     if (wd) {
       base = wrapRanges(base, wd.ranges, `wd-${wd.kind}`);
@@ -328,7 +343,53 @@
     if (cols.length > 0) {
       base = wrapRanges(base, cols, 'column-anchor');
     }
+    // Search highlights last so the `<mark>` paints over any
+    // word-diff or column-anchor tint on the matched substring —
+    // the user looking at search results expects the matched bytes
+    // to stand out regardless of what else is going on with the
+    // line.
+    if (searchOther.length > 0) {
+      base = wrapRanges(base, searchOther, 'search-match');
+    }
+    if (searchCurrent.length > 0) {
+      base = wrapRanges(base, searchCurrent, 'search-match-current');
+    }
     return base;
+  }
+
+  /** Search-match ranges that apply to `line`. With `current=true`,
+   *  returns only the ranges for the currently-focused match (used
+   *  for the stronger emphasis tint); with `current=false`, the
+   *  ranges for every OTHER match on this line. Splitting the two
+   *  buckets means the renderer can layer them independently and
+   *  the active one always reads brighter, even when several
+   *  matches are crammed into the same line.
+   *
+   *  Returns `[]` when no search is active, when this line carries
+   *  no matches, or when the search context isn't provided (test
+   *  harnesses render HunkLines standalone — the search system
+   *  doesn't apply there). */
+  function searchMatchesForLine(line: HunkLine, current: boolean): { start: number; end: number }[] {
+    if (!searchCtx) return [];
+    const cur = searchCtx.currentMatch();
+    const all = searchCtx.matches();
+    const ranges: { start: number; end: number }[] = [];
+    for (const m of all) {
+      if (m.kind !== 'line') continue;
+      if (m.file !== filePath) continue;
+      const lineNum = m.side === 'tip' ? line.tip_line : line.base_line;
+      if (lineNum == null || lineNum !== m.line) continue;
+      const isCurrent =
+        cur != null &&
+        cur.kind === 'line' &&
+        cur.file === m.file &&
+        cur.side === m.side &&
+        cur.line === m.line &&
+        cur.matchStart === m.matchStart;
+      if (isCurrent !== current) continue;
+      ranges.push({ start: m.matchStart, end: m.matchEnd });
+    }
+    return ranges;
   }
 
   function escapeHtml(s: string): string {

@@ -9,10 +9,21 @@
   //! no draft/state badges. Edit and delete affordances ship in a
   //! follow-up commit; this is display-only.
 
+  import { getContext } from 'svelte';
+
   import { copyText } from '../lib/clipboard';
   import { renderMarkdown } from '../lib/markdown';
   import type { AnnotationView } from '../lib/types';
+  import type { SearchMatch } from '../lib/search';
   import Chevron from './Chevron.svelte';
+
+  /** Reactive search-state accessors set up by ReviewViewer.
+   *  Optional so this component still works in standalone tests. */
+  interface SearchContext {
+    matches: () => readonly SearchMatch[];
+    currentMatch: () => SearchMatch | null;
+  }
+  const searchCtx = getContext<SearchContext | undefined>('kata-search');
 
   interface Props {
     annotation: AnnotationView;
@@ -72,11 +83,34 @@
     u.hash = `n-${encodeURIComponent(annotationId)}`;
     return u.toString();
   }
+
+  /** True iff the active search has at least one match in this
+   *  annotation's body. Tints the wrapper so the reader's eye
+   *  lands on annotations that contain the query. */
+  function hasSearchMatch(): boolean {
+    if (!searchCtx) return false;
+    for (const m of searchCtx.matches()) {
+      if (m.kind === 'annotation' && m.annotation_id === annotation.annotation_id) return true;
+    }
+    return false;
+  }
+
+  function isCurrentSearchMatch(): boolean {
+    if (!searchCtx) return false;
+    const cur = searchCtx.currentMatch();
+    return (
+      cur != null &&
+      cur.kind === 'annotation' &&
+      cur.annotation_id === annotation.annotation_id
+    );
+  }
 </script>
 
 <div
   class="annotation"
   class:collapsed={folded}
+  class:has-search-match={hasSearchMatch()}
+  class:is-current-search-match={isCurrentSearchMatch()}
   data-annotation-id={annotation.annotation_id}
   data-tour="annotation"
 >
@@ -161,6 +195,23 @@
     color: var(--text);
     /* 3-px left accent stripe; same trick `.comment.unread` uses. */
     box-shadow: inset 3px 0 0 var(--attention-border);
+  }
+
+  /* Search-match wrapper tints — see CommentThread for the
+   * rationale. The annotation already has an amber background, so
+   * the search tint sits on top as an overlay rather than
+   * replacing the palette. */
+  .annotation.has-search-match {
+    background:
+      linear-gradient(rgba(255, 220, 0, 0.18), rgba(255, 220, 0, 0.18)),
+      var(--attention-bg);
+  }
+  .annotation.is-current-search-match {
+    background:
+      linear-gradient(rgba(255, 220, 0, 0.28), rgba(255, 220, 0, 0.28)),
+      var(--attention-bg);
+    outline: 1px solid rgba(255, 150, 0, 0.9);
+    outline-offset: -1px;
   }
 
   .annotation header {
