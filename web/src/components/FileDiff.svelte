@@ -388,6 +388,75 @@
     return expansions.get(i) ?? { above: 0, below: 0 };
   }
 
+  /** Clipped per-hunk expansions, accounting for both file bounds AND
+   *  adjacent-hunk claims on the same gap. Computed in one pass over
+   *  all hunks because the second hunk's `above` cap depends on what
+   *  the first hunk's `below` has already consumed of the shared gap
+   *  (and vice versa).
+   *
+   *  Without this coordination, clicking "expand below" on hunk A and
+   *  "expand above" on hunk B (gap = 1) would each pull in the
+   *  one-line gap independently — the same source line appearing in
+   *  both rendered hunks. Allocation order: hunk A's `below` is
+   *  applied first; whatever's left of the gap is available to hunk
+   *  B's `above`. Symmetric for the tip-side and base-side caps. */
+  const clippedExpansions = $derived.by<Map<number, Expansion>>(() => {
+    const out = new Map<number, Expansion>();
+    const hunks = file.hunks ?? [];
+    if (!tipLines) return out;
+    // Track the next allowed first-line on each side, per neighbour
+    // gap. Starts at the previous hunk's end+1; gets pushed forward
+    // as we allocate context into the gap.
+    let prevTipFloor = 1;
+    let prevBaseFloor: number | null = 1;
+    for (let i = 0; i < hunks.length; i++) {
+      const h = hunks[i];
+      const exp = wholeFile ? wholeFileExpansion(i) : expansionFor(i);
+      const tipStart = h.tip_range?.start;
+      const tipEnd = h.tip_range?.end;
+      const baseStart = h.base_range?.start;
+      const baseEnd = h.base_range?.end;
+      if (tipStart == null || tipEnd == null) {
+        out.set(i, { above: 0, below: 0 });
+        continue;
+      }
+      // `above`: cap by current floor (= previous hunk's end+1).
+      const aboveCapTip = Math.max(0, tipStart - prevTipFloor);
+      const aboveCapBase =
+        baseStart != null && prevBaseFloor != null
+          ? Math.max(0, baseStart - prevBaseFloor)
+          : Infinity;
+      const above = Math.min(exp.above, aboveCapTip, aboveCapBase);
+
+      // `below`: cap so the next hunk's `above` (and the file end)
+      // still have room. We allocate `above` to this hunk's gap from
+      // the previous neighbour, leaving the rest of the gap empty.
+      // Then we look ahead to find the next neighbour and split the
+      // *downstream* gap between this hunk's `below` and the next
+      // hunk's `above`. First come first serve: `below` gets first
+      // claim, the next hunk's `above` is capped against what's left
+      // in the gap.
+      const next = i < hunks.length - 1 ? hunks[i + 1] : null;
+      const nextTipStart = next?.tip_range?.start ?? tipLines.length + 1;
+      const nextBaseStart = next?.base_range?.start;
+      const belowCapTip = Math.max(0, nextTipStart - 1 - tipEnd);
+      const belowCapBase =
+        baseEnd != null && nextBaseStart != null
+          ? Math.max(0, nextBaseStart - 1 - baseEnd)
+          : Infinity;
+      const below = Math.min(exp.below, belowCapTip, belowCapBase);
+
+      out.set(i, { above, below });
+
+      // Push floors past this hunk + its `below` so the next hunk's
+      // `above` cap is shrunk accordingly.
+      prevTipFloor = tipEnd + below + 1;
+      prevBaseFloor =
+        baseEnd != null ? baseEnd + below + 1 : prevBaseFloor;
+    }
+    return out;
+  });
+
   /** Toggle whole-file mode while keeping the user anchored to whatever
    *  they were already looking at:
    *
@@ -476,8 +545,30 @@
     const below = Math.max(0, nextStart - 1 - cur.tip_range.end);
     return { above, below };
   }
-  function effectiveExpansion(i: number): Expansion {
-    return wholeFile ? wholeFileExpansion(i) : expansionFor(i);
+  /** True when at least one source line is still skipped between
+   *  hunk `i`'s expanded end and hunk `i+1`'s expanded start (on
+   *  EITHER side — the gap separator is meaningful as soon as one
+   *  side has unrendered content). Hidden when the two hunks now
+   *  meet end-to-end. */
+  function hasGapAfter(i: number): boolean {
+    const hunks = file.hunks ?? [];
+    const cur = hunks[i];
+    const next = hunks[i + 1];
+    if (!cur?.tip_range || !next?.tip_range) return true;
+    const curExp = clippedExpansions.get(i) ?? { above: 0, below: 0 };
+    const nextExp = clippedExpansions.get(i + 1) ?? { above: 0, below: 0 };
+    const tipGap =
+      next.tip_range.start - nextExp.above - (cur.tip_range.end + curExp.below) - 1;
+    if (tipGap > 0) return true;
+    if (cur.base_range && next.base_range) {
+      const baseGap =
+        next.base_range.start -
+        nextExp.above -
+        (cur.base_range.end + curExp.below) -
+        1;
+      if (baseGap > 0) return true;
+    }
+    return false;
   }
 
   function expand(i: number, direction: 'above' | 'below', amount: number) {
@@ -488,10 +579,13 @@
     expansions = next;
   }
 
-  /** Apply the user's expansion settings to a hunk, producing a hunk with
-   *  extra context lines prepended/appended (clipped to the file bounds). */
+  /** Apply the user's expansion settings to a hunk, producing a hunk
+   *  with extra context lines prepended/appended. The clipping that
+   *  prevents adjacent hunks from rendering the same source line is
+   *  done globally in `clippedExpansions` (above) so the second hunk
+   *  in a pair sees the first hunk's already-claimed expansion. */
   function withContext(hunk: Hunk, i: number): Hunk {
-    const exp = effectiveExpansion(i);
+    const exp = clippedExpansions.get(i) ?? { above: 0, below: 0 };
     if ((exp.above === 0 && exp.below === 0) || !tipLines) return hunk;
 
     const baseStart = hunk.base_range?.start;
@@ -500,8 +594,11 @@
     const tipEnd = hunk.tip_range?.end;
     if (tipStart == null || tipEnd == null) return hunk;
 
+    const above = exp.above;
+    const below = exp.below;
+
     const before: HunkLine[] = [];
-    for (let k = exp.above; k > 0; k--) {
+    for (let k = above; k > 0; k--) {
       const tipLn = tipStart - k;
       if (tipLn < 1) continue;
       const content = tipLines[tipLn - 1];
@@ -515,7 +612,7 @@
     }
 
     const after: HunkLine[] = [];
-    for (let k = 1; k <= exp.below; k++) {
+    for (let k = 1; k <= below; k++) {
       const tipLn = tipEnd + k;
       if (tipLn > tipLines.length) break;
       const content = tipLines[tipLn - 1];
@@ -541,12 +638,41 @@
     };
   }
 
-  function canExpandAbove(eh: Hunk): boolean {
-    return (eh.tip_range?.start ?? 1) > 1;
-  }
-  function canExpandBelow(eh: Hunk): boolean {
+  /** `eh` is the with-context hunk; we use ITS tip/base range
+   *  (already extended by the user's clipped expansions) to decide
+   *  whether more room remains. The neighbour's expanded range is
+   *  encoded in `clippedExpansions[i-1].below` / `[i+1].above`. */
+  function canExpandAbove(eh: Hunk, i: number): boolean {
     if (!eh.tip_range) return false;
-    return tipLines == null || eh.tip_range.end < tipLines.length;
+    if (eh.tip_range.start <= 1) return false;
+    const hunks = file.hunks ?? [];
+    const prev = i > 0 ? hunks[i - 1] : null;
+    const prevExp = clippedExpansions.get(i - 1) ?? { above: 0, below: 0 };
+    if (prev?.tip_range?.end != null) {
+      const prevExpandedEnd = prev.tip_range.end + prevExp.below;
+      if (eh.tip_range.start <= prevExpandedEnd + 1) return false;
+    }
+    if (eh.base_range && prev?.base_range?.end != null) {
+      const prevExpandedBaseEnd = prev.base_range.end + prevExp.below;
+      if (eh.base_range.start <= prevExpandedBaseEnd + 1) return false;
+    }
+    return true;
+  }
+  function canExpandBelow(eh: Hunk, i: number): boolean {
+    if (!eh.tip_range) return false;
+    if (tipLines != null && eh.tip_range.end >= tipLines.length) return false;
+    const hunks = file.hunks ?? [];
+    const next = i < hunks.length - 1 ? hunks[i + 1] : null;
+    const nextExp = clippedExpansions.get(i + 1) ?? { above: 0, below: 0 };
+    if (next?.tip_range?.start != null) {
+      const nextExpandedStart = next.tip_range.start - nextExp.above;
+      if (eh.tip_range.end >= nextExpandedStart - 1) return false;
+    }
+    if (eh.base_range && next?.base_range?.start != null) {
+      const nextExpandedBaseStart = next.base_range.start - nextExp.above;
+      if (eh.base_range.end >= nextExpandedBaseStart - 1) return false;
+    }
+    return true;
   }
 
   // Highlights are per-file, indexed by (side, 1-based line number). We
@@ -862,7 +988,7 @@
         <div class="hunks" bind:this={hunksEl}>
         {#each file.hunks as _, i (i)}
           {@const eh = withContext(file.hunks[i], i)}
-          {#if canExpand && !wholeFile && canExpandAbove(eh)}
+          {#if canExpand && !wholeFile && canExpandAbove(eh, i)}
             <div class="expand-row above">
               <button
                 onclick={() => expand(i, 'above', STEP)}
@@ -938,7 +1064,7 @@
               {onselectpatchset}
             />
           {/if}
-          {#if canExpand && !wholeFile && canExpandBelow(eh)}
+          {#if canExpand && !wholeFile && canExpandBelow(eh, i)}
             <div class="expand-row below">
               <button
                 onclick={() => expand(i, 'below', STEP)}
@@ -968,7 +1094,7 @@
               </button>
             </div>
           {/if}
-          {#if i < file.hunks.length - 1 && !wholeFile}
+          {#if i < file.hunks.length - 1 && !wholeFile && hasGapAfter(i)}
             <div class="hunk-gap">…</div>
           {/if}
         {/each}
