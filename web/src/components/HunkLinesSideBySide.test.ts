@@ -5,6 +5,7 @@
 //! and the per-side rendering of the two columns.
 
 import { fireEvent, render } from '@testing-library/svelte';
+import type { ComponentProps } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
 import { describe, expect, test, vi } from 'vitest';
 import HunkLinesSideBySide from './HunkLinesSideBySide.svelte';
@@ -49,9 +50,9 @@ const noop = () => Promise.resolve();
 const noopSync = () => {};
 
 function renderSbs(
-  props: Partial<Parameters<typeof HunkLinesSideBySide>[0]> = {},
+  props: Partial<ComponentProps<typeof HunkLinesSideBySide>> = {},
 ) {
-  return render(HunkLinesSideBySide as unknown as never, {
+  return render(HunkLinesSideBySide, {
     props: {
       hunk: hunk(),
       filePath: 'a.txt',
@@ -60,7 +61,10 @@ function renderSbs(
       currentPatchset: 1,
       composing: null,
       saving: false,
-      highlights: { base: new SvelteMap(), tip: new SvelteMap() },
+      highlights: {
+        base: new SvelteMap<number, string>(),
+        tip: new SvelteMap<number, string>(),
+      },
       onstartcompose: noopSync,
       onreply: noop,
       onstatus: noop,

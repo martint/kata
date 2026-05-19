@@ -6,6 +6,7 @@
 //! itself stays under test.
 
 import { render } from '@testing-library/svelte';
+import type { ComponentProps } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
 import { describe, expect, test } from 'vitest';
 import HunkLines from './HunkLines.svelte';
@@ -49,8 +50,8 @@ function comment(over: Partial<CommentView> = {}): CommentView {
 const noop = () => Promise.resolve();
 const noopSync = () => {};
 
-function renderHunk(props: Partial<Parameters<typeof HunkLines>[0]> = {}) {
-  return render(HunkLines as unknown as never, {
+function renderHunk(props: Partial<ComponentProps<typeof HunkLines>> = {}) {
+  return render(HunkLines, {
     props: {
       hunk: hunk(),
       filePath: 'a.txt',
@@ -59,7 +60,10 @@ function renderHunk(props: Partial<Parameters<typeof HunkLines>[0]> = {}) {
       currentPatchset: 1,
       composing: null,
       saving: false,
-      highlights: { base: new SvelteMap(), tip: new SvelteMap() },
+      highlights: {
+        base: new SvelteMap<number, string>(),
+        tip: new SvelteMap<number, string>(),
+      },
       onstartcompose: noopSync,
       onreply: noop,
       onstatus: noop,

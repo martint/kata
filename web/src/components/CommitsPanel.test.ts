@@ -5,6 +5,7 @@
 //! comment threads that the recent commit-comment work added.
 
 import { fireEvent, render, screen, within } from '@testing-library/svelte';
+import type { ComponentProps } from 'svelte';
 import { describe, expect, test, vi } from 'vitest';
 import CommitsPanel from './CommitsPanel.svelte';
 import type { CommentView, CommitInfo, ResponseView } from '../lib/types';
@@ -45,9 +46,9 @@ const noop = () => Promise.resolve();
 const noopSync = () => {};
 
 function renderPanel(
-  props: Partial<Parameters<typeof CommitsPanel>[0]> = {},
+  props: Partial<ComponentProps<typeof CommitsPanel>> = {},
 ) {
-  return render(CommitsPanel as unknown as never, {
+  return render(CommitsPanel, {
     props: {
       commits: [commit()],
       comments: [],

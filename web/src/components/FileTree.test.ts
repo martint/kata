@@ -6,6 +6,7 @@
 //! private implementation detail not worth its own suite.
 
 import { fireEvent, render, screen } from '@testing-library/svelte';
+import type { ComponentProps } from 'svelte';
 import { describe, expect, test, vi } from 'vitest';
 import FileTree from './FileTree.svelte';
 import type { FileChange } from '../lib/types';
@@ -17,13 +18,13 @@ function file(over: Partial<FileChange> = {}): FileChange {
     added: 3,
     removed: 1,
     binary: false,
-    hunks: null,
+    hunks: undefined,
     ...over,
   };
 }
 
-function renderTree(props: Partial<Parameters<typeof FileTree>[0]> = {}) {
-  return render(FileTree as unknown as never, {
+function renderTree(props: Partial<ComponentProps<typeof FileTree>> = {}) {
+  return render(FileTree, {
     props: {
       files: [file()],
       onselect: () => {},

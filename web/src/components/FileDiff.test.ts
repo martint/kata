@@ -7,7 +7,7 @@
 
 import { render } from '@testing-library/svelte';
 import { afterEach, describe, expect, test, vi } from 'vitest';
-import { tick } from 'svelte';
+import { tick, type ComponentProps } from 'svelte';
 import FileDiff from './FileDiff.svelte';
 import type { FileChange, Patchset } from '../lib/types';
 
@@ -88,9 +88,9 @@ const noop = () => Promise.resolve();
 const noopSync = () => {};
 
 function renderFileDiff(
-  props: Partial<Parameters<typeof FileDiff>[0]> = {},
+  props: Partial<ComponentProps<typeof FileDiff>> = {},
 ) {
-  return render(FileDiff as unknown as never, {
+  return render(FileDiff, {
     props: {
       repo: 'test-repo',
       file: file(),

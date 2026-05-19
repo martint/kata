@@ -17,7 +17,7 @@ function renderComposer(props: {
   onsubmit?: (input: DraftCommentInput) => Promise<void>;
   saving?: boolean;
 }) {
-  return render(CommentComposer as unknown as never, {
+  return render(CommentComposer, {
     props: {
       anchorIds,
       saving: false,

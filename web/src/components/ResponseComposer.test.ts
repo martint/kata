@@ -13,7 +13,7 @@ function renderComposer(props: {
   onsubmit?: (input: DraftResponseInput) => Promise<void>;
   saving?: boolean;
 }) {
-  return render(ResponseComposer as unknown as never, {
+  return render(ResponseComposer, {
     props: {
       commentId: 'c1',
       saving: false,

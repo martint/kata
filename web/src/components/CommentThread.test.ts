@@ -6,6 +6,7 @@
 //! template that breaks any of these stays caught.
 
 import { fireEvent, render, screen, within } from '@testing-library/svelte';
+import type { ComponentProps } from 'svelte';
 import { describe, expect, test } from 'vitest';
 import CommentThread from './CommentThread.svelte';
 import type { CommentView, ResponseView } from '../lib/types';
@@ -53,8 +54,8 @@ function response(over: Partial<ResponseView> = {}): ResponseView {
 const noop = () => Promise.resolve();
 const noopSync = () => {};
 
-function renderThread(props: Partial<Parameters<typeof CommentThread>[0]> = {}) {
-  return render(CommentThread as unknown as never, {
+function renderThread(props: Partial<ComponentProps<typeof CommentThread>> = {}) {
+  return render(CommentThread, {
     props: {
       comments: [comment()],
       responses: [],
