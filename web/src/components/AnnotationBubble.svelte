@@ -11,6 +11,7 @@
 
   import { renderMarkdown } from '../lib/markdown';
   import type { AnnotationView } from '../lib/types';
+  import Chevron from './Chevron.svelte';
 
   interface Props {
     annotation: AnnotationView;
@@ -20,12 +21,25 @@
     canEdit?: boolean;
     onedit?: (annotation: AnnotationView) => void;
     ondelete?: (annotation: AnnotationView) => Promise<void>;
+    /** Folded annotations render as header-only (badge + author),
+     *  with the chevron flipped to ▸; click toggles. Mirrors the
+     *  per-thread fold model in `CommentThread`. */
+    folded?: boolean;
+    onfold?: (annotation: AnnotationView) => void;
+    /** Show the per-note fold chevron in the header. Hidden by
+     *  default (gutter marker / section toggle covers the common
+     *  case); parents pass true only when 2+ items share the
+     *  anchor and individual fold inside the group is useful. */
+    showFold?: boolean;
   }
   const {
     annotation,
     canEdit = false,
     onedit = () => {},
     ondelete = async () => {},
+    folded = false,
+    onfold = () => {},
+    showFold = false,
   }: Props = $props();
 
   let deleting = $state(false);
@@ -48,8 +62,18 @@
   }
 </script>
 
-<div class="annotation">
+<div class="annotation" class:collapsed={folded}>
   <header class="head">
+    {#if showFold}
+      <button
+        type="button"
+        class="fold-toggle"
+        aria-expanded={!folded}
+        title={folded ? 'Expand this note' : 'Fold this note'}
+        onclick={() => onfold(annotation)}
+        ><Chevron dir={folded ? 'right' : 'down'} size={10} filled /></button
+      >
+    {/if}
     <span class="badge">Note</span>
     <span class="author">{annotation.author}</span>
     <time class="at" datetime={annotation.created_at}>
@@ -60,7 +84,7 @@
         >· edited</span
       >
     {/if}
-    {#if canEdit}
+    {#if canEdit && !folded}
       <span style="flex: 1"></span>
       <button
         type="button"
@@ -77,7 +101,9 @@
       >
     {/if}
   </header>
-  <div class="body markdown">{@html renderMarkdown(annotation.body)}</div>
+  {#if !folded}
+    <div class="body markdown">{@html renderMarkdown(annotation.body)}</div>
+  {/if}
 </div>
 
 <style>
@@ -100,6 +126,28 @@
     font-size: 11px;
     color: var(--attention-text);
     margin-bottom: 4px;
+  }
+
+  /* Per-annotation fold chevron — same filled-triangle Chevron the
+   * gutter marker uses, in the attention (amber) palette so it
+   * tracks the rest of the note's styling. */
+  .fold-toggle {
+    background: transparent;
+    border: none;
+    color: var(--attention-text);
+    cursor: pointer;
+    padding: 0 2px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    align-self: center;
+  }
+  .fold-toggle:hover {
+    filter: brightness(1.2);
+  }
+
+  .annotation.collapsed .head {
+    margin-bottom: 0;
   }
 
   .action {

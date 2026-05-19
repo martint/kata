@@ -25,13 +25,11 @@
  *  comment-thread state, etc.
  *
  *  - `file` — whole-file collapse on `FileSlot`.
- *  - `comment` — per-comment "I unfolded this resolved comment"
- *    overrides inside `CommentThread`.
- *  - `commit` — per-commit body expansion in `CommitsPanel`.
- *  - `thread` — per-anchor (file/side/line) thread fold. Drives the
- *    "diffs view" collapse-by-default + per-line markers in
- *    HunkLines / HunkLinesSideBySide. Keys are `${file}:${side}:${line}`. */
-export type FoldKind = 'file' | 'comment' | 'commit' | 'thread';
+ *  - `comment` — per-thread fold state, keyed by the top-level
+ *    comment's id. `true` = explicitly folded, `false` = explicitly
+ *    expanded; absent = follow the resolution-aware default.
+ *  - `commit` — per-commit body expansion in `CommitsPanel`. */
+export type FoldKind = 'file' | 'comment' | 'commit';
 
 /** Per-review fold store. */
 export interface FoldStore {

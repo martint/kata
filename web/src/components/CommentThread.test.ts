@@ -91,24 +91,25 @@ describe('CommentThread', () => {
     expect(screen.queryByText("won't fix")).toBeNull();
   });
 
-  test('collapses a resolved comment; the resolution badge is hidden until expanded', async () => {
+  test('folds a resolved comment by default; chevron click expands', async () => {
+    // Resolution-aware default fold: a resolved thread defaults to
+    // header-only inside CommentThread. The badge is suppressed in
+    // the collapsed header (the fact that it's collapsed-by-default
+    // IS the signal) and rendered when expanded. `showFold` is on
+    // here because production-side groups of 1 hide the chevron in
+    // favour of the gutter marker; standalone tests don't have a
+    // marker so the chevron has to render to be testable.
     const c = comment({ comment_id: 'c1' });
     const r = response({
       response_id: 'r-1',
       in_reply_to: 'c1',
       action: 'resolve',
     });
-    const { container } = renderThread({ comments: [c], responses: [r] });
-    // The collapse itself signals the resolution; no badge in the
-    // collapsed header (would be redundant noise).
+    const { container } = renderThread({ comments: [c], responses: [r], showFold: true });
     expect(screen.queryByText('resolved')).toBeNull();
     const li = container.querySelector('.comment')!;
     expect(li.classList.contains('collapsed')).toBe(true);
     expect(li.querySelector('.body')).toBeNull();
-    // Clicking the fold-toggle expands and the badge then renders
-    // so the reader can see what state they expanded into. Target
-    // the badge specifically (the reply row also contains the word
-    // "resolved" via its action label).
     const fold = li.querySelector('button.fold-toggle') as HTMLButtonElement;
     await fireEvent.click(fold);
     expect(li.querySelector('.badge.resolution-resolved')).not.toBeNull();
@@ -203,11 +204,9 @@ describe('CommentThread', () => {
     expect(screen.getByText('moved to 5-7')).toBeTruthy();
   });
 
-  test("collapses a won't-fix-marked thread; resolution badge appears on expand", async () => {
-    // A wont-fix response is one of the two paths that collapses the
-    // thread (`resolutionFor` returns `'wont-fix'`). Same as the
-    // resolved case: the badge is hidden in the collapsed state
-    // (collapse itself is the visual cue) and rendered on expand.
+  test("folds a won't-fix-marked thread by default; chevron expands", async () => {
+    // Mirrors the resolved-comment test: a wont-fix response also
+    // makes the thread default-fold; badge appears on expand.
     const c = comment({ comment_id: 'c1' });
     const r = response({
       in_reply_to: 'c1',
@@ -215,11 +214,10 @@ describe('CommentThread', () => {
       author: 'author@example.com',
       body: 'Not for this round.',
     });
-    const { container } = renderThread({ comments: [c], responses: [r] });
+    const { container } = renderThread({ comments: [c], responses: [r], showFold: true });
     const li = container.querySelector('.comment')!;
-    // No `.resolution-wont-fix` badge while collapsed.
-    expect(li.querySelector('.badge.resolution-wont-fix')).toBeNull();
     expect(li.classList.contains('collapsed')).toBe(true);
+    expect(li.querySelector('.badge.resolution-wont-fix')).toBeNull();
     const fold = li.querySelector('button.fold-toggle') as HTMLButtonElement;
     await fireEvent.click(fold);
     expect(li.querySelector('.badge.resolution-wont-fix')).not.toBeNull();

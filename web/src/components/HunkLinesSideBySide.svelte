@@ -13,6 +13,7 @@
     Side,
   } from '../lib/types';
   import type { FoldStore } from '../lib/foldStore';
+  import { hasUnreadReplies, isThreadFolded } from '../lib/resolution';
   import AnnotationBubble from './AnnotationBubble.svelte';
   import AnnotationComposer, {
     type AnnotationComposerTarget,
@@ -22,10 +23,7 @@
   import CommentThread from './CommentThread.svelte';
   import { computeHunkWordDiff, wrapRanges } from '../lib/wordDiff';
   import { alignBlock, alignedRows } from '../lib/hunkAlign';
-  import {
-    intraLineSelectionFor,
-    type IntraLineSelection,
-  } from '../lib/intraLineSelection';
+  import { diffSelectionFor, type DiffSelection } from '../lib/diffSelection';
 
   interface Props {
     hunk: Hunk;
@@ -108,51 +106,86 @@
     defaultThreadsCollapsed = false,
   }: Props = $props();
 
-  /** Per-anchor thread fold — same idea as HunkLines, scoped to this
-   *  component's filePath. Toggling bumps `foldVersion` so the
-   *  $derived row computations re-run. */
+  /** Per-thread fold — see HunkLines.svelte for the model. State
+   *  lives in foldStore under kind `comment`, keyed by the top-level
+   *  comment's (or annotation's) id. Aggregated per-line for the
+   *  gutter marker. Shared `foldVersion` context wakes the
+   *  aggregate when a fold happens in any other component. */
   const foldStore = getContext<FoldStore | undefined>('kata-fold-store');
-  let foldVersion = $state(0);
-  function threadKey(side: Side, line: number): string {
-    return `${filePath}:${side}:${line}`;
+  const foldVersionCtx = getContext<{ read: () => number; bump: () => void } | undefined>(
+    'kata-fold-version',
+  );
+
+  function isFolded(id: string): boolean {
+    foldVersionCtx?.read();
+    return isThreadFolded(id, responses, foldStore, defaultThreadsCollapsed);
   }
-  function isThreadCollapsed(side: Side, line: number): boolean {
-    void foldVersion;
-    const stored = foldStore?.get('thread', threadKey(side, line));
-    return stored ?? defaultThreadsCollapsed;
+  /** True when a thread is effectively expanded: not folded OR has
+   *  unread replies (force-expand override). See HunkLines.svelte. */
+  function isEffectivelyExpanded(commentId: string): boolean {
+    return (
+      !isFolded(commentId) ||
+      hasUnreadReplies(commentId, responses, lastVisitAt, viewer)
+    );
   }
-  function toggleThreadFold(side: Side, line: number) {
+  function toggleFoldOne(id: string) {
     if (!foldStore) return;
-    const k = threadKey(side, line);
-    const currently = foldStore.get('thread', k) ?? defaultThreadsCollapsed;
-    foldStore.set('thread', k, !currently);
-    foldVersion++;
+    foldStore.set('comment', id, !isFolded(id));
+    foldVersionCtx?.bump();
   }
 
-  /** Aggregate anchor range for the folded comments + notes at
-   *  (side, line). See HunkLines.svelte for the design rationale. */
+  /** All threads + notes anchored at this (side, line). */
+  function entriesAt(side: Side, line: number): Array<
+    { kind: 'comment'; c: CommentView } | { kind: 'note'; n: AnnotationView }
+  > {
+    const out: Array<
+      { kind: 'comment'; c: CommentView } | { kind: 'note'; n: AnnotationView }
+    > = [];
+    for (const c of threadsAt(side, line)) out.push({ kind: 'comment', c });
+    for (const n of annotationsAt(side, line)) out.push({ kind: 'note', n });
+    return out;
+  }
+  function idOf(e: { kind: 'comment'; c: CommentView } | { kind: 'note'; n: AnnotationView }): string {
+    return e.kind === 'comment' ? e.c.comment_id : e.n.annotation_id;
+  }
+
+  /** True iff every thread + note at the line is effectively folded
+   *  (folded and not unread-force-expanded). Drives the marker
+   *  state and the click direction. */
+  function allFoldedAt(side: Side, line: number): boolean {
+    const entries = entriesAt(side, line);
+    if (entries.length === 0) return true;
+    for (const e of entries) {
+      if (e.kind === 'comment') {
+        if (isEffectivelyExpanded(e.c.comment_id)) return false;
+      } else {
+        if (!isFolded(e.n.annotation_id)) return false;
+      }
+    }
+    return true;
+  }
+  function toggleAllAt(side: Side, line: number) {
+    if (!foldStore) return;
+    const entries = entriesAt(side, line);
+    const target = !allFoldedAt(side, line);
+    for (const e of entries) {
+      foldStore.set('comment', idOf(e), target);
+    }
+    foldVersionCtx?.bump();
+  }
+
+  /** Aggregate anchor range for any thread+note at (side, line) —
+   *  used by the marker's hover-to-highlight effect. */
   function foldedRangeAt(side: Side, line: number): { start: number; end: number } | null {
     let start = Number.POSITIVE_INFINITY;
     let end = Number.NEGATIVE_INFINITY;
-    for (const c of comments) {
-      if (c.side !== side) continue;
+    for (const e of entriesAt(side, line)) {
+      const target = e.kind === 'comment' ? e.c : e.n;
       const eff =
-        c.anchor.kind === 'moved' || c.anchor.kind === 'drifted'
-          ? c.anchor.new_lines
-          : c.lines;
+        target.anchor.kind === 'moved' || target.anchor.kind === 'drifted'
+          ? target.anchor.new_lines
+          : (target as { lines?: { start: number; end: number } }).lines;
       if (!eff) continue;
-      if (eff.end !== line) continue;
-      if (eff.start < start) start = eff.start;
-      if (eff.end > end) end = eff.end;
-    }
-    for (const n of annotations) {
-      if (n.side !== side) continue;
-      const eff =
-        n.anchor.kind === 'moved' || n.anchor.kind === 'drifted'
-          ? n.anchor.new_lines
-          : n.lines;
-      if (!eff) continue;
-      if (eff.end !== line) continue;
       if (eff.start < start) start = eff.start;
       if (eff.end > end) end = eff.end;
     }
@@ -249,13 +282,13 @@
    *  tables — base and tip — and a selection lives in exactly one of
    *  them; we try both on mouseup and use whichever resolves. See
    *  HunkLines.svelte for the per-mode design rationale. */
-  let selectionPill: IntraLineSelection | null = $state.raw(null);
+  let selectionPill: DiffSelection | null = $state.raw(null);
   $effect(() => {
     if (!pairEl) return;
     function onMouseUp() {
       requestAnimationFrame(() => {
-        const fromBase = baseTableEl ? intraLineSelectionFor(baseTableEl) : null;
-        const fromTip = !fromBase && tipTableEl ? intraLineSelectionFor(tipTableEl) : null;
+        const fromBase = baseTableEl ? diffSelectionFor(baseTableEl) : null;
+        const fromTip = !fromBase && tipTableEl ? diffSelectionFor(tipTableEl) : null;
         selectionPill = fromBase ?? fromTip;
       });
     }
@@ -279,9 +312,9 @@
       kind: 'line',
       file: filePath,
       side: s.side,
-      startLine: s.line,
-      endLine: s.line,
-      columns: { start: s.startOffset, end: s.endOffset },
+      startLine: s.startLine,
+      endLine: s.endLine,
+      columns: { start: s.startCol, end: s.endCol },
     });
     selectionPill = null;
     window.getSelection()?.removeAllRanges();
@@ -574,6 +607,14 @@
       <tbody>
         {#each rows as row, i (i)}
           {@const leftLine = row.left?.base_line ?? null}
+          <!-- Higher z-index on rows with markers so the overflowing
+               chevron half paints over the next row's sticky cell.
+               See HunkLines.svelte. -->
+          {@const leftHasMarker =
+            leftLine != null &&
+            showComments &&
+            threadsAt('base', leftLine).length + annotationsAt('base', leftLine).length > 0}
+          {@const leftStackZ = leftHasMarker ? rows.length - i + 1 : undefined}
           <tr class="sbs-row {row.kind}">
             <!-- data-side/data-line are also on the gutter cell so the
                  drag-selection logic finds it via `elementFromPoint` even
@@ -582,6 +623,7 @@
               class="ln {row.left ? row.left.origin : 'empty'}"
               data-side="base"
               data-line={leftLine ?? ''}
+              style:z-index={leftStackZ}
             >
               <!-- "+" button lives in the sticky gutter cell, not the
                    content cell, so it stays visible during horizontal
@@ -609,7 +651,7 @@
               {#if row.left?.base_line != null && showComments}
                 {@const ln = row.left.base_line}
                 {@const count = threadsAt('base', ln).length + annotationsAt('base', ln).length}
-                {@const folded = isThreadCollapsed('base', ln)}
+                {@const folded = allFoldedAt('base', ln)}
                 {#if count > 0}
                   <button
                     type="button"
@@ -618,13 +660,13 @@
                     aria-pressed={!folded}
                     aria-label="{count} comment{count === 1 ? '' : 's'}; click to {folded ? 'expand' : 'collapse'}"
                     title="{count} comment{count === 1 ? '' : 's'} — click to {folded ? 'expand' : 'collapse'}"
-                    onclick={() => toggleThreadFold('base', ln)}
+                    onclick={() => toggleAllAt('base', ln)}
                     onmouseenter={() => {
                       const r = foldedRangeAt('base', ln);
                       hoveredAnchor = r ? { side: 'base', start: r.start, end: r.end } : null;
                     }}
                     onmouseleave={() => (hoveredAnchor = null)}
-                  ><Chevron dir={folded ? 'right' : 'down'} size={12} filled /></button>
+                  ><Chevron dir={folded ? 'right' : 'down'} size={14} filled /></button>
                 {/if}
               {/if}
               {row.left?.base_line ?? row.left?.tip_line ?? ''}
@@ -649,12 +691,10 @@
           {@const leftThreads = showComments ? threadsAt('base', row.left?.base_line) : []}
           {@const leftNotes = showComments ? annotationsAt('base', row.left?.base_line) : []}
           {@const leftAnnotating = isAnnotatingHere('base', row.left?.base_line)}
-          {@const leftHasContent = leftThreads.length > 0 || leftNotes.length > 0}
-          {@const leftCollapsed =
-            leftHasContent &&
-            row.left?.base_line != null &&
-            isThreadCollapsed('base', row.left.base_line)}
-          {#if (leftHasContent && !leftCollapsed) || leftAnnotating}
+          {@const leftAllFolded =
+            row.left?.base_line != null && allFoldedAt('base', row.left.base_line)}
+          {#if leftAnnotating || ((leftThreads.length > 0 || leftNotes.length > 0) && !leftAllFolded)}
+            {@const leftGroupSize = leftThreads.length + leftNotes.length}
             <tr class="sbs-threads from-{row.left?.origin ?? 'context'}">
               <td colspan="2" class="thread-cell">
                 <!-- Indent past the side's line-number gutter via
@@ -667,6 +707,9 @@
                       canEdit={canAnnotate}
                       onedit={oneditannotation}
                       ondelete={ondeleteannotation}
+                      folded={isFolded(n.annotation_id)}
+                      onfold={(a) => toggleFoldOne(a.annotation_id)}
+                      showFold={leftGroupSize > 1}
                     />
                   {/each}
                   {#if leftAnnotating && composingAnnotation}
@@ -687,6 +730,8 @@
                       {editingCommentId}
                       {lastVisitAt}
                       {viewer}
+                      {defaultThreadsCollapsed}
+                      showFold={leftGroupSize > 1}
                       {onreply}
                       {onstatus}
                       {ondelete}
@@ -729,11 +774,17 @@
       <tbody>
         {#each rows as row, i (i)}
           {@const rightLine = row.right?.tip_line ?? null}
+          {@const rightHasMarker =
+            rightLine != null &&
+            showComments &&
+            threadsAt('tip', rightLine).length + annotationsAt('tip', rightLine).length > 0}
+          {@const rightStackZ = rightHasMarker ? rows.length - i + 1 : undefined}
           <tr class="sbs-row {row.kind}">
             <td
               class="ln {row.right ? row.right.origin : 'empty'}"
               data-side="tip"
               data-line={rightLine ?? ''}
+              style:z-index={rightStackZ}
             >
               {#if row.right?.tip_line != null && showComments && commentsWriteable}
                 <button
@@ -758,7 +809,7 @@
               {#if row.right?.tip_line != null && showComments}
                 {@const ln = row.right.tip_line}
                 {@const count = threadsAt('tip', ln).length + annotationsAt('tip', ln).length}
-                {@const folded = isThreadCollapsed('tip', ln)}
+                {@const folded = allFoldedAt('tip', ln)}
                 {#if count > 0}
                   <button
                     type="button"
@@ -767,13 +818,13 @@
                     aria-pressed={!folded}
                     aria-label="{count} comment{count === 1 ? '' : 's'}; click to {folded ? 'expand' : 'collapse'}"
                     title="{count} comment{count === 1 ? '' : 's'} — click to {folded ? 'expand' : 'collapse'}"
-                    onclick={() => toggleThreadFold('tip', ln)}
+                    onclick={() => toggleAllAt('tip', ln)}
                     onmouseenter={() => {
                       const r = foldedRangeAt('tip', ln);
                       hoveredAnchor = r ? { side: 'tip', start: r.start, end: r.end } : null;
                     }}
                     onmouseleave={() => (hoveredAnchor = null)}
-                  ><Chevron dir={folded ? 'right' : 'down'} size={12} filled /></button>
+                  ><Chevron dir={folded ? 'right' : 'down'} size={14} filled /></button>
                 {/if}
               {/if}
               {row.right?.tip_line ?? row.right?.base_line ?? ''}
@@ -794,12 +845,10 @@
           {@const rightThreads = showComments ? threadsAt('tip', row.right?.tip_line) : []}
           {@const rightNotes = showComments ? annotationsAt('tip', row.right?.tip_line) : []}
           {@const rightAnnotating = isAnnotatingHere('tip', row.right?.tip_line)}
-          {@const rightHasContent = rightThreads.length > 0 || rightNotes.length > 0}
-          {@const rightCollapsed =
-            rightHasContent &&
-            row.right?.tip_line != null &&
-            isThreadCollapsed('tip', row.right.tip_line)}
-          {#if (rightHasContent && !rightCollapsed) || rightAnnotating}
+          {@const rightAllFolded =
+            row.right?.tip_line != null && allFoldedAt('tip', row.right.tip_line)}
+          {#if rightAnnotating || ((rightThreads.length > 0 || rightNotes.length > 0) && !rightAllFolded)}
+            {@const rightGroupSize = rightThreads.length + rightNotes.length}
             <tr class="sbs-threads from-{row.right?.origin ?? 'context'}">
               <td colspan="2" class="thread-cell">
                 <!-- Indent past the side's line-number gutter via
@@ -812,6 +861,9 @@
                       canEdit={canAnnotate}
                       onedit={oneditannotation}
                       ondelete={ondeleteannotation}
+                      folded={isFolded(n.annotation_id)}
+                      onfold={(a) => toggleFoldOne(a.annotation_id)}
+                      showFold={rightGroupSize > 1}
                     />
                   {/each}
                   {#if rightAnnotating && composingAnnotation}
@@ -832,6 +884,8 @@
                       {editingCommentId}
                       {lastVisitAt}
                       {viewer}
+                      {defaultThreadsCollapsed}
+                      showFold={rightGroupSize > 1}
                       {onreply}
                       {onstatus}
                       {ondelete}
@@ -918,6 +972,11 @@
     font-size: 12.5px;
     /* Match HunkLines so unified vs side-by-side feel identical. */
     line-height: 1.6;
+    /* Same stacking-context trick as `.hunk` in HunkLines — keeps
+     * the chevron's overflowing bottom half painted over the inter-
+     * hunk separator below the table. */
+    position: relative;
+    z-index: 1;
   }
 
   /* See HunkLines.svelte for the rationale — keep cells top-aligned so
@@ -936,7 +995,10 @@
     padding: 0 8px;
     color: var(--text-faint);
     user-select: none;
-    border-right: 1px solid var(--border-muted);
+    /* See HunkLines — `--border` so this rule is visible at the
+     * same intensity as the separator pseudo and reads as one
+     * continuous line through hunks and inter-hunk space. */
+    border-right: 1px solid var(--border);
     font-size: 11px;
     background: var(--bg);
     /* Pin the line-number gutter (and the "+" button it now contains) so
@@ -1119,6 +1181,24 @@
   .thread-cell {
     padding: 0;
     background: transparent;
+    /* Position context for the gutter rule pseudo. */
+    position: relative;
+  }
+
+  /* SBS thread-cell sits inside ONE side, so the rule's x is local
+   * to the side (not wrapper). Both sides have the same 48-px col-
+   * ln + 16-px padding + 1-px border = 65-px gutter, so hardcoding
+   * is safe and avoids the wrapper-coord translation that the
+   * inter-hunk separator pseudo needs. */
+  .thread-cell::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 64px;
+    width: 1px;
+    background: var(--border);
+    pointer-events: none;
   }
 
   /* Thread fold marker — stroke-only chevron pinned to the left
@@ -1129,12 +1209,14 @@
   .thread-marker {
     position: absolute;
     left: -2px;
-    /* Centered on the row boundary — see HunkLines.svelte for the
-     * stacking-context rationale paired with the :has() rule below. */
+    /* Centered on the row boundary; the bottom half overflows the
+     * cell and the row-index z-index on `.ln` (set inline below)
+     * keeps it visible above the next row's sticky cell. See
+     * HunkLines.svelte. */
     bottom: 0;
     transform: translateY(50%);
-    width: 14px;
-    height: 14px;
+    width: 16px;
+    height: 16px;
     padding: 0;
     border: none;
     background: transparent;
@@ -1148,11 +1230,6 @@
   /* Hover feedback comes from `.highlight-anchor` on the comment's
    * anchored rows — see HunkLines.svelte. */
 
-  /* Raise z-index on rows that host a marker so its bottom half,
-   * which overflows into the next row's gutter cell, isn't clipped. */
-  .ln:has(.thread-marker) {
-    z-index: 2;
-  }
 
   :global(.highlight-anchor) {
     background: var(--link-bg) !important;

@@ -13,6 +13,7 @@
     Side,
   } from '../lib/types';
   import type { FoldStore } from '../lib/foldStore';
+  import { hasUnreadReplies, isThreadFolded } from '../lib/resolution';
   import AnnotationBubble from './AnnotationBubble.svelte';
   import AnnotationComposer, {
     type AnnotationComposerTarget,
@@ -21,10 +22,7 @@
   import Chevron from './Chevron.svelte';
   import CommentThread from './CommentThread.svelte';
   import { computeHunkWordDiff, wrapRanges } from '../lib/wordDiff';
-  import {
-    intraLineSelectionFor,
-    type IntraLineSelection,
-  } from '../lib/intraLineSelection';
+  import { diffSelectionFor, type DiffSelection } from '../lib/diffSelection';
 
   interface Props {
     hunk: Hunk;
@@ -116,74 +114,111 @@
     defaultThreadsCollapsed = false,
   }: Props = $props();
 
-  /** Per-anchor thread fold state, persisted via foldStore. We track
-   *  the set of (file:side:line) keys the user has explicitly
-   *  toggled and merge with `defaultThreadsCollapsed` at read time —
-   *  lets the user override the view-mode default on a per-thread
-   *  basis. */
+  /** Per-thread fold state, persisted via foldStore (kind `comment`,
+   *  keyed by comment_id or annotation_id). Default is resolution-
+   *  aware: in Full view an open thread expands, a resolved thread
+   *  folds. Annotations have no responses → always treated as
+   *  `open`, so they follow `defaultThreadsCollapsed` directly.
+   *
+   *  The shared `foldVersion` context is what stitches the gutter
+   *  marker's "any expanded?" computation to mutations that
+   *  happen elsewhere (e.g. CommentThread's per-thread fold-back
+   *  chevron). Reading `version.read()` registers this component's
+   *  derivations as dependents; bumping wakes them. */
   const foldStore = getContext<FoldStore | undefined>('kata-fold-store');
-  // Bumping this counter is how we re-trigger reads after a toggle.
-  // The store is non-reactive (a plain object), so a $derived that
-  // calls `foldStore.get(...)` wouldn't re-evaluate on its own.
-  let foldVersion = $state(0);
+  const foldVersionCtx = getContext<{ read: () => number; bump: () => void } | undefined>(
+    'kata-fold-version',
+  );
 
-  function threadKey(side: Side, line: number): string {
-    return `${filePath}:${side}:${line}`;
+  function isFolded(id: string): boolean {
+    foldVersionCtx?.read();
+    return isThreadFolded(id, responses, foldStore, defaultThreadsCollapsed);
   }
 
-  function isThreadCollapsed(side: Side, line: number): boolean {
-    // Read foldVersion to register a dependency — Svelte's $derived
-    // tracking notices this and re-runs whenever toggleThreadFold
-    // bumps the counter.
-    void foldVersion;
-    const stored = foldStore?.get('thread', threadKey(side, line));
-    return stored ?? defaultThreadsCollapsed;
+  /** True when a thread is effectively expanded: either the user
+   *  hasn't folded it, or it has unread replies (force-expand so a
+   *  fresh response can't hide behind a resolver's fold). Used by
+   *  both the per-line aggregate (gutter marker) and CommentThread's
+   *  internal per-comment render decision. */
+  function isEffectivelyExpanded(commentId: string): boolean {
+    return (
+      !isFolded(commentId) ||
+      hasUnreadReplies(commentId, responses, lastVisitAt, viewer)
+    );
   }
 
-  function toggleThreadFold(side: Side, line: number) {
+  /** Comments + annotations whose anchor resolves to a row on this
+   *  (side, line). Each is its own thread; the gutter marker
+   *  aggregates over the whole list. */
+  function entriesFor(a: { side: Side; line: number }): Array<
+    { kind: 'comment'; c: CommentView } | { kind: 'note'; n: AnnotationView }
+  > {
+    const out: Array<
+      { kind: 'comment'; c: CommentView } | { kind: 'note'; n: AnnotationView }
+    > = [];
+    for (const c of threadsFor(a)) out.push({ kind: 'comment', c });
+    for (const n of annotationsFor(a)) out.push({ kind: 'note', n });
+    return out;
+  }
+
+  function idOf(e: { kind: 'comment'; c: CommentView } | { kind: 'note'; n: AnnotationView }): string {
+    return e.kind === 'comment' ? e.c.comment_id : e.n.annotation_id;
+  }
+
+  /** Aggregate fold state for the line: true iff every thread at the
+   *  line is effectively folded (i.e. folded and not unread-forced).
+   *  The gutter marker uses this to pick ▶ (all folded) vs ▼ (any
+   *  expanded) and to decide what one click should do — fold-all
+   *  when everything is open, expand-all otherwise. */
+  function allFoldedAt(a: { side: Side; line: number }): boolean {
+    const entries = entriesFor(a);
+    if (entries.length === 0) return true;
+    for (const e of entries) {
+      if (e.kind === 'comment') {
+        if (isEffectivelyExpanded(e.c.comment_id)) return false;
+      } else {
+        if (!isFolded(e.n.annotation_id)) return false;
+      }
+    }
+    return true;
+  }
+
+  /** Normalize the fold state of every thread at the line. If any
+   *  is currently expanded → fold them all; if all are folded →
+   *  expand them all. So a click is always idempotent in its
+   *  direction. */
+  function toggleAllAt(a: { side: Side; line: number }) {
     if (!foldStore) return;
-    const k = threadKey(side, line);
-    const currently = foldStore.get('thread', k) ?? defaultThreadsCollapsed;
-    foldStore.set('thread', k, !currently);
-    foldVersion++;
+    const entries = entriesFor(a);
+    const target = !allFoldedAt(a); // true = fold all, false = expand all
+    for (const e of entries) {
+      foldStore.set('comment', idOf(e), target);
+    }
+    foldVersionCtx?.bump();
   }
 
-  /** Comments and annotations whose anchor still resolves to a row
-   *  on this side at this line. Used to drive the gutter marker
-   *  (which shows when any of these are folded) and the hover
-   *  highlight (which paints the underlying line range). */
-  function entriesFor(a: { side: Side; line: number }): {
-    threads: CommentView[];
-    notes: AnnotationView[];
-  } {
-    return {
-      threads: threadsFor(a),
-      notes: annotationsFor(a),
-    };
+  /** Toggle fold of one item (annotation or thread) by id. Used by
+   *  the per-bubble chevron on AnnotationBubble; CommentThread has
+   *  its own self-contained toggle for comment threads. */
+  function toggleFoldOne(id: string) {
+    if (!foldStore) return;
+    foldStore.set('comment', id, !isFolded(id));
+    foldVersionCtx?.bump();
   }
 
-  /** Aggregate anchor range covered by the folded threads/notes at
-   *  this row. Used so hovering the gutter marker can highlight the
-   *  full line range an anchor spans, not just the row the marker
-   *  itself sits on. */
+  /** Aggregate anchor range covered by the threads/notes at this
+   *  row. Used so hovering the gutter marker can highlight the full
+   *  line range any anchor spans. */
   function foldedRange(a: { side: Side; line: number }): { start: number; end: number } | null {
-    const { threads, notes } = entriesFor(a);
+    const entries = entriesFor(a);
     let start = Number.POSITIVE_INFINITY;
     let end = Number.NEGATIVE_INFINITY;
-    for (const c of threads) {
+    for (const e of entries) {
+      const target = e.kind === 'comment' ? e.c : e.n;
       const eff =
-        c.anchor.kind === 'moved' || c.anchor.kind === 'drifted'
-          ? c.anchor.new_lines
-          : c.lines;
-      if (!eff) continue;
-      if (eff.start < start) start = eff.start;
-      if (eff.end > end) end = eff.end;
-    }
-    for (const n of notes) {
-      const eff =
-        n.anchor.kind === 'moved' || n.anchor.kind === 'drifted'
-          ? n.anchor.new_lines
-          : n.lines;
+        target.anchor.kind === 'moved' || target.anchor.kind === 'drifted'
+          ? target.anchor.new_lines
+          : (target as { lines?: { start: number; end: number } }).lines;
       if (!eff) continue;
       if (eff.start < start) start = eff.start;
       if (eff.end > end) end = eff.end;
@@ -237,7 +272,7 @@
    *  changes to something we can't anchor (multi-row, collapsed,
    *  outside this table). Click → open the line composer with the
    *  intra-line `columns` range prefilled. */
-  let selectionPill: IntraLineSelection | null = $state.raw(null);
+  let selectionPill: DiffSelection | null = $state.raw(null);
   $effect(() => {
     if (!tableEl) return;
     function onMouseUp() {
@@ -245,7 +280,7 @@
       // mouseup handler runs; defer so the browser settles first.
       requestAnimationFrame(() => {
         if (!tableEl) return;
-        selectionPill = intraLineSelectionFor(tableEl);
+        selectionPill = diffSelectionFor(tableEl);
       });
     }
     function onMouseDown(e: MouseEvent) {
@@ -271,9 +306,9 @@
       kind: 'line',
       file: filePath,
       side: s.side,
-      startLine: s.line,
-      endLine: s.line,
-      columns: { start: s.startOffset, end: s.endOffset },
+      startLine: s.startLine,
+      endLine: s.endLine,
+      columns: { start: s.startCol, end: s.endCol },
     });
     selectionPill = null;
     // Clear the underlying text selection too so it doesn't sit
@@ -544,12 +579,18 @@
       <!-- Gutter-marker bookkeeping, hoisted up so the gutter cells
            below render the marker without recomputing per-cell.
            `markerCount === 0` means no comments at all on this row;
-           `markerFolded` distinguishes folded vs expanded so the
-           marker can show two visual states + serve as the single
-           fold control in both directions. -->
+           `markerFolded` is the AGGREGATE state — true only when
+           every thread at this line is currently folded. -->
       {@const markerCount =
         showComments && a ? threadsFor(a).length + annotationsFor(a).length : 0}
-      {@const markerFolded = a != null && isThreadCollapsed(a.side, a.line)}
+      {@const markerFolded = a != null && allFoldedAt(a)}
+      <!-- Higher z-index for earlier rows that host a marker, so
+           the chevron's overflowing bottom half paints over the
+           next row's sticky `.ln`. Non-marker rows stay at the
+           default z-index (no overflow to protect). Spec is z-
+           index 1 baseline + (totalLines - i) so the earliest
+           marker wins. -->
+      {@const stackZ = markerCount > 0 ? hunk.lines.length - i + 1 : undefined}
       <tr class={`${rowClass(line.origin)}${isCommented(a) ? ' commented' : ''}`}>
         {#if showBase}
           <!-- data-side/data-line are also on the gutter cell so that the
@@ -559,6 +600,7 @@
             class="ln"
             data-side={a?.side ?? ''}
             data-line={a?.line ?? ''}
+            style:z-index={stackZ}
           >
             <!-- "+" button lives in the gutter cell (not the content
                  cell) so it stays visible while long lines scroll
@@ -591,13 +633,13 @@
                 aria-pressed={!markerFolded}
                 aria-label="{markerCount} comment{markerCount === 1 ? '' : 's'}; click to {markerFolded ? 'expand' : 'collapse'}"
                 title="{markerCount} comment{markerCount === 1 ? '' : 's'} — click to {markerFolded ? 'expand' : 'collapse'}"
-                onclick={() => toggleThreadFold(a.side, a.line)}
+                onclick={() => toggleAllAt(a)}
                 onmouseenter={() => {
                   const r = foldedRange(a);
                   hoveredAnchor = r ? { side: a.side, start: r.start, end: r.end } : null;
                 }}
                 onmouseleave={() => (hoveredAnchor = null)}
-              ><Chevron dir={markerFolded ? 'right' : 'down'} size={12} filled /></button>
+              ><Chevron dir={markerFolded ? 'right' : 'down'} size={14} filled /></button>
             {/if}
             {line.base_line ?? ''}
           </td>
@@ -607,6 +649,7 @@
             class="ln"
             data-side={a?.side ?? ''}
             data-line={a?.line ?? ''}
+            style:z-index={stackZ}
           >
             {#if a && showComments && commentsWriteable}
               <button
@@ -626,13 +669,13 @@
                 aria-pressed={!markerFolded}
                 aria-label="{markerCount} comment{markerCount === 1 ? '' : 's'}; click to {markerFolded ? 'expand' : 'collapse'}"
                 title="{markerCount} comment{markerCount === 1 ? '' : 's'} — click to {markerFolded ? 'expand' : 'collapse'}"
-                onclick={() => toggleThreadFold(a.side, a.line)}
+                onclick={() => toggleAllAt(a)}
                 onmouseenter={() => {
                   const r = foldedRange(a);
                   hoveredAnchor = r ? { side: a.side, start: r.start, end: r.end } : null;
                 }}
                 onmouseleave={() => (hoveredAnchor = null)}
-              ><Chevron dir={markerFolded ? 'right' : 'down'} size={12} filled /></button>
+              ><Chevron dir={markerFolded ? 'right' : 'down'} size={14} filled /></button>
             {/if}
             {line.tip_line ?? ''}
           </td>
@@ -669,9 +712,16 @@
       {#if a && showComments}
         {@const threads = threadsFor(a)}
         {@const notes = annotationsFor(a)}
-        {@const hasContent = threads.length > 0 || notes.length > 0}
-        {@const collapsed = hasContent && isThreadCollapsed(a.side, a.line)}
-        {#if hasContent && !collapsed}
+        <!-- Only suppress the entire row when EVERY thread + note at
+             this line is folded (the gutter marker is then the only
+             affordance). When some are folded and some expanded,
+             pass everything to CommentThread and let it render the
+             folded ones as header-only placeholders — that's the
+             only way a user who folded one thread in a multi-thread
+             line can find their way back to it without folding the
+             whole group via the marker. -->
+        {#if (threads.length > 0 || notes.length > 0) && !allFoldedAt(a)}
+          {@const groupSize = threads.length + notes.length}
           <tr class="thread-row from-{line.origin}">
             <td colspan={colspan} class="thread-cell">
               <!-- Visual indent past the line-number gutter is done
@@ -691,6 +741,9 @@
                     canEdit={canAnnotate}
                     onedit={oneditannotation}
                     ondelete={ondeleteannotation}
+                    folded={isFolded(n.annotation_id)}
+                    onfold={(a) => toggleFoldOne(a.annotation_id)}
+                    showFold={groupSize > 1}
                   />
                 {/each}
                 {#if threads.length > 0}
@@ -702,6 +755,8 @@
                     {editingCommentId}
                     {lastVisitAt}
                     {viewer}
+                    {defaultThreadsCollapsed}
+                    showFold={groupSize > 1}
                     {onreply}
                     {onstatus}
                     {ondelete}
@@ -747,6 +802,14 @@
     /* Slightly looser than the global 1.45 — code lines packed at body
      * line-height read as cramped. Mirrored on .hunk-half. */
     line-height: 1.6;
+    /* Stacking context for the table as a whole so the chevron
+     * overflowing the last row paints over the inter-hunk
+     * separator (.hunk-gap / .expand-row) below it. Within the
+     * .hunks container, positioned z-index:1 paints after the
+     * non-positioned separators, even though they come later in
+     * DOM order. */
+    position: relative;
+    z-index: 1;
   }
 
   /* Keep code aligned to the top of its row even when the sibling .ln
@@ -846,7 +909,12 @@
     color: var(--text-faint);
     user-select: none;
     background: var(--bg);
-    border-right: 1px solid var(--border-muted);
+    /* `--border` (not `--border-muted`) so this rule is visible at
+     * the same intensity as the matching pseudo-element painted
+     * through the inter-hunk separators; otherwise the in-table
+     * rule reads as faint and the separator rule reads as crisp,
+     * which made the line look broken at every hunk boundary. */
+    border-right: 1px solid var(--border);
     /* Pin the gutter to the left edge of the horizontal scroll context so
      * the line number AND the "+" button stay visible while long lines
      * scroll out to the right. The textarea-focus workaround in
@@ -980,6 +1048,42 @@
   .thread-cell {
     padding: 0;
     background: transparent;
+    /* Position context for the gutter-rule pseudo-element below. */
+    position: relative;
+  }
+
+  /* Gutter rule through the thread-row — same stacked-gradient
+   * approach as FileDiff's inter-hunk separators, so unified-both
+   * gets BOTH the inner and outer rules continuous. The thread-
+   * cell spans every column, so the table's `.ln` border-right
+   * doesn't reach this row; the pseudo puts the rule(s) back. */
+  .thread-cell::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    pointer-events: none;
+    background:
+      linear-gradient(
+        to right,
+        transparent 0,
+        transparent calc(var(--measured-gutter, 65px) - 1px),
+        var(--border) calc(var(--measured-gutter, 65px) - 1px),
+        var(--border) var(--measured-gutter, 65px),
+        transparent var(--measured-gutter, 65px),
+        transparent 100%
+      ),
+      linear-gradient(
+        to right,
+        transparent 0,
+        transparent calc(var(--measured-gutter-2, -1000px) - 1px),
+        var(--border) calc(var(--measured-gutter-2, -1000px) - 1px),
+        var(--border) var(--measured-gutter-2, -1000px),
+        transparent var(--measured-gutter-2, -1000px),
+        transparent 100%
+      );
   }
 
   /* Thread fold marker — a solid disclosure triangle pinned to the
@@ -1005,14 +1109,17 @@
   .thread-marker {
     position: absolute;
     left: -2px;
-    /* Centered exactly on the row boundary — half above, half below
-     * — so the triangle reads as "between this line and the next."
-     * Without raising the parent `.ln`'s z-index (rule below), the
-     * bottom half would be painted over by the next sticky cell. */
+    /* Centered on the row boundary — half above, half below — so
+     * the triangle visually sits between this line and the next.
+     * The bottom half overflows the cell; the row's `.ln` carries
+     * a row-index-derived `z-index` (see the inline style on the
+     * gutter cell) so each row paints over the one below it, which
+     * keeps the overflowing half visible when adjacent lines both
+     * host a marker. */
     bottom: 0;
     transform: translateY(50%);
-    width: 14px;
-    height: 14px;
+    width: 16px;
+    height: 16px;
     padding: 0;
     border: none;
     background: transparent;
@@ -1026,14 +1133,6 @@
   /* No hover tint on the marker itself — the `.highlight-anchor`
    * paint on the rows the comment covers is the hover feedback. */
 
-  /* All sticky `.ln` cells share z-index: 1, so adjacent rows paint
-   * in DOM order and a marker that overflows the row's bottom edge
-   * gets clipped by the next row's cell. Raising the z-index just
-   * for rows that actually host a marker keeps the bottom half
-   * visible without otherwise changing the gutter's stacking. */
-  .ln:has(.thread-marker) {
-    z-index: 2;
-  }
 
   /* Hover-highlight painted onto the rows an anchor covers. Applied
    * imperatively via `hoveredEls` (see the $effect) to keep per-row

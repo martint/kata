@@ -2,8 +2,9 @@
   import { getContext } from 'svelte';
   import { copyText } from '../lib/clipboard';
   import { renderMarkdown } from '../lib/markdown';
-  import { resolutionFor } from '../lib/resolution';
+  import { isThreadFolded, resolutionFor } from '../lib/resolution';
   import type { FoldStore } from '../lib/foldStore';
+  import Chevron from './Chevron.svelte';
   import type {
     AnchorView,
     CommentView,
@@ -48,6 +49,19 @@
     /** Currently signed-in author. A response by this author against
      *  their own comment doesn't count as "unread to themselves." */
     viewer?: string;
+    /** Default fold state to use when the user hasn't picked one for
+     *  a thread. Mirrors the view-mode default — `true` in Compact,
+     *  `false` in Full. Resolution layers on top (a resolved thread
+     *  folds even in Full); see `defaultFoldedForThread`. */
+    defaultThreadsCollapsed?: boolean;
+    /** When `false` (the default), the per-thread fold chevron in
+     *  each comment header is hidden — the assumption is that the
+     *  group has only one thread and the bulk gutter marker / section
+     *  toggle already covers it; a second control would duplicate the
+     *  affordance. Parents pass `true` when the group has 2+ items
+     *  so the chevron earns its keep by letting the user hide just
+     *  one thread within the group. */
+    showFold?: boolean;
   }
   const {
     comments,
@@ -62,6 +76,8 @@
     editingCommentId = null,
     lastVisitAt = null,
     viewer = '',
+    defaultThreadsCollapsed = false,
+    showFold = false,
   }: Props = $props();
 
   const visibleComments = $derived(
@@ -139,36 +155,46 @@
     replyingTo = null;
   }
 
-  /** Comment IDs the user has explicitly unfolded. Resolved /
-   *  won't-fix comments are collapsed by default — they're "done
-   *  with it" threads that just clutter the view otherwise — but
-   *  the user can click the header to expand them and re-read the
-   *  body or replies. Tracking only the explicit overrides keeps
-   *  the resolution-status as the source of truth: a comment
-   *  flipping back to open via a new response collapses naturally.
-   *
-   *  Hydrated from the fold-store on mount so an unfold survives
-   *  page reloads and re-mounts. We only persist `true` (explicit
-   *  unfold of a resolved comment); the natural collapsed-default
-   *  needs no recording. */
-  const foldStore = getContext<FoldStore | undefined>('kata-fold-store');
-  let expanded: Set<string> = $state(
-    new Set(
-      foldStore
-        ? foldStore.ids('comment').filter((id) => foldStore.get('comment', id) === true)
-        : [],
-    ),
+  /** Per-thread fold lookup. The store remembers the user's explicit
+   *  choice (true = folded, false = expanded); absent means follow
+   *  the resolution-aware default — folded if the thread is
+   *  resolved/won't-fix or the view mode is Compact, otherwise
+   *  expanded. The shared `foldVersion` (set up by ReviewViewer)
+   *  triggers re-renders across every consumer after any fold
+   *  change — without it, this component's toggle wouldn't wake
+   *  the gutter-marker aggregate in HunkLines / SBS. */
+  const sharedFoldStore = getContext<FoldStore | undefined>('kata-fold-store');
+  const foldVersionCtx = getContext<{ read: () => number; bump: () => void } | undefined>(
+    'kata-fold-version',
   );
-  function toggleExpanded(id: string) {
-    const next = new Set(expanded);
-    if (next.has(id)) {
-      next.delete(id);
-      foldStore?.set('comment', id, false);
-    } else {
-      next.add(id);
-      foldStore?.set('comment', id, true);
-    }
-    expanded = next;
+  // In production ReviewViewer always provides both context values,
+  // but tests render CommentThread standalone — and a chevron click
+  // that writes nowhere reads as broken. Fall back to an in-memory
+  // store + a local version counter when the context is missing so
+  // the chevron always functions, just without cross-component
+  // sync + persistence (irrelevant in test harnesses).
+  const localFallback = new Map<string, boolean>();
+  const foldStore: FoldStore =
+    sharedFoldStore ??
+    ({
+      get: (_kind, id) => localFallback.get(id),
+      set: (_kind, id, v) => {
+        localFallback.set(id, v);
+      },
+      ids: () => Array.from(localFallback.keys()),
+      prune: () => {},
+    } as FoldStore);
+  let localFoldVersion = $state(0);
+  function isFolded(commentId: string): boolean {
+    void localFoldVersion;
+    foldVersionCtx?.read();
+    return isThreadFolded(commentId, responses, foldStore, defaultThreadsCollapsed);
+  }
+  function toggleFold(commentId: string) {
+    const next = !isFolded(commentId);
+    foldStore.set('comment', commentId, next);
+    localFoldVersion++;
+    foldVersionCtx?.bump();
   }
 </script>
 
@@ -178,13 +204,16 @@
     {@const state = resolutionFor(c.comment_id, responses)}
     {@const replies = responsesFor(c.comment_id)}
     {@const unread = hasUnreadReplies(c.comment_id)}
-    <!-- A resolved thread normally collapses (it's "done"), but if it
-         has replies the viewer hasn't seen yet we keep it expanded so
-         the body and the new response are immediately visible —
-         otherwise the agent's claim of "resolved" would hide its own
-         answer behind a fold. -->
-    {@const collapsed =
-      state !== 'open' && !expanded.has(c.comment_id) && !unread}
+    <!-- Per-thread fold lives in `foldStore`. Two presentations:
+         in gutter contexts (HunkLines / SBS) the parent pre-filters
+         folded threads out, so this component only ever sees
+         expanded ones and `collapsed` stays false. In orphan /
+         file-level / comments-only contexts the parent doesn't
+         filter, so folded threads render header-only — the
+         in-header chevron is the way back. Unread replies always
+         force-expand so a fresh response can't hide behind a fold
+         the resolver set. -->
+    {@const collapsed = isFolded(c.comment_id) && !unread}
     <li
       class="comment {c.draft ? 'draft' : ''} {c.anchor.kind === 'outdated'
         ? 'outdated'
@@ -192,17 +221,17 @@
       data-comment-id={c.comment_id}
     >
       <header>
-        <!-- Header is the collapse handle for resolved / won't-fix
-             comments: click anywhere on it (other than the existing
-             buttons) to toggle the body + replies + actions. -->
-        {#if state !== 'open'}
+        <!-- Per-thread fold toggle, only shown when the group has
+             2+ items so a single-thread group doesn't display a
+             redundant second affordance next to its gutter marker. -->
+        {#if showFold}
           <button
             type="button"
             class="fold-toggle"
             aria-expanded={!collapsed}
-            title={collapsed ? 'Expand' : 'Collapse'}
-            onclick={() => toggleExpanded(c.comment_id)}
-          >{collapsed ? '▸' : '▾'}</button>
+            title={collapsed ? 'Expand this thread' : 'Fold this thread'}
+            onclick={() => toggleFold(c.comment_id)}
+          ><Chevron dir={collapsed ? 'right' : 'down'} size={10} filled /></button>
         {/if}
         <strong>{c.author}</strong>
         <!-- Flag chip suppressed when it equals the default
@@ -421,18 +450,28 @@
     opacity: 0.7;
   }
 
+  /* Per-thread fold chevron — same filled-triangle Chevron the
+   * gutter marker uses, so an orphan-section reader who can't see
+   * a hunk gutter still recognises the affordance. The button is
+   * sized to fit the 10px Chevron with breathing room and pins
+   * itself slightly higher than the surrounding header text so the
+   * triangle's tip sits on the author's baseline. */
   .fold-toggle {
     background: transparent;
     border: none;
     cursor: pointer;
-    color: var(--text-muted);
-    font-size: 11px;
+    color: var(--link);
     padding: 0 2px;
     margin-right: 2px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    align-self: center;
   }
 
   .fold-toggle:hover {
-    color: var(--link);
+    color: var(--link-hover, var(--link));
+    filter: brightness(1.2);
   }
 
   .comment header,

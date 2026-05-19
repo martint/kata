@@ -1,16 +1,16 @@
 //! Tests for the DOM-selection → character-offset translator that
-//! the intra-line comment composer relies on. The helper lives at
+//! the selection-driven comment popup relies on. The helper lives at
 //! the boundary between the browser's `Range` API and the
-//! `(side, line, columns)` shape that gets persisted, so a quiet
-//! regression here either suppresses the "Comment on selection"
-//! pill or — worse — sends the wrong offsets to the backend. These
-//! tests exercise the contract end-to-end through jsdom.
+//! `(side, lines, columns)` shape that gets persisted, so a quiet
+//! regression here either suppresses the popup or — worse — sends
+//! the wrong offsets to the backend. These tests exercise the
+//! contract end-to-end through jsdom.
 
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
-import { intraLineSelectionFor } from './intraLineSelection';
+import { diffSelectionFor } from './diffSelection';
 
 // jsdom doesn't ship `Range.getBoundingClientRect`. The helper uses
-// it for pill positioning — exact values don't matter in unit tests,
+// it for popup positioning — exact values don't matter in unit tests,
 // just that the call succeeds. Polyfill once at module load.
 if (typeof Range.prototype.getBoundingClientRect !== 'function') {
   Range.prototype.getBoundingClientRect = function () {
@@ -35,6 +35,16 @@ beforeEach(() => {
         <tr>
           <td class="content" data-side="tip" data-line="43">
             <pre>return 1;</pre>
+          </td>
+        </tr>
+        <tr>
+          <td class="content" data-side="tip" data-line="44">
+            <pre>}</pre>
+          </td>
+        </tr>
+        <tr>
+          <td class="content" data-side="base" data-line="50">
+            <pre>old line</pre>
           </td>
         </tr>
       </tbody>
@@ -64,6 +74,26 @@ function select(line: number, start: number, end: number) {
   sel.addRange(range);
 }
 
+/** Select from `(startLine, startCol)` to `(endLine, endCol)` —
+ *  the multi-line analogue of `select`. */
+function selectAcross(
+  startLine: number,
+  startCol: number,
+  endLine: number,
+  endCol: number,
+) {
+  const a = table.querySelector<HTMLElement>(`[data-line="${startLine}"]`)!;
+  const b = table.querySelector<HTMLElement>(`[data-line="${endLine}"]`)!;
+  const start = locate(a, startCol);
+  const end = locate(b, endCol);
+  const range = document.createRange();
+  range.setStart(start.node, start.offset);
+  range.setEnd(end.node, end.offset);
+  const sel = window.getSelection()!;
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
 function locate(cell: HTMLElement, target: number): { node: Node; offset: number } {
   let remaining = target;
   const walker = document.createTreeWalker(cell, NodeFilter.SHOW_TEXT);
@@ -81,26 +111,28 @@ function locate(cell: HTMLElement, target: number): { node: Node; offset: number
   return { node: last, offset: (last as Text).data.length };
 }
 
-describe('intraLineSelectionFor', () => {
+describe('diffSelectionFor', () => {
   test('returns null when there is no selection', () => {
-    expect(intraLineSelectionFor(table)).toBeNull();
+    expect(diffSelectionFor(table)).toBeNull();
   });
 
   test('returns null for a collapsed (zero-width) selection', () => {
     select(42, 5, 5);
-    expect(intraLineSelectionFor(table)).toBeNull();
+    expect(diffSelectionFor(table)).toBeNull();
   });
 
-  test('resolves a selection inside one line to side+line+offsets', () => {
+  test('resolves a single-line selection to side+lines+cols', () => {
     // The cell text is "function foo() {}" — selecting "foo" should
-    // come back as offsets 9..12 on side=tip, line=42.
+    // come back as cols 9..12 on side=tip, lines 42..42.
     select(42, 9, 12);
-    const sel = intraLineSelectionFor(table);
+    const sel = diffSelectionFor(table);
     expect(sel).not.toBeNull();
     expect(sel!.side).toBe('tip');
-    expect(sel!.line).toBe(42);
-    expect(sel!.startOffset).toBe(9);
-    expect(sel!.endOffset).toBe(12);
+    expect(sel!.startLine).toBe(42);
+    expect(sel!.endLine).toBe(42);
+    expect(sel!.startCol).toBe(9);
+    expect(sel!.endCol).toBe(12);
+    expect(sel!.multiLine).toBe(false);
   });
 
   test('handles selections that span syntax-highlight span boundaries', () => {
@@ -110,26 +142,45 @@ describe('intraLineSelectionFor', () => {
     // helper synthesises a Range against the cell root so the
     // intermediate span structure is invisible.
     select(42, 4, 12); // "tion foo"
-    const sel = intraLineSelectionFor(table)!;
-    expect(sel.startOffset).toBe(4);
-    expect(sel.endOffset).toBe(12);
+    const sel = diffSelectionFor(table)!;
+    expect(sel.startCol).toBe(4);
+    expect(sel.endCol).toBe(12);
   });
 
-  test('returns null when the selection spans two rows', () => {
-    // Multi-row selections can't be represented as a single column
-    // range — the production caller falls back to line-level. The
-    // helper signals "not for me" by returning null.
-    const cellA = table.querySelector<HTMLElement>(`[data-line="42"]`)!;
-    const cellB = table.querySelector<HTMLElement>(`[data-line="43"]`)!;
-    const aStart = locate(cellA, 0);
-    const bEnd = locate(cellB, 3);
-    const range = document.createRange();
-    range.setStart(aStart.node, aStart.offset);
-    range.setEnd(bEnd.node, bEnd.offset);
-    const sel = window.getSelection()!;
-    sel.removeAllRanges();
-    sel.addRange(range);
-    expect(intraLineSelectionFor(table)).toBeNull();
+  test('resolves a multi-line selection to side+lines+cols', () => {
+    // From col 4 on line 42 to col 6 on line 43 — popup-driven
+    // free-form selection. Start col on first line, end col on last;
+    // no relation enforced between the two.
+    selectAcross(42, 4, 43, 6);
+    const sel = diffSelectionFor(table)!;
+    expect(sel.side).toBe('tip');
+    expect(sel.startLine).toBe(42);
+    expect(sel.endLine).toBe(43);
+    expect(sel.startCol).toBe(4);
+    expect(sel.endCol).toBe(6);
+    expect(sel.multiLine).toBe(true);
+  });
+
+  test('allows multi-line selection where end col < start col', () => {
+    // First line has "function foo() {}" (17 chars), last line is
+    // just "}" (1 char). Selecting from col 10 on line 42 to col 1
+    // on line 44 is well-formed multi-line — the helper must NOT
+    // apply the single-line `endCol > startCol` guard here.
+    selectAcross(42, 10, 44, 1);
+    const sel = diffSelectionFor(table)!;
+    expect(sel.startLine).toBe(42);
+    expect(sel.endLine).toBe(44);
+    expect(sel.startCol).toBe(10);
+    expect(sel.endCol).toBe(1);
+    expect(sel.multiLine).toBe(true);
+  });
+
+  test('returns null when the selection spans mixed sides', () => {
+    // base/tip mix can't anchor a single comment — neither side has
+    // a coherent (file, line, side) tuple. The caller suppresses the
+    // popup; the helper signals that by returning null.
+    selectAcross(43, 0, 50, 3);
+    expect(diffSelectionFor(table)).toBeNull();
   });
 
   test('returns null when the selection is outside the table', () => {
@@ -144,15 +195,15 @@ describe('intraLineSelectionFor', () => {
     const sel = window.getSelection()!;
     sel.removeAllRanges();
     sel.addRange(range);
-    expect(intraLineSelectionFor(table)).toBeNull();
+    expect(diffSelectionFor(table)).toBeNull();
   });
 
-  test('includes the selection rect for pill positioning', () => {
+  test('includes the selection rect for popup positioning', () => {
     // jsdom returns zero-rects from getBoundingClientRect, but the
     // shape must still be a DOMRect (not undefined) so the caller's
     // positioning code never has to null-check.
     select(42, 9, 12);
-    const sel = intraLineSelectionFor(table)!;
+    const sel = diffSelectionFor(table)!;
     expect(sel.rect).toBeDefined();
     expect(typeof sel.rect.top).toBe('number');
     expect(typeof sel.rect.left).toBe('number');

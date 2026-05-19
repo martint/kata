@@ -30,15 +30,17 @@ describe('createFoldStore', () => {
     expect(s.get('comment', 'same-id')).toBe(false);
   });
 
-  test('thread kind round-trips alongside the others', () => {
-    // Per-anchor thread fold is the most recently added kind — verify
-    // it doesn't trip the in-memory cache shape.
+  test('comment kind keys by comment_id for per-thread fold', () => {
+    // After the per-thread fold redesign, `comment` is the kind that
+    // stores "is this thread folded?" — keyed by the top-level
+    // comment's id, not by anchor. Verify round-tripping under the
+    // new shape.
     const s = createFoldStore('repo', 1);
-    s.set('thread', 'foo.ts:tip:42', true);
-    s.set('thread', 'bar.ts:base:7', false);
-    expect(s.get('thread', 'foo.ts:tip:42')).toBe(true);
-    expect(s.get('thread', 'bar.ts:base:7')).toBe(false);
-    expect(s.ids('thread').sort()).toEqual(['bar.ts:base:7', 'foo.ts:tip:42']);
+    s.set('comment', 'cmt-abc', true);
+    s.set('comment', 'cmt-xyz', false);
+    expect(s.get('comment', 'cmt-abc')).toBe(true);
+    expect(s.get('comment', 'cmt-xyz')).toBe(false);
+    expect(s.ids('comment').sort()).toEqual(['cmt-abc', 'cmt-xyz']);
   });
 
   test('different (repo, number) pairs are independent stores', () => {

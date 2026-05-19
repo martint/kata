@@ -20,7 +20,9 @@
     themeState,
     type LineHighlights,
   } from '../lib/highlight.svelte';
+  import { isThreadFolded } from '../lib/resolution';
   import Bubble from './Bubble.svelte';
+  import Chevron from './Chevron.svelte';
   import CommentComposer from './CommentComposer.svelte';
   import CommentThread from './CommentThread.svelte';
   import HunkLines from './HunkLines.svelte';
@@ -158,6 +160,41 @@
    *  handy when cross-checking what the UI actually computes against
    *  what the CLI would say. */
   const debug = getContext<boolean>('kata-debug') ?? false;
+  // Shared fold store + version (set up by ReviewViewer) — used by
+  // the orphan-section group fold control below. Optional in
+  // standalone tests; when missing, the toggle still works but
+  // mutations aren't persisted across reloads.
+  const foldStore = getContext<import('../lib/foldStore').FoldStore | undefined>(
+    'kata-fold-store',
+  );
+  const foldVersionCtx = getContext<{ read: () => number; bump: () => void } | undefined>(
+    'kata-fold-version',
+  );
+
+  /** Are all orphan-line comments currently folded? Drives the
+   *  section chevron's direction (▶ vs ▼) and the click action
+   *  (fold-all vs expand-all). Reads `foldVersion` to register a
+   *  reactive dependency. */
+  function orphanSectionAllFolded(): boolean {
+    foldVersionCtx?.read();
+    if (orphanLineComments.length === 0) return true;
+    const allResponses = [...responses];
+    for (const c of orphanLineComments) {
+      if (!isThreadFolded(c.comment_id, allResponses, foldStore, defaultThreadsCollapsed)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  function toggleOrphanSection() {
+    if (!foldStore) return;
+    const target = !orphanSectionAllFolded();
+    for (const c of orphanLineComments) {
+      foldStore.set('comment', c.comment_id, target);
+    }
+    foldVersionCtx?.bump();
+  }
   let debugOpen = $state(false);
   /** Build the literal commit-to-commit `jj diff` command for the
    *  endpoints this file is currently being diffed against. Works
@@ -230,10 +267,49 @@
         'td.content',
       );
       if (!contentCell || contentCell.offsetLeft <= 0) return;
+      // `--measured-gutter` = the OUTER (rightmost) gutter rule's x.
+      // For unified mode that's just the `.content` cell's left
+      // edge; for SBS it's the LEFT side's `.content`. Raw offset
+      // (not rounded) so it aligns with the table's `.ln` border-
+      // right at the same sub-pixel offset.
       wrapper.style.setProperty(
         '--measured-gutter',
         `${contentCell.offsetLeft}px`,
       );
+
+      // Second gutter rule, when present:
+      //   - Unified-both mode (default): two `.ln` cells per row, so
+      //     there's an INNER gutter between them at the first `.ln`'s
+      //     right edge. Captured as the FIRST row's first `.ln` cell
+      //     offsetLeft + offsetWidth.
+      //   - SBS mode: the tip side has its own gutter. Captured as
+      //     the first `.content` cell living inside `.sbs-side.tip`.
+      // Whichever applies, it lands in `--measured-gutter-2`. The
+      // two modes are mutually exclusive (SBS doesn't render two
+      // unified `.ln` columns), so one variable handles both.
+      let secondGutter: number | null = null;
+      const tipContent = wrapper.querySelector<HTMLTableCellElement>(
+        '.sbs-side.tip td.content',
+      );
+      if (tipContent && tipContent.offsetLeft > 0) {
+        secondGutter = tipContent.offsetLeft;
+      } else {
+        // Unified-both: two `.ln` cells in the first row. The first
+        // one's right edge is the inner gutter.
+        const firstRow = wrapper.querySelector<HTMLTableRowElement>('tr');
+        const lns = firstRow?.querySelectorAll<HTMLTableCellElement>('td.ln');
+        if (lns && lns.length >= 2) {
+          secondGutter = lns[0].offsetLeft + lns[0].offsetWidth;
+        }
+      }
+      if (secondGutter !== null && secondGutter > 0) {
+        wrapper.style.setProperty(
+          '--measured-gutter-2',
+          `${secondGutter}px`,
+        );
+      } else {
+        wrapper.style.removeProperty('--measured-gutter-2');
+      }
     };
     const ro = new ResizeObserver(measure);
     const observeLnCells = () => {
@@ -1111,6 +1187,7 @@
         {lastVisitAt}
         {viewer}
         {defaultThreadsCollapsed}
+        showFold={fileLevelComments.length > 1}
         {onreply}
         {onstatus}
         {ondelete}
@@ -1129,29 +1206,48 @@
        coverage; suppressed in diffs-only mode because comments
        are intentionally hidden there. -->
   {#if showDiffs && showComments && orphanLineComments.length > 0}
+    {@const orphanFolded = orphanSectionAllFolded()}
     <div
       class="orphan-threads"
       style:margin-left="var(--measured-gutter, {gutterIndentPx}px)"
     >
-      <p class="muted">
-        Anchored outside the diff's context — the lines these comments
-        attached to aren't part of the visible hunks.
-      </p>
-      <CommentThread
-        comments={orphanLineComments}
-        {responses}
-        {saving}
-        {currentPatchset}
-        {editingCommentId}
-        {lastVisitAt}
-        {viewer}
-        {defaultThreadsCollapsed}
-        {onreply}
-        {onstatus}
-        {ondelete}
-        {onedit}
-        {onselectpatchset}
-      />
+      <header class="orphan-header">
+        <!-- Section-level fold for the whole orphan group. Acts as
+             the gutter marker would for an in-diff line: one click
+             collapses every orphan to nothing, another expands them
+             back. Per-comment chevrons inside still work when the
+             section has more than one orphan. -->
+        <button
+          type="button"
+          class="orphan-toggle"
+          aria-expanded={!orphanFolded}
+          aria-label="{orphanFolded ? 'Expand' : 'Fold'} the orphan-comments section"
+          title="{orphanFolded ? 'Expand' : 'Fold'} this group"
+          onclick={toggleOrphanSection}
+        ><Chevron dir={orphanFolded ? 'right' : 'down'} size={14} filled /></button>
+        <p class="muted">
+          Anchored outside the diff's context — the lines these comments
+          attached to aren't part of the visible hunks.
+        </p>
+      </header>
+      {#if !orphanFolded}
+        <CommentThread
+          comments={orphanLineComments}
+          {responses}
+          {saving}
+          {currentPatchset}
+          {editingCommentId}
+          {lastVisitAt}
+          {viewer}
+          {defaultThreadsCollapsed}
+          showFold={orphanLineComments.length > 1}
+          {onreply}
+          {onstatus}
+          {ondelete}
+          {onedit}
+          {onselectpatchset}
+        />
+      {/if}
     </div>
   {/if}
 
@@ -1402,7 +1498,11 @@
               </button>
             </div>
           {:else if i < file.hunks.length - 1 && !wholeFile && hasGapAfter(i)}
-            <div class="hunk-gap">…</div>
+            <!-- Inter-hunk separator. The grey background is the
+                 only signal; no text, no borders. The continuous
+                 gutter line painted on the wrapper passes through
+                 it unbroken. -->
+            <div class="hunk-gap" aria-hidden="true"></div>
           {/if}
         {/each}
         </div>
@@ -1592,10 +1692,35 @@
     border-left: 3px solid var(--warn-text);
   }
 
-  .orphan-threads > p.muted {
-    margin: 0 0 6px;
+  .orphan-threads > .orphan-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 6px;
+  }
+
+  .orphan-threads .orphan-header p.muted {
+    margin: 0;
     font-size: 12px;
     color: var(--warn-text);
+  }
+
+  /* Section toggle uses the same filled-triangle Chevron the gutter
+   * marker uses, in the warn (orphan) palette so it tracks the rest
+   * of the section's accent. Acts as the "gutter" for this group —
+   * one click folds every orphan to nothing. */
+  .orphan-toggle {
+    background: transparent;
+    border: none;
+    color: var(--warn-text);
+    cursor: pointer;
+    padding: 0 2px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .orphan-toggle:hover {
+    filter: brightness(1.2);
   }
 
   .file-composer {
@@ -1729,23 +1854,65 @@
     overscroll-behavior-x: contain;
   }
 
-  .hunk-gap {
-    text-align: center;
-    color: var(--text-faint);
+  /* Inter-hunk separator + the expand-context affordances share the
+   * same panel-grey backdrop so all "artificial space" between
+   * content reads as one cohesive band. */
+  .hunk-gap,
+  .expand-row {
+    position: relative;
     background: var(--bg-panel);
-    border-top: 1px solid var(--border-muted);
-    border-bottom: 1px solid var(--border-muted);
-    padding: 2px 0;
-    font-family: ui-monospace, monospace;
-    font-size: 11px;
   }
 
+  .hunk-gap {
+    height: 8px;
+  }
+
+  /* Flex (not block + text-align) so the button is vertically
+   * centered in the row — text-align only positions inline content
+   * horizontally, leaving the button baseline-aligned and sitting
+   * a couple of px above the visual middle. */
   .expand-row {
-    /* No background or borders — the old strong-blue text on a panel
-     * fill drew the eye away from the diff content. The icon-only
-     * button is enough of a target on its own. */
+    display: flex;
+    align-items: center;
     padding: 2px 12px;
-    text-align: left;
+  }
+
+  /* Gutter rules through the separator. A single ::before paints
+   * BOTH the outer (`--measured-gutter`) and the inner / right-side
+   * (`--measured-gutter-2`) rules via stacked linear-gradients —
+   * unified-both has an inner rule between the two `.ln` cells,
+   * SBS has a right-side rule; the second variable handles whichever
+   * applies. The off-screen-left fallback (-1000px) on `--measured-
+   * gutter-2` collapses the second line out of view in unified-tip
+   * / unified-base where only one gutter exists. */
+  .hunk-gap::before,
+  .expand-row::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    pointer-events: none;
+    background:
+      linear-gradient(
+        to right,
+        transparent 0,
+        transparent calc(var(--measured-gutter, 65px) - 1px),
+        var(--border) calc(var(--measured-gutter, 65px) - 1px),
+        var(--border) var(--measured-gutter, 65px),
+        transparent var(--measured-gutter, 65px),
+        transparent 100%
+      ),
+      linear-gradient(
+        to right,
+        transparent 0,
+        transparent calc(var(--measured-gutter-2, -1000px) - 1px),
+        var(--border) calc(var(--measured-gutter-2, -1000px) - 1px),
+        var(--border) var(--measured-gutter-2, -1000px),
+        transparent var(--measured-gutter-2, -1000px),
+        transparent 100%
+      );
   }
 
   .expand-row button {

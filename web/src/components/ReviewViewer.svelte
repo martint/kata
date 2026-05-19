@@ -204,6 +204,20 @@
   // svelte-ignore state_referenced_locally
   const foldStore = createFoldStore(repo, view.manifest.number);
   setContext<FoldStore>('kata-fold-store', foldStore);
+  // Shared reactive version counter so a fold toggle in any one
+  // component (e.g. CommentThread's per-thread chevron) wakes every
+  // other consumer (e.g. HunkLines' aggregate marker, which needs
+  // to re-filter its threads) — the foldStore itself is a plain JS
+  // object with no built-in reactivity. Consumers call
+  // `version.read()` to register a dependency and `version.bump()`
+  // after a mutation.
+  let foldVersion = $state(0);
+  setContext<{ read: () => number; bump: () => void }>('kata-fold-version', {
+    read: () => foldVersion,
+    bump: () => {
+      foldVersion++;
+    },
+  });
   // Garbage-collect entries that no longer match anything in this
   // review — renamed files, deleted comments, dropped commits would
   // otherwise grow the per-review blob indefinitely. One-shot on
@@ -212,7 +226,14 @@
   // session orphans are harmless until the next reload.
   onMount(() => {
     foldStore.prune('file', view.diff.files.map((f) => f.path));
-    foldStore.prune('comment', view.comments.map((c) => c.comment_id));
+    // `comment` kind now stores per-thread fold state, keyed by the
+    // top-level comment's id OR an annotation's id (they're separate
+    // id spaces but share the same fold semantics). Keep both kinds
+    // of ids alive across the prune.
+    foldStore.prune('comment', [
+      ...view.comments.map((c) => c.comment_id),
+      ...(view.annotations ?? []).map((a) => a.annotation_id),
+    ]);
     foldStore.prune('commit', view.commits.map((c) => c.commit_id));
   });
 
@@ -601,6 +622,14 @@
     const superseded = () => myGen !== navGeneration;
     navigating = true;
     try {
+      // Unfold the target before scrolling. A folded thread doesn't
+      // render its thread-row at all, so `data-comment-id` is absent
+      // from the DOM and the retry loop below would time out chasing
+      // an element that never appears. The user explicitly navigated
+      // here, so honour that intent over their prior fold state —
+      // they can re-fold via the gutter marker if they want.
+      foldStore.set('comment', commentId, false);
+      foldVersion++;
       const sel = `[data-comment-id="${CSS.escape(commentId)}"]`;
       // Unified time budget for the whole operation. Cross-file nav
       // from a fresh page can have many intermediate slots to mount
