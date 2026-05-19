@@ -24,6 +24,11 @@
   import { resolutionFor } from '../lib/resolution';
   import { createFoldStore, type FoldStore } from '../lib/foldStore';
   import { parseLineRangeHash } from '../lib/linkHash';
+  import {
+    annotationComposerSurvivesPatchset,
+    composerSurvivesPatchset,
+    pruneFileDiffCache,
+  } from '../lib/patchsetSwap';
   import Chevron from './Chevron.svelte';
   import CommitsPanel from './CommitsPanel.svelte';
   import FileSlot from './FileSlot.svelte';
@@ -1594,17 +1599,60 @@
     // If the user was tracking the latest patchset and a new one just landed,
     // follow it forward; otherwise stay where they are.
     if (wasOnLatest && next.manifest.current_patchset !== selectedPatchset) {
+      const newPs = next.manifest.current_patchset;
+      // Compare-with would diff a patchset against itself if it now
+      // matches the new selection — drop it. Otherwise carry over.
+      const nextCompare = compareWith === newPs ? null : compareWith;
       current = await api.openReview(
         repo,
         current.manifest.number,
-        next.manifest.current_patchset,
-        compare,
+        newPs,
+        nextCompare ?? undefined,
       );
-      selectedPatchset = current.manifest.current_patchset;
+      selectedPatchset = newPs;
+      compareWith = nextCompare;
+      // Per-patchset scoped state is tied to commit IDs from the
+      // OLD patchset — a scoped commit or compare-pair selection
+      // from PS_old doesn't carry over to PS_new (the change-id may
+      // not even live in the new diff). Mirror the cleanup
+      // `selectPatchset` does so a fresh-patchset auto-advance
+      // doesn't leave the UI rendering the old scope under the new
+      // selection.
+      scopedChangeId = null;
+      scopedDiff = null;
+      selectedCompareCommit = null;
+      compareInterdiffFiles = null;
+      // Cancel in-progress composers whose anchor no longer makes
+      // sense against the new patchset. The new diff may have
+      // deleted the file the user was commenting on, or rewritten
+      // the commit they were anchored to — in either case the
+      // composer's overlay would render against content that no
+      // longer exists. Composers on still-present anchors stay
+      // open: the body is the user's work, and the comment will
+      // submit fine (anchor_commit_id resolves via the same
+      // re-anchor path Outdated comments use).
+      composing = composerSurvivesPatchset(composing, current);
+      composingAnnotation = annotationComposerSurvivesPatchset(
+        composingAnnotation,
+        current,
+      );
+      // Drop stale per-file diff cache entries. Keys from the old
+      // patchset (or any prior interdiff scope) will never be
+      // looked up again once `selectedPatchset` advances, so
+      // they're dead weight — slow memory leak across long
+      // sessions otherwise.
+      pruneFileDiffCache(fileDiffCache, newPs, nextCompare);
+      onviewchange?.({
+        patchset: newPs,
+        compareWith: nextCompare,
+        commit: null,
+        scope: null,
+      });
     } else {
       current = next;
     }
   }
+
 
   async function selectPatchset(n: number) {
     if (n === selectedPatchset) return;
