@@ -172,4 +172,31 @@ describe('CommentComposer', () => {
     });
     expect(screen.getByRole('button', { name: 'Save changes' })).toBeTruthy();
   });
+
+  test('header carries flags and tabs on the same row, no "commenting on" heading', () => {
+    // Layout was previously: heading + spacer + tabs on one row,
+    // flags on a second row. The composer is now narrow enough
+    // that wrapping the heading squeezed the tabs and made the
+    // user's eye jump across the whole form to find each control;
+    // the redesign drops the heading and pulls flags into the
+    // same header row as the tabs.
+    const { container } = renderComposer({
+      target: {
+        kind: 'line',
+        file: 'a/very/long/path/to/a/file.svelte',
+        side: 'tip',
+        startLine: 123,
+        endLine: 145,
+      },
+    });
+    const header = container.querySelector('.composer > header');
+    expect(header).toBeTruthy();
+    // Both controls live inside the same header element.
+    expect(header!.querySelector('.flags')).toBeTruthy();
+    expect(header!.querySelector('.tabs')).toBeTruthy();
+    // No leftover heading text. The old layout rendered something
+    // like "commenting on a/very/long/path…:123-145 (tip)".
+    expect(header!.textContent).not.toMatch(/commenting on/i);
+    expect(header!.textContent).not.toMatch(/editing draft/i);
+  });
 });

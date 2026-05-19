@@ -80,32 +80,15 @@
     }
   }
 
-  const heading = $derived.by(() => {
-    const verb = target.editing ? 'editing draft on' : 'commenting on';
-    if (target.kind === 'line') {
-      const range =
-        target.startLine === target.endLine
-          ? `${target.startLine}`
-          : `${target.startLine}-${target.endLine}`;
-      return `${verb} ${target.file}:${range} (${target.side})`;
-    }
-    if (target.kind === 'file') {
-      return `${verb} ${target.file}`;
-    }
-    if (target.kind === 'commit') {
-      const short = target.change_id.slice(0, 12);
-      return `${verb} commit ${short}`;
-    }
-    return target.editing
-      ? 'editing draft on the whole review'
-      : 'commenting on the whole review';
-  });
 </script>
 
 <form class="composer" onsubmit={submit}>
   <header>
-    <span class="muted">{heading}</span>
-    <span style="flex: 1"></span>
+    <div class="flags">
+      <label><input type="radio" bind:group={flag} value="must-do" /> Must do</label>
+      <label><input type="radio" bind:group={flag} value="suggestion" /> Suggestion</label>
+      <label><input type="radio" bind:group={flag} value="question" /> Question</label>
+    </div>
     <div class="tabs" role="tablist">
       <button
         type="button"
@@ -123,11 +106,6 @@
       >
     </div>
   </header>
-  <div class="flags">
-    <label><input type="radio" bind:group={flag} value="must-do" /> Must do</label>
-    <label><input type="radio" bind:group={flag} value="suggestion" /> Suggestion</label>
-    <label><input type="radio" bind:group={flag} value="question" /> Question</label>
-  </div>
   {#if mode === 'edit'}
     <textarea
       bind:this={textareaEl}
@@ -177,8 +155,17 @@
   .composer header {
     display: flex;
     align-items: center;
+    /* Flags on the left, Write/Preview tabs pushed to the right —
+     * one toolbar row instead of two, so the user's eye doesn't
+     * have to traverse the whole composer to find the controls. */
     gap: 8px;
     font-size: 12px;
+  }
+
+  .composer header .flags {
+    /* Spacer between flags and tabs without using a separate
+     * empty element. */
+    margin-right: auto;
   }
 
   .tabs {
