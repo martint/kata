@@ -282,11 +282,12 @@
   }
   let viewMode = $state<ViewMode>(readViewMode());
   const showDiffs = $derived(viewMode !== 'comments');
-  // Comments are always part of the diff view now — `diffs` mode
-  // collapses them with a gutter marker instead of hiding them
-  // outright. `showComments` stays true wherever the diff renders,
-  // so the marker + per-thread expansion always works.
-  const showComments = $derived(true);
+  // `diffs` mode hides the comment UI entirely so the reviewer can
+  // read the code without distraction; `both` and `comments` render
+  // the threads. Per-line + comment buttons, inline threads, file-
+  // and orphan-thread blocks, and outdated chevrons all gate on
+  // this — diffs mode is pure code.
+  const showComments = $derived(viewMode !== 'diffs');
   /** Default per-thread collapse state when the user hasn't toggled a
    *  specific anchor yet. `diffs` mode wants every thread collapsed
    *  so the diff stays clean; `both` mode wants them expanded so the
@@ -404,13 +405,47 @@
       (c) => filterStatus[statusBucket(c, allResponses)] && filterFlag[c.flag],
     ),
   );
-  /** Switch the view mode. Toggling re-renders the file list and
-   *  scrolls the page back to the top, so re-anchor on the active
-   *  nav comment after the layout flushes. */
+  /** Switch the view mode. Toggling between diffs ↔ both adds /
+   *  removes inline comment threads, which would otherwise shove
+   *  the page content up or down by many pixels — the reviewer's
+   *  cursor in the diff would jump to a different line. Anchor to
+   *  the diff cell at the top of the viewport, switch the mode,
+   *  then scroll the page so that same cell lands back where it
+   *  was. When the anchor cell is no longer in the DOM (e.g.
+   *  going into comments mode, which throws away the hunks),
+   *  fall back to the prior behavior of re-anchoring on the
+   *  active nav comment. */
   async function setViewMode(m: ViewMode) {
     if (m === viewMode) return;
+    const anchor = captureTopCell();
     viewMode = m;
-    await rescrollNavComment();
+    await tick();
+    if (anchor && anchor.el.isConnected) {
+      const newY = anchor.el.getBoundingClientRect().top;
+      window.scrollBy(0, newY - anchor.offsetFromTop);
+    } else {
+      await rescrollNavComment();
+    }
+  }
+  /** Find the topmost diff content cell that's at least partially
+   *  visible below the sticky app header. Returns the element + its
+   *  current viewport y so the caller can restore that y after a
+   *  re-layout. `null` when no diff cell is visible (e.g. the user
+   *  is scrolled into a placeholder or above all files). */
+  function captureTopCell(): { el: HTMLElement; offsetFromTop: number } | null {
+    const headerBottom =
+      document.querySelector<HTMLElement>('header.app')
+        ?.getBoundingClientRect().bottom ?? 0;
+    const cells = document.querySelectorAll<HTMLElement>(
+      'td.content[data-line]',
+    );
+    for (const cell of cells) {
+      const r = cell.getBoundingClientRect();
+      if (r.bottom > headerBottom) {
+        return { el: cell, offsetFromTop: r.top };
+      }
+    }
+    return null;
   }
   async function rescrollNavComment() {
     if (!navCommentId) return;
@@ -890,7 +925,10 @@
           }
         : null,
       comments:
-        orderedComments.length > 0
+        // Comment-nav < > would scroll to anchors that are hidden
+        // in diffs mode (showComments=false). Suppress the whole
+        // nav in that mode.
+        showComments && orderedComments.length > 0
           ? {
               total: orderedComments.length,
               position: navPosition,
