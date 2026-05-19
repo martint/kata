@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick } from 'svelte';
+  import { onMount, setContext, tick } from 'svelte';
   import { SvelteMap } from 'svelte/reactivity';
   import { api } from '../lib/api';
   import { subscribe as subscribeEvents } from '../lib/events';
@@ -149,6 +149,11 @@
      *  pair-list selection takes its place). Undefined means
      *  "show the whole review". */
     initialScope?: string;
+    /** Opt-in debug affordances (URL `?debug`). Currently a per-file
+     *  "show jj equivalent" icon in the file header. Threaded down
+     *  through a context so deeply-nested components can read it
+     *  without prop-drilling. */
+    debug?: boolean;
     /** Fires when the user picks a different patchset, compare
      *  target, per-commit compare selection, or non-compare scoped
      *  commit. App.svelte mirrors all four fields into the URL and
@@ -174,9 +179,17 @@
     initialCompareWith,
     initialCommit,
     initialScope,
+    debug = false,
     onviewchange,
     ontoolbarchange,
   }: Props = $props();
+
+  // Expose the debug flag via Svelte context so leaf components
+  // (FileDiff) can read it without prop-drilling. Set once on mount
+  // — the flag is part of the URL state, so a `?debug` toggle
+  // remounts ReviewViewer (via the {#key} in App.svelte) and the
+  // new context value flows through.
+  setContext<boolean>('kata-debug', debug);
 
   // We seed local state from the prop and then manage refreshes ourselves.
   // svelte-ignore state_referenced_locally

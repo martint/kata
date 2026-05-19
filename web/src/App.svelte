@@ -24,6 +24,7 @@
         initialCompareWith: number | undefined;
         initialCommit: string | undefined;
         initialScope: string | undefined;
+        debug: boolean;
       };
 
   // Synchronously decide the initial screen based on the URL, BEFORE the
@@ -80,6 +81,7 @@
     compareWith?: number | null;
     commit?: string | null;  // compare-mode pair selection
     scope?: string | null;   // non-compare commit-panel scoping
+    debug?: boolean;         // `?debug` opt-in; preserved across nav
   }
 
   function pathForReview(
@@ -103,12 +105,16 @@
     if (state.scope != null && state.compareWith == null) {
       parts.push(`scope=${encodeURIComponent(state.scope)}`);
     }
+    // Preserve `?debug` across in-app navigation so the user doesn't
+    // have to re-type it after every patchset/compare/scope change.
+    if (state.debug) parts.push('debug');
     return parts.length > 0 ? `${base}?${parts.join('&')}` : base;
   }
 
   /** Parse `/r/<repo>/<number>` (with optional `?ps=N`, `?cmp=M`,
-   *  `?commit=<id>`, `?scope=<id>`). Returns null when the URL is the
-   *  review list (or when `<number>` isn't a positive integer). */
+   *  `?commit=<id>`, `?scope=<id>`, `?debug`). Returns null when the
+   *  URL is the review list (or when `<number>` isn't a positive
+   *  integer). */
   function parseUrl():
     | {
         repo: string;
@@ -117,6 +123,7 @@
         compareWith: number | undefined;
         commit: string | undefined;
         scope: string | undefined;
+        debug: boolean;
       }
     | null {
     const m = location.pathname.match(/^\/r\/([^/]+)\/(\d+)$/);
@@ -135,6 +142,11 @@
       compareWith: readNum('cmp'),
       commit: params.get('commit') ?? undefined,
       scope: params.get('scope') ?? undefined,
+      // `?debug` (with or without a value) turns on debug
+      // affordances — currently the per-file "show jj command"
+      // icon. Not surfaced in the UI to enable; users opt in by
+      // typing `?debug` (or `?debug=1`) into the URL bar.
+      debug: params.has('debug'),
     };
   }
 
@@ -161,6 +173,7 @@
     compareWith: number | undefined,
     commit: string | undefined,
     scope: string | undefined,
+    debug: boolean,
   ) {
     loading = true;
     error = null;
@@ -174,6 +187,7 @@
         initialCompareWith: compareWith,
         initialCommit: commit,
         initialScope: scope,
+        debug,
       };
     } catch (e) {
       error = (e as Error).message;
@@ -190,7 +204,7 @@
     if (location.pathname + location.search !== path) {
       history.pushState({}, '', path);
     }
-    await showReview(repo, number, undefined, undefined, undefined, undefined);
+    await showReview(repo, number, undefined, undefined, undefined, undefined, false);
   }
 
   /** Called by ReviewViewer when any of its view-state fields change
@@ -206,7 +220,10 @@
     const path = pathForReview(
       screen.repo,
       screen.view.manifest.number,
-      state,
+      // Preserve the debug flag — ReviewViewer doesn't know about it
+      // (it's a URL-only toggle), and dropping it on every patchset /
+      // compare switch would make `?debug` feel broken.
+      { ...state, debug: screen.debug },
     );
     if (location.pathname + location.search !== path) {
       history.pushState({}, '', path);
@@ -242,6 +259,7 @@
         parsed.compareWith,
         parsed.commit,
         parsed.scope,
+        parsed.debug,
       );
     } else {
       screen = { kind: 'list' };
@@ -579,7 +597,7 @@
          In-app navigation (dropdowns, pair clicks) doesn't change the
          initial* fields — those are only re-assigned by `showReview` —
          so no spurious remounts during normal use. -->
-    {#key `${screen.repo}|${screen.view.manifest.number}|${screen.initialPatchset ?? ''}|${screen.initialCompareWith ?? ''}|${screen.initialCommit ?? ''}|${screen.initialScope ?? ''}`}
+    {#key `${screen.repo}|${screen.view.manifest.number}|${screen.initialPatchset ?? ''}|${screen.initialCompareWith ?? ''}|${screen.initialCommit ?? ''}|${screen.initialScope ?? ''}|${screen.debug}`}
       <ReviewViewer
         repo={screen.repo}
         view={screen.view}
@@ -588,6 +606,7 @@
         initialCompareWith={screen.initialCompareWith}
         initialCommit={screen.initialCommit}
         initialScope={screen.initialScope}
+        debug={screen.debug}
         onviewchange={onViewChange}
         ontoolbarchange={(t) => (toolbar = t)}
       />

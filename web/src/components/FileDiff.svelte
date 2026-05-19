@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { tick } from 'svelte';
+  import { getContext, tick } from 'svelte';
+  import { copyText } from '../lib/clipboard';
   import { api } from '../lib/api';
   import type {
     CommentView,
@@ -119,6 +120,38 @@
   }: Props = $props();
 
   let collapsed = $state(false);
+
+  /** Debug-mode hooks. `debug` comes from ReviewViewer's context
+   *  (turned on by `?debug` in the URL). When true, the file header
+   *  renders a "$" icon that toggles a panel showing the literal
+   *  `jj diff` command equivalent for this file's current view —
+   *  handy when cross-checking what the UI actually computes against
+   *  what the CLI would say. */
+  const debug = getContext<boolean>('kata-debug') ?? false;
+  let debugOpen = $state(false);
+  /** Build the literal commit-to-commit `jj diff` command for the
+   *  endpoints this file is currently being diffed against. Works
+   *  for every mode (normal, compare cumulative, scoped commit,
+   *  per-commit interdiff) because `patchset` is the synthetic
+   *  view-endpoints set by ReviewViewer's `viewingFor` derivation,
+   *  not the raw review-manifest patchset. For the libjj
+   *  rebase-based interdiff path the UI's actual diff is not
+   *  literal commit-to-commit, so the command output won't match —
+   *  the debug panel notes that. */
+  const jjCommand = $derived.by(() => {
+    const base = patchset.base_commit;
+    const tip = patchset.tip_commit;
+    return `jj diff --from ${base} --to ${tip} -- ${shellQuote(file.path)}`;
+  });
+  /** POSIX-shell single-quote a path. Paths in our corpus don't have
+   *  control chars; the only risk is spaces or special globbing
+   *  chars. Wrap in single quotes and escape any embedded single
+   *  quotes with the standard `'\''` dance. */
+  function shellQuote(s: string): string {
+    if (/^[A-Za-z0-9_./\-]+$/.test(s)) return s;
+    return "'" + s.replace(/'/g, "'\\''") + "'";
+  }
+
   /** When an existing draft is being edited, hide it from the thread so
    *  the composer below takes its visual slot instead of stacking under
    *  the original draft bubble. */
@@ -880,6 +913,63 @@
         <Bubble size={14} />
       </button>
     {/if}
+    {#if debug}
+      <!-- Debug affordance, only visible with `?debug` in the URL.
+           Toggles an inline panel that drops down inside the header
+           (flex-wrap onto a new row) so it stays attached to the
+           sticky header as the file content scrolls. -->
+      <button
+        type="button"
+        class="debug-cmd"
+        aria-label={debugOpen ? 'Hide jj command' : 'Show jj command'}
+        aria-pressed={debugOpen}
+        title="Show / copy the jj equivalent command for this view"
+        onclick={() => (debugOpen = !debugOpen)}
+      >
+        <!-- Bug glyph (stroke-only to match the other header icons).
+             Oval body + center seam, two antennae poking up, three
+             legs each side. -->
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 16 16"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.25"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+          focusable="false"
+        >
+          <path d="M5 2 L6.5 4" />
+          <path d="M11 2 L9.5 4" />
+          <rect x="4.5" y="4" width="7" height="9" rx="3" />
+          <line x1="8" y1="4" x2="8" y2="13" />
+          <line x1="4.5" y1="7" x2="2" y2="6" />
+          <line x1="4.5" y1="9" x2="1.5" y2="9.5" />
+          <line x1="4.5" y1="11" x2="2" y2="12.5" />
+          <line x1="11.5" y1="7" x2="14" y2="6" />
+          <line x1="11.5" y1="9" x2="14.5" y2="9.5" />
+          <line x1="11.5" y1="11" x2="14" y2="12.5" />
+        </svg>
+      </button>
+    {/if}
+    {#if debug && debugOpen}
+      <div class="debug-panel">
+        <code>{jjCommand}</code>
+        <button
+          type="button"
+          class="debug-copy"
+          title="Copy to clipboard"
+          onclick={() => void copyText(jjCommand)}
+        >Copy</button>
+        <p class="debug-note muted">
+          Literal commit-to-commit diff. In per-commit compare mode
+          (Changed pairs) the UI computes a rebase-based interdiff via
+          jj-lib, so the literal command's output will differ.
+        </p>
+      </div>
+    {/if}
   </header>
 
   {#if showComments && fileLevelComments.length > 0}
@@ -1132,6 +1222,11 @@
   .file-header {
     display: flex;
     align-items: center;
+    /* `flex-wrap` lets the debug-mode `jj diff` panel sit on a
+     * second row INSIDE this sticky element. Without wrap, the
+     * panel would overflow the single-row layout (or — worse —
+     * push existing controls out of view). */
+    flex-wrap: wrap;
     gap: 8px;
     padding: 8px 12px;
     /* `--bg-elevated` is a step darker than `--bg-panel` — strong
@@ -1406,5 +1501,75 @@
     padding: 12px;
     margin: 0;
     font-style: italic;
+  }
+
+  /* Debug-mode jj-command panel. Only visible with `?debug` in the
+     URL — kept understated (no bright accents) since it's a
+     diagnostic, not a primary affordance. */
+  .debug-cmd {
+    background: transparent;
+    border: none;
+    color: var(--text-faint);
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 3px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .debug-cmd:hover {
+    color: var(--link);
+    background: var(--link-bg);
+  }
+  .debug-cmd[aria-pressed='true'] {
+    color: var(--link);
+    background: var(--link-bg);
+  }
+  .debug-panel {
+    /* Drops onto a second flex row inside the sticky `.file-header`
+     * — `flex-basis: 100%` forces a wrap regardless of available
+     * width. Inherits the header's sticky positioning, so the panel
+     * stays pinned with the header as the file scrolls. */
+    flex: 0 0 100%;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    /* Negative horizontal margin to undo the header's 12px padding
+     * so the panel spans full width; vertical margin pulls it up
+     * tight against the header row. */
+    margin: 4px -12px -8px;
+    padding: 6px 12px;
+    background: var(--bg-panel);
+    border-top: 1px solid var(--border-muted);
+    font-size: 12px;
+  }
+  .debug-panel code {
+    flex: 1;
+    min-width: 0;
+    overflow-x: auto;
+    white-space: nowrap;
+    background: var(--bg-elevated);
+    padding: 3px 6px;
+    border-radius: 3px;
+    font-family: ui-monospace, monospace;
+  }
+  .debug-copy {
+    flex: 0 0 auto;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 3px 8px;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 12px;
+  }
+  .debug-copy:hover {
+    background: var(--bg-panel);
+  }
+  .debug-note {
+    flex-basis: 100%;
+    margin: 0;
+    font-size: 11px;
   }
 </style>
