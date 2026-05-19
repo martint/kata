@@ -737,6 +737,31 @@
     }
   }
 
+  /** Lightweight permalink jumper for annotations. Brings the
+   *  hosting file slot into view, then waits for the bubble's
+   *  `data-annotation-id` to appear and scrolls it into the
+   *  upper-third of the viewport. Skips the full re-park / nav-
+   *  generation handshake of `scrollToComment` — annotations
+   *  have no thread state that the user navigates between, so
+   *  the simpler version is enough. */
+  async function scrollToAnnotation(annotationId: string, file: string | null) {
+    if (file) {
+      const slot = document.querySelector<HTMLElement>(
+        `[data-file-path="${CSS.escape(file)}"]`,
+      );
+      if (slot) scrollTopOf(slot);
+    }
+    const sel = `[data-annotation-id="${CSS.escape(annotationId)}"]`;
+    const start = performance.now();
+    let el = document.querySelector<HTMLElement>(sel);
+    while (!el && performance.now() - start < 4000) {
+      await new Promise((r) => requestAnimationFrame(r));
+      el = document.querySelector<HTMLElement>(sel);
+    }
+    if (!el) return;
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }
+
   function navPrev() {
     navTo(navPosition === 0 ? orderedComments.length : navPosition - 1);
   }
@@ -1793,6 +1818,18 @@
       ].find((c) => c.comment_id === commentId);
       if (!comment) return;
       void scrollToComment(comment.comment_id, comment.file ?? null);
+    } else if (hash.startsWith('#n-')) {
+      // Same shape as `#c-` but for annotations. Looks the
+      // annotation up so we can pre-scroll the right slot into
+      // view (and so a stale permalink with no matching note
+      // is a graceful no-op rather than a hang on the retry
+      // loop).
+      const annotationId = decodeURIComponent(hash.slice(3));
+      const annotation = (current.annotations ?? []).find(
+        (a) => a.annotation_id === annotationId,
+      );
+      if (!annotation) return;
+      void scrollToAnnotation(annotation.annotation_id, annotation.file ?? null);
     } else if (hash.startsWith('#file-')) {
       const path = decodeURIComponent(hash.slice(6));
       void scrollToFile(path);

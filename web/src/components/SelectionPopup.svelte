@@ -28,13 +28,21 @@
     oncomment: () => void;
     /** Copy the selected text to the clipboard as plain text. */
     oncopy: () => void;
+    /** Open the annotation (note) composer anchored to the
+     *  selection's line range. Optional — only rendered when the
+     *  caller supplies it AND the viewer is allowed to annotate
+     *  (review creator). When absent, the popup shrinks back to
+     *  the two-button (comment + copy) layout. */
+    onnote?: () => void;
   }
-  const { selection, anchorX, anchorY, oncomment, oncopy }: Props = $props();
+  const { selection, anchorX, anchorY, oncomment, oncopy, onnote }: Props = $props();
+  const showNote = $derived(onnote !== undefined);
 
-  // Approximate popup footprint — two 26-px buttons + 2-px gap +
-  // 3-px padding on each side. Used to flip the popup above / left
-  // of the anchor when it would otherwise overflow the viewport.
-  const POPUP_W = 62;
+  // Approximate popup footprint. Two-button (comment + copy): 62.
+  // Three-button (+ note): 62 + 28 = 90. Used to flip the popup
+  // above / left of the anchor when it would otherwise overflow
+  // the viewport.
+  const POPUP_W = $derived(showNote ? 90 : 62);
   const POPUP_H = 32;
   const GAP = 6;
 
@@ -80,6 +88,21 @@
     >
       <Bubble size={14} />
     </button>
+    {#if showNote}
+      <button
+        type="button"
+        class="popup-btn"
+        title="Add note on selection"
+        aria-label="Add note on selection"
+        onmousedown={(e) => e.preventDefault()}
+        onclick={() => onnote?.()}
+      >
+        <!-- Amber "N" mirrors the gutter `.add-note` button so the
+             two affordances read as the same action surfaced in
+             two places. -->
+        <span class="note-glyph">N</span>
+      </button>
+    {/if}
     <button
       type="button"
       class="popup-btn"
@@ -151,5 +174,12 @@
   .popup-btn:focus-visible {
     outline: 2px solid var(--link);
     outline-offset: -2px;
+  }
+
+  .note-glyph {
+    font-weight: 700;
+    font-size: 11px;
+    color: var(--attention-text);
+    line-height: 1;
   }
 </style>

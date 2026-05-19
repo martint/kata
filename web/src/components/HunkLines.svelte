@@ -67,10 +67,10 @@
      *  annotation gets stored against the right commit. */
     annotationAnchorIds?: { change: string; commit: string };
     /** Whether the viewer is allowed to author annotations. Gates the
-     *  "+ Note" gutter button and the edit/delete affordances on
-     *  existing bubbles. */
+     *  edit/delete affordances on existing bubbles. Annotation
+     *  creation is initiated from the selection popup in
+     *  FileDiff, not from this component. */
     canAnnotate?: boolean;
-    onstartannotate?: (target: AnnotationComposerTarget) => void;
     oncancelannotate?: () => void;
     onsubmitannotation?: (input: AnnotationInput) => Promise<void>;
     ondeleteannotation?: (annotation: AnnotationView) => Promise<void>;
@@ -105,7 +105,6 @@
     composingAnnotation = null,
     annotationAnchorIds = { change: '', commit: '' },
     canAnnotate = false,
-    onstartannotate = () => {},
     oncancelannotate = () => {},
     onsubmitannotation = async () => {},
     ondeleteannotation = async () => {},
@@ -427,20 +426,6 @@
     );
   }
 
-  /** Start an annotation. Mirrors `onPointerDown` for the comment
-   *  flow but skips the drag — annotations open with a single-line
-   *  range by default; the composer can be edited to expand if
-   *  needed (future enhancement). */
-  function startAnnotateHere(side: Side, line: number) {
-    if (!canAnnotate) return;
-    onstartannotate({
-      kind: 'line',
-      file: filePath,
-      side,
-      startLine: line,
-      endLine: line,
-    });
-  }
 
   /** Set of `side:line` keys for every line covered by a comment's
    *  anchored range. Used to tint the line so the reader can see what
@@ -454,17 +439,35 @@
    *  there would imply the comment is about lines it isn't. Those
    *  threads render at the file level instead — see the
    *  orphan-threads block in `FileDiff.svelte`. */
-  const commentedLines = $derived.by(() => {
-    const set = new Set<string>();
+  /** Per-line state for the gutter stripe.
+   *
+   *  `present`: line is inside at least one comment's range. Gets
+   *  the basic stripe (replaces the old set membership).
+   *  `startsHere` / `endsHere`: at least one comment's range
+   *  starts / ends on this line. Drives the rounded end-caps so a
+   *  multi-line range reads as one continuous pill and two adjacent
+   *  single-line comments read as two separate pills (a single-
+   *  line range has `startsHere && endsHere`, so the stripe gets
+   *  caps on BOTH ends).
+   *
+   *  Outdated anchors are excluded — same reason the old
+   *  `commentedLines` skipped them: tinting new content for an
+   *  outdated thread misleads the reader. */
+  const commentRangeByLine = $derived.by(() => {
+    const map = new Map<
+      string,
+      { present: boolean; startsHere: boolean; endsHere: boolean }
+    >();
+    const get = (key: string) => {
+      let v = map.get(key);
+      if (!v) {
+        v = { present: false, startsHere: false, endsHere: false };
+        map.set(key, v);
+      }
+      return v;
+    };
     for (const c of comments) {
       if (!c.side) continue;
-      // Outdated anchors are excluded from the highlight — their
-      // original content has changed, so tinting the *new* content
-      // there would mislead the reader. Those comments still render
-      // inline (their thread row appears at the original line) but
-      // they get the gutter chevron instead, signalling "comment
-      // here, but the line below isn't what was originally
-      // commented on." See the chevron rendering further down.
       if (c.anchor.kind === 'outdated') continue;
       const effective =
         c.anchor.kind === 'moved' || c.anchor.kind === 'drifted'
@@ -472,10 +475,12 @@
           : c.lines;
       if (!effective) continue;
       for (let l = effective.start; l <= effective.end; l++) {
-        set.add(`${c.side}:${l}`);
+        get(`${c.side}:${l}`).present = true;
       }
+      get(`${c.side}:${effective.start}`).startsHere = true;
+      get(`${c.side}:${effective.end}`).endsHere = true;
     }
-    return set;
+    return map;
   });
 
   /** Subset of `commentedLines` that have at least one comment WITHOUT
@@ -566,12 +571,29 @@
 
   function isCommented(a: { side: Side; line: number } | null): boolean {
     if (!showComments) return false;
-    return a != null && commentedLines.has(`${a.side}:${a.line}`);
+    return (
+      a != null && (commentRangeByLine.get(`${a.side}:${a.line}`)?.present ?? false)
+    );
   }
 
   function isFullLineCommented(a: { side: Side; line: number } | null): boolean {
     if (!showComments) return false;
     return a != null && fullLineCommentedLines.has(`${a.side}:${a.line}`);
+  }
+
+  /** End-cap modifiers for `.row.commented .content`. Returns a
+   *  space-prefixed class string ready to concat into the `<tr>`
+   *  class list. */
+  function commentRangeClasses(
+    a: { side: Side; line: number } | null,
+  ): string {
+    if (!a) return '';
+    const r = commentRangeByLine.get(`${a.side}:${a.line}`);
+    if (!r || !r.present) return '';
+    let out = '';
+    if (r.startsHere) out += ' range-start';
+    if (r.endsHere) out += ' range-end';
+    return out;
   }
 
   /** Comments / annotations whose anchor range COVERS this line —
@@ -724,7 +746,7 @@
            index 1 baseline + (totalLines - i) so the earliest
            marker wins. -->
       {@const stackZ = markerCount > 0 ? hunk.lines.length - i + 1 : undefined}
-      <tr class={`${rowClass(line.origin)}${isCommented(a) ? ' commented' : ''}${isFullLineCommented(a) ? ' commented-fullline' : ''}`}>
+      <tr class={`${rowClass(line.origin)}${isCommented(a) ? ' commented' : ''}${isFullLineCommented(a) ? ' commented-fullline' : ''}${commentRangeClasses(a)}`}>
         {#if showBase}
           <!-- data-side/data-line are also on the gutter cell so that the
                drag-selection logic finds it via `elementFromPoint` while
@@ -747,16 +769,6 @@
               >
                 <Bubble size={12} />
               </button>
-              {#if canAnnotate}
-                <button
-                  type="button"
-                  class="add-note"
-                  title="Add author note (only the review creator can do this)"
-                  onclick={() => startAnnotateHere(a.side, a.line)}
-                >
-                  N
-                </button>
-              {/if}
             {/if}
             {#if a && !showTip && markerCount > 0}
               <button
@@ -1015,8 +1027,47 @@
    * Lines that only have column-anchored comments don't get the
    *   full-row tint; their highlight is the underlined-text bg
    *   painted by `.column-anchor` above. */
+  /* Gutter stripe is a pseudo-element so the FIRST and LAST line of
+   * each comment range can grow a rounded "cap" (a small top/bottom
+   * gap) — that's what tells a 2-line comment apart from two
+   * adjacent single-line comments. The previous `box-shadow: inset`
+   * stripe couldn't do per-row caps; the pseudo can.
+   *
+   * - middle of a multi-line range: full-height flat stripe (caps
+   *   on the neighbours visually "round off" the range);
+   * - `.range-start`: top inset by 2 px + rounded top corner — the
+   *   start of a range looks like "the pill begins here";
+   * - `.range-end`: bottom inset + rounded bottom corner — same
+   *   trick at the end;
+   * - single-line comment (`.range-start.range-end`): both gaps +
+   *   both corners → a discrete pill. Two adjacent single-line
+   *   comments therefore render as two clearly-separated pills.
+   *
+   * `.content` already has implicit static position; pseudo is
+   * `pointer-events: none` so it can't swallow clicks meant for
+   * the row. */
   .row.commented .content {
-    box-shadow: inset 3px 0 0 var(--link);
+    position: relative;
+  }
+  .row.commented .content::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 3px;
+    background: var(--link);
+    pointer-events: none;
+  }
+  .row.commented.range-start .content::before {
+    top: 2px;
+    border-top-left-radius: 2px;
+    border-top-right-radius: 2px;
+  }
+  .row.commented.range-end .content::before {
+    bottom: 2px;
+    border-bottom-left-radius: 2px;
+    border-bottom-right-radius: 2px;
   }
   .row.commented-fullline .content {
     background-image: linear-gradient(var(--selection-tint), var(--selection-tint));
@@ -1108,38 +1159,6 @@
     border-color: var(--link);
   }
 
-  /* Sibling of `.add-comment` — sits just below so both gutter
-   * affordances stay close to the line they target. Amber palette
-   * matches AnnotationBubble / AnnotationComposer so the reader
-   * builds the colour mapping (blue = comment, amber = note). */
-  .add-note {
-    position: absolute;
-    right: -9px;
-    top: calc(50% + 11px);
-    transform: translateY(-50%);
-    width: 18px;
-    height: 18px;
-    padding: 0;
-    border: 1px solid var(--attention-border);
-    border-radius: 4px;
-    background: var(--bg-elevated);
-    color: var(--attention-text);
-    font-weight: 700;
-    font-size: 11px;
-    line-height: 16px;
-    cursor: pointer;
-    visibility: hidden;
-    user-select: none;
-  }
-
-  .row:hover .add-note {
-    visibility: visible;
-  }
-
-  .add-note:hover {
-    background: var(--attention-border);
-    color: var(--bg);
-  }
 
   /* The thread-row's tinted background bleeds through wherever the
    * inner sticky block doesn't cover — that's the line-number gutter

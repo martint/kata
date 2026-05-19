@@ -719,6 +719,27 @@
     window.getSelection()?.removeAllRanges();
   }
 
+  /** Open the annotation composer anchored to the current text
+   *  selection. Same shape as `commentOnSelection` — line-level
+   *  target on this file's `side`; annotations don't carry
+   *  columns yet (the storage model has no `columns` field on
+   *  Annotation), so the precise sub-line range is lost. Worth
+   *  picking up later if author notes start wanting partial-
+   *  selection precision. */
+  function noteOnSelection() {
+    const s = selectionPopup;
+    if (!s) return;
+    onstartannotate({
+      kind: 'line',
+      file: file.path,
+      side: s.side,
+      startLine: s.startLine,
+      endLine: s.endLine,
+    });
+    selectionPopup = null;
+    window.getSelection()?.removeAllRanges();
+  }
+
   /** Cached file content for each side of the patchset. Populated
    *  lazily by `ensureFileContent` (kicked off as soon as a drag
    *  begins inside this file's `.content`, see the mousedown handler).
@@ -2037,7 +2058,6 @@
               {composingAnnotation}
               {annotationAnchorIds}
               {canAnnotate}
-              {onstartannotate}
               {oncancelannotate}
               {onsubmitannotation}
               {ondeleteannotation}
@@ -2070,7 +2090,6 @@
               {composingAnnotation}
               {annotationAnchorIds}
               {canAnnotate}
-              {onstartannotate}
               {oncancelannotate}
               {onsubmitannotation}
               {ondeleteannotation}
@@ -2199,6 +2218,7 @@
   anchorY={popupAnchorY}
   oncomment={commentOnSelection}
   oncopy={copySelection}
+  onnote={canAnnotate ? noteOnSelection : undefined}
 />
 
 <style>
@@ -2223,8 +2243,10 @@
     /* Drag-selecting in a diff that runs to the end of the file
      * shouldn't extend the selection into the NEXT file's header
      * (which sits just below the last hunk). `user-select: none`
-     * makes the header unselectable, so the browser stops the
-     * range at the previous content's edge. */
+     * stops the browser's range at the previous content's edge.
+     * The `.path` child re-enables selection for the file name
+     * specifically — that text is the most-copied bit of the
+     * header (paste into chat / a terminal / a bug report). */
     user-select: none;
     /* `--bg-elevated` is a step darker than `--bg-panel` — strong
      * enough that the file boundary registers immediately while
@@ -2257,6 +2279,12 @@
 
   .file-header .path {
     flex: 1 1 auto;
+    /* Re-enable selection that the outer `.file-header` disabled.
+     * The path is the most-copied bit of the header (paste into
+     * chat, a terminal, a bug report); the header-wide
+     * `user-select: none` only exists to keep drag-selections in
+     * the diff from spilling into the next file's header. */
+    user-select: text;
     /* Without min-width:0 the path's intrinsic width pins the header
      * open, which on a phone overflows the viewport and squeezes the
      * diff into a horizontal-scroll slice. direction:rtl moves the

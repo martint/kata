@@ -9,6 +9,7 @@
   //! no draft/state badges. Edit and delete affordances ship in a
   //! follow-up commit; this is display-only.
 
+  import { copyText } from '../lib/clipboard';
   import { renderMarkdown } from '../lib/markdown';
   import type { AnnotationView } from '../lib/types';
   import Chevron from './Chevron.svelte';
@@ -60,10 +61,25 @@
     if (Number.isNaN(d.getTime())) return iso;
     return d.toLocaleString();
   }
+
+  /** Same-origin permalink with a `#n-<id>` hash that ReviewViewer's
+   *  hashchange handler scrolls to. Mirrors `CommentThread`'s
+   *  `permalinkFor` — keep the URL otherwise verbatim so the
+   *  patchset / compare / scope state the reader was in when they
+   *  copied stays intact. */
+  function permalinkFor(annotationId: string): string {
+    const u = new URL(window.location.href);
+    u.hash = `n-${encodeURIComponent(annotationId)}`;
+    return u.toString();
+  }
 </script>
 
-<div class="annotation" class:collapsed={folded}>
-  <header class="head">
+<div
+  class="annotation"
+  class:collapsed={folded}
+  data-annotation-id={annotation.annotation_id}
+>
+  <header>
     {#if showFold}
       <button
         type="button"
@@ -75,57 +91,89 @@
       >
     {/if}
     <span class="badge">Note</span>
-    <span class="author">{annotation.author}</span>
-    <time class="at" datetime={annotation.created_at}>
-      {formatDate(annotation.created_at)}
-    </time>
+    <strong>{annotation.author}</strong>
     {#if annotation.updated_at !== annotation.created_at}
       <span class="edited" title={`edited ${formatDate(annotation.updated_at)}`}
-        >· edited</span
+        >edited</span
       >
     {/if}
-    {#if canEdit && !folded}
-      <span style="flex: 1"></span>
+    <time class="time" datetime={annotation.created_at}>
+      {formatDate(annotation.created_at)}
+    </time>
+    <button
+      type="button"
+      class="copy-button"
+      title="Copy permalink"
+      onclick={() => void copyText(permalinkFor(annotation.annotation_id))}
+      >🔗</button
+    >
+    {#if annotation.body.trim().length > 0}
       <button
         type="button"
-        class="action"
-        title="Edit this note"
-        onclick={() => onedit(annotation)}>Edit</button
-      >
-      <button
-        type="button"
-        class="action danger"
-        title="Delete this note"
-        disabled={deleting}
-        onclick={onDeleteClick}>{deleting ? 'Deleting…' : 'Delete'}</button
+        class="copy-button"
+        title="Copy markdown source"
+        onclick={() => void copyText(annotation.body)}
+        >⧉</button
       >
     {/if}
   </header>
   {#if !folded}
     <div class="body markdown">{@html renderMarkdown(annotation.body)}</div>
+    {#if canEdit}
+      <!-- Edit / Delete live in a footer row so the note's layout
+           mirrors CommentThread's `.actions` footer. The amber
+           accent stays (notes vs comments are still
+           colour-coded); only the button placement matches. -->
+      <footer class="actions">
+        <button
+          type="button"
+          class="action"
+          title="Edit this note"
+          onclick={() => onedit(annotation)}>Edit</button
+        >
+        <button
+          type="button"
+          class="action danger"
+          title="Delete this note"
+          disabled={deleting}
+          onclick={onDeleteClick}>{deleting ? 'Deleting…' : 'Delete'}</button
+        >
+      </footer>
+    {/if}
   {/if}
 </div>
 
 <style>
+  /* Same outer shape as `.comment` in CommentThread — same font
+   * family, same size, same padding, same border-radius — so a
+   * note reads as the same kind of artefact as a comment, just
+   * colour-coded amber (border + background + left rule) instead
+   * of neutral. */
   .annotation {
     border: 1px solid var(--attention-border);
     background: var(--attention-bg);
-    border-radius: 4px;
-    padding: 6px 10px;
+    border-radius: 6px;
+    padding: 8px 12px;
     margin: 4px 0;
-    /* Left rule echoes CommentThread's accent stripe — but in amber
-     * so the eye registers this as a different category of artefact
-     * before reading the badge. */
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-size: 13px;
+    color: var(--text);
+    /* 3-px left accent stripe; same trick `.comment.unread` uses. */
     box-shadow: inset 3px 0 0 var(--attention-border);
   }
 
-  .head {
+  .annotation header {
     display: flex;
     align-items: baseline;
     gap: 8px;
+    margin-bottom: 6px;
+  }
+
+  /* Created-at timestamp on the right, matching `.comment .time`. */
+  .time {
+    color: var(--text-faint);
     font-size: 11px;
-    color: var(--attention-text);
-    margin-bottom: 4px;
+    margin-left: auto;
   }
 
   /* Per-annotation fold chevron — same filled-triangle Chevron the
@@ -146,8 +194,35 @@
     filter: brightness(1.2);
   }
 
-  .annotation.collapsed .head {
+  .annotation.collapsed header {
     margin-bottom: 0;
+  }
+
+  /* Same shape as `.copy-button` in CommentThread — small outlined
+   * chip nestled into the header. The 🔗 / ⧉ glyphs are visually
+   * the same surface; styling them identically reinforces that. */
+  .copy-button {
+    background: transparent;
+    border: 1px solid var(--attention-border);
+    border-radius: 3px;
+    padding: 0 4px;
+    font-size: 11px;
+    color: var(--attention-text);
+    cursor: pointer;
+    margin-left: 4px;
+  }
+  .copy-button:hover {
+    background: var(--attention-bg);
+    color: var(--attention-text);
+    filter: brightness(0.95);
+  }
+
+  /* Footer row mirroring CommentThread's `.actions` so notes and
+   * comments scan as the same artefact with different palettes. */
+  .actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 8px;
   }
 
   .action {
@@ -155,8 +230,8 @@
     border: 1px solid var(--attention-border);
     color: var(--attention-text);
     border-radius: 3px;
-    padding: 1px 8px;
-    font-size: 11px;
+    padding: 2px 8px;
+    font-size: 12px;
     cursor: pointer;
   }
   .action:hover {
@@ -185,28 +260,21 @@
     border-radius: 3px;
   }
 
-  .author {
-    font-weight: 600;
-  }
-
-  .at {
-    color: var(--text-faint);
-  }
-
   .edited {
     color: var(--text-faint);
     font-style: italic;
   }
 
-  .body {
-    font-size: 13px;
-    color: var(--text);
-  }
-
+  /* Match `.markdown` paragraph rhythm in CommentThread so a note's
+   * body reads with the same line-height as a comment's. */
   .body :global(p:first-child) {
     margin-top: 0;
   }
   .body :global(p:last-child) {
     margin-bottom: 0;
+  }
+  .body :global(p) {
+    margin: 6px 0;
+    line-height: 1.5;
   }
 </style>

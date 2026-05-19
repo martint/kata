@@ -65,7 +65,6 @@
     composingAnnotation?: AnnotationComposerTarget | null;
     annotationAnchorIds?: { change: string; commit: string };
     canAnnotate?: boolean;
-    onstartannotate?: (target: AnnotationComposerTarget) => void;
     oncancelannotate?: () => void;
     onsubmitannotation?: (input: AnnotationInput) => Promise<void>;
     ondeleteannotation?: (annotation: AnnotationView) => Promise<void>;
@@ -97,7 +96,6 @@
     composingAnnotation = null,
     annotationAnchorIds = { change: '', commit: '' },
     canAnnotate = false,
-    onstartannotate = () => {},
     oncancelannotate = () => {},
     onsubmitannotation = async () => {},
     ondeleteannotation = async () => {},
@@ -364,28 +362,30 @@
     );
   }
 
-  function startAnnotateHere(side: Side, line: number) {
-    if (!canAnnotate) return;
-    onstartannotate({
-      kind: 'line',
-      file: filePath,
-      side,
-      startLine: line,
-      endLine: line,
-    });
-  }
-
   /** See `HunkLines.svelte` — same idea, but indexed on the side
    *  this column renders so a multi-line range tints every covered
    *  row, not just the one the thread attaches to. Outdated anchors
    *  are skipped (their range points at content that has since
    *  changed); those threads render at the file level. */
-  const commentedLines = $derived.by(() => {
-    const set = new Set<string>();
+  /** See HunkLines.svelte's `commentRangeByLine` for the shape;
+   *  this is the same derivation against the SBS-side comments
+   *  list. Drives the rounded end-caps that disambiguate one
+   *  multi-line comment from N adjacent single-line comments. */
+  const commentRangeByLine = $derived.by(() => {
+    const map = new Map<
+      string,
+      { present: boolean; startsHere: boolean; endsHere: boolean }
+    >();
+    const get = (key: string) => {
+      let v = map.get(key);
+      if (!v) {
+        v = { present: false, startsHere: false, endsHere: false };
+        map.set(key, v);
+      }
+      return v;
+    };
     for (const c of comments) {
       if (!c.side) continue;
-      // Outdated anchors get the gutter chevron, not the inline
-      // highlight — see HunkLines.svelte.
       if (c.anchor.kind === 'outdated') continue;
       const effective =
         c.anchor.kind === 'moved' || c.anchor.kind === 'drifted'
@@ -393,10 +393,12 @@
           : c.lines;
       if (!effective) continue;
       for (let l = effective.start; l <= effective.end; l++) {
-        set.add(`${c.side}:${l}`);
+        get(`${c.side}:${l}`).present = true;
       }
+      get(`${c.side}:${effective.start}`).startsHere = true;
+      get(`${c.side}:${effective.end}`).endsHere = true;
     }
-    return set;
+    return map;
   });
 
   /** See HunkLines.svelte — full-row tint applies only to lines with at
@@ -484,12 +486,32 @@
 
   function isCommented(side: Side, line: number | null | undefined): boolean {
     if (!showComments) return false;
-    return line != null && commentedLines.has(`${side}:${line}`);
+    return (
+      line != null &&
+      (commentRangeByLine.get(`${side}:${line}`)?.present ?? false)
+    );
   }
 
   function isFullLineCommented(side: Side, line: number | null | undefined): boolean {
     if (!showComments) return false;
     return line != null && fullLineCommentedLines.has(`${side}:${line}`);
+  }
+
+  /** See HunkLines.svelte — returns a space-prefixed class string
+   *  (`' range-start'`, `' range-end'`, both, or `''`) for the
+   *  `.content` cell so its `::before` stripe pseudo grows the
+   *  matching rounded cap. */
+  function commentRangeClasses(
+    side: Side,
+    line: number | null | undefined,
+  ): string {
+    if (line == null) return '';
+    const r = commentRangeByLine.get(`${side}:${line}`);
+    if (!r || !r.present) return '';
+    let out = '';
+    if (r.startsHere) out += ' range-start';
+    if (r.endsHere) out += ' range-end';
+    return out;
   }
 
   /** See HunkLines.svelte's `coveringEntriesFor` — matches anything
@@ -747,16 +769,6 @@
                 >
                   <Bubble size={12} />
                 </button>
-                {#if canAnnotate}
-                  <button
-                    type="button"
-                    class="add-note"
-                    title="Add author note (only the review creator can do this)"
-                    onclick={() => startAnnotateHere('base', row.left!.base_line!)}
-                  >
-                    N
-                  </button>
-                {/if}
               {/if}
               {#if row.left?.base_line != null && showComments}
                 {@const ln = row.left.base_line}
@@ -783,7 +795,7 @@
               {row.left?.base_line ?? row.left?.tip_line ?? ''}
             </td>
             <td
-              class={`content ${row.left ? row.left.origin : 'empty'}${isCommented('base', leftLine) ? ' commented' : ''}${isFullLineCommented('base', leftLine) ? ' commented-fullline' : ''}`}
+              class={`content ${row.left ? row.left.origin : 'empty'}${isCommented('base', leftLine) ? ' commented' : ''}${isFullLineCommented('base', leftLine) ? ' commented-fullline' : ''}${commentRangeClasses('base', leftLine)}`}
               data-side="base"
               data-line={leftLine ?? ''}
               onclick={(e) => onContentClick(e, 'base', leftLine)}
@@ -907,16 +919,6 @@
                 >
                   <Bubble size={12} />
                 </button>
-                {#if canAnnotate}
-                  <button
-                    type="button"
-                    class="add-note"
-                    title="Add author note (only the review creator can do this)"
-                    onclick={() => startAnnotateHere('tip', row.right!.tip_line!)}
-                  >
-                    N
-                  </button>
-                {/if}
               {/if}
               {#if row.right?.tip_line != null && showComments}
                 {@const ln = row.right.tip_line}
@@ -943,7 +945,7 @@
               {row.right?.tip_line ?? row.right?.base_line ?? ''}
             </td>
             <td
-              class={`content ${row.right ? row.right.origin : 'empty'}${isCommented('tip', rightLine) ? ' commented' : ''}${isFullLineCommented('tip', rightLine) ? ' commented-fullline' : ''}`}
+              class={`content ${row.right ? row.right.origin : 'empty'}${isCommented('tip', rightLine) ? ' commented' : ''}${isFullLineCommented('tip', rightLine) ? ' commented-fullline' : ''}${commentRangeClasses('tip', rightLine)}`}
               data-side="tip"
               data-line={rightLine ?? ''}
               onclick={(e) => onContentClick(e, 'tip', rightLine)}
@@ -1180,8 +1182,32 @@
    * stripe (any comment on the line); `.commented-fullline` carries
    * the row tint + pointer cursor (at least one no-columns comment or
    * annotation, where the whole row is the click target). */
+  /* See HunkLines.svelte for the rationale. Stripe lives on a
+   * pseudo so the FIRST and LAST line of a comment range can grow
+   * rounded end-caps; that's what tells one N-line comment apart
+   * from N adjacent single-line comments at a glance. */
   .content.commented {
-    box-shadow: inset 3px 0 0 var(--link);
+    position: relative;
+  }
+  .content.commented::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 3px;
+    background: var(--link);
+    pointer-events: none;
+  }
+  .content.commented.range-start::before {
+    top: 2px;
+    border-top-left-radius: 2px;
+    border-top-right-radius: 2px;
+  }
+  .content.commented.range-end::before {
+    bottom: 2px;
+    border-bottom-left-radius: 2px;
+    border-bottom-right-radius: 2px;
   }
   .content.commented-fullline {
     background-image: linear-gradient(var(--selection-tint), var(--selection-tint));
@@ -1220,37 +1246,6 @@
     background: var(--link);
     color: var(--on-accent);
     border-color: var(--link);
-  }
-
-  /* Amber sibling of `.add-comment`, sits just below it. See
-   * HunkLines.svelte for the colour-coding rationale. */
-  .add-note {
-    position: absolute;
-    right: -9px;
-    top: calc(50% + 11px);
-    transform: translateY(-50%);
-    width: 18px;
-    height: 18px;
-    padding: 0;
-    border: 1px solid var(--attention-border);
-    border-radius: 4px;
-    background: var(--bg-elevated);
-    color: var(--attention-text);
-    font-weight: 700;
-    font-size: 11px;
-    line-height: 16px;
-    cursor: pointer;
-    visibility: hidden;
-    user-select: none;
-  }
-
-  .sbs-row:hover .add-note {
-    visibility: visible;
-  }
-
-  .add-note:hover {
-    background: var(--attention-border);
-    color: var(--bg);
   }
 
   /* See HunkLines.svelte — match the adjacent diff row's tint so the

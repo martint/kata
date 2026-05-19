@@ -94,4 +94,39 @@ describe('SelectionPopup', () => {
     renderPopup();
     expect(screen.getByRole('toolbar', { name: 'Selection actions' })).toBeTruthy();
   });
+
+  test('renders the note button only when an `onnote` callback is supplied', () => {
+    const { container, rerender } = renderPopup();
+    // Default render has no onnote — comment + copy only.
+    expect(container.querySelector('[aria-label="Add note on selection"]')).toBeNull();
+    rerender({
+      selection: selection(),
+      anchorX: 100,
+      anchorY: 200,
+      oncomment: () => {},
+      oncopy: () => {},
+      onnote: () => {},
+    });
+    expect(
+      container.querySelector('[aria-label="Add note on selection"]'),
+    ).toBeTruthy();
+  });
+
+  test('routes the note button to onnote', async () => {
+    const onnote = vi.fn();
+    renderPopup({ onnote });
+    await fireEvent.click(screen.getByLabelText('Add note on selection'));
+    expect(onnote).toHaveBeenCalledOnce();
+  });
+
+  test('three-button popup widens (POPUP_W = 90) so right-edge flip math accounts for the note button', () => {
+    const { container } = renderPopup({
+      anchorX: 1020,
+      anchorY: 200,
+      onnote: () => {},
+    });
+    const popup = container.querySelector('.selection-popup') as HTMLElement;
+    // 1020 - 6 - 90 (three-button POPUP_W) = 924. Clamped >= 4.
+    expect(popup.style.left).toBe('924px');
+  });
 });
