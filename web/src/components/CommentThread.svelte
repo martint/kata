@@ -305,13 +305,21 @@
           <em class="muted">(no message)</em>
         {/if}
       </div>
-      <!-- For outdated comments, the "added in PS N" jump-button in
-           the header is the way to see the comment in context. We
-           used to render an inline `<details>` snippet of the
-           original lines here, but it was a decontextualized excerpt
-           (no surrounding code, no syntax highlight) right next to a
-           one-click jump that shows the comment in its real
-           surroundings — net noise. Drop it; lean on the jump. -->
+      <!-- For outdated comments, surface the lines the reviewer
+           was originally commenting on. The "added in PS N" jump-
+           button in the header is still the way to read the
+           comment in its full original context — but that
+           navigates away from the current view, and reviewers
+           often want a quick peek of "what was this about?"
+           without losing their place. Default-folded so the
+           excerpt doesn't dominate the comment for users who
+           don't need it. -->
+      {#if c.anchor.kind === 'outdated' && c.anchor.original_content.trim().length > 0}
+        <details class="outdated-excerpt">
+          <summary>Originally commented on</summary>
+          <pre>{c.anchor.original_content.replace(/\n$/, '')}</pre>
+        </details>
+      {/if}
       {#if replies.length > 0}
         <ul class="replies">
           {#each replies as r (r.response_id)}
@@ -437,6 +445,40 @@
   .comment.outdated {
     opacity: 0.85;
     border-style: dashed;
+  }
+
+  /* Default-folded peek at the lines the comment was originally
+   * commenting on. Visually muted so it stays subordinate to the
+   * comment body — the reader sees it as "extra context, click to
+   * peek" rather than another thing to read. The `<pre>` keeps the
+   * indentation the reviewer was pointing at; horizontal scroll
+   * is allowed so a long line doesn't push the comment box wider
+   * than its container. */
+  .outdated-excerpt {
+    margin: 8px 0 0;
+    border: 1px dashed var(--border);
+    border-radius: 4px;
+    background: var(--bg-panel);
+    font-size: 12px;
+  }
+  .outdated-excerpt summary {
+    padding: 4px 8px;
+    color: var(--text-muted);
+    cursor: pointer;
+    user-select: none;
+  }
+  .outdated-excerpt summary:hover {
+    color: var(--text);
+  }
+  .outdated-excerpt pre {
+    margin: 0;
+    padding: 6px 10px;
+    border-top: 1px dashed var(--border);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    white-space: pre;
+    overflow-x: auto;
+    color: var(--text);
   }
 
   /* Outline a thread with new replies so the reader's eye lands on
