@@ -839,8 +839,136 @@ fn ok_text(s: &str) -> CallToolResult {
     CallToolResult::success(vec![Content::text(s.to_string())])
 }
 
+/// Convert a [`ServiceError`] into the JSON-RPC error the MCP client
+/// sees. The mapping mirrors the HTTP layer's status-code mapping
+/// (see `kata-server/src/error.rs`): user-supplied identifiers that
+/// don't resolve come back as `resource_not_found` (-32002), bad
+/// input as `invalid_params` (-32602), and only genuine backend
+/// faults stay at `internal_error` (-32603). The previous blanket
+/// "everything is internal_error" mapping made every NotFound look
+/// like a server bug — clients (and the rmcp SSE transport) treated
+/// it as a fatal channel error and retried, producing a cascade of
+/// "Channel closed" messages in the logs every time a user asked
+/// for a misspelled repo / review / comment.
 fn into_mcp(err: ServiceError) -> McpError {
-    McpError::internal_error(err.to_string(), None)
+    let message = err.to_string();
+    match err {
+        ServiceError::NotFound(_)
+        | ServiceError::Storage(kata_storage::Error::NotFound { .. })
+        | ServiceError::Jj(kata_jj::Error::ChangeNotFound(_)) => {
+            McpError::resource_not_found(message, None)
+        }
+        ServiceError::BadRequest(_)
+        | ServiceError::Storage(kata_storage::Error::InvalidId { .. })
+        | ServiceError::Storage(kata_storage::Error::ReviewExists { .. })
+        | ServiceError::Storage(kata_storage::Error::SessionState { .. })
+        | ServiceError::Jj(kata_jj::Error::EmptyRevset { .. })
+        | ServiceError::Jj(kata_jj::Error::MultipleHeads { .. }) => {
+            McpError::invalid_params(message, None)
+        }
+        _ => McpError::internal_error(message, None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::into_mcp;
+    use kata_jj::Error as JjError;
+    use kata_service::ServiceError;
+    use kata_storage::Error as StorageError;
+    use rmcp::model::ErrorCode;
+
+    #[test]
+    fn not_found_maps_to_resource_not_found() {
+        let err = into_mcp(ServiceError::NotFound("review 5".into()));
+        assert_eq!(err.code, ErrorCode::RESOURCE_NOT_FOUND);
+        assert!(err.message.contains("not found"));
+    }
+
+    #[test]
+    fn storage_not_found_maps_to_resource_not_found() {
+        let err = into_mcp(ServiceError::Storage(StorageError::NotFound {
+            what: "comment abc".into(),
+        }));
+        assert_eq!(err.code, ErrorCode::RESOURCE_NOT_FOUND);
+    }
+
+    #[test]
+    fn jj_change_not_found_maps_to_resource_not_found() {
+        let err = into_mcp(ServiceError::Jj(JjError::ChangeNotFound(
+            kata_core::ChangeId::new("zzz"),
+        )));
+        assert_eq!(err.code, ErrorCode::RESOURCE_NOT_FOUND);
+    }
+
+    #[test]
+    fn bad_request_maps_to_invalid_params() {
+        let err = into_mcp(ServiceError::BadRequest("missing field".into()));
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+    }
+
+    #[test]
+    fn storage_invalid_id_maps_to_invalid_params() {
+        let err = into_mcp(ServiceError::Storage(StorageError::InvalidId {
+            label: "ChangeId".into(),
+            value: "!!!".into(),
+            reason: "not hex",
+        }));
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+    }
+
+    #[test]
+    fn storage_review_exists_maps_to_invalid_params() {
+        let err = into_mcp(ServiceError::Storage(StorageError::ReviewExists {
+            review: "review-1".into(),
+        }));
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+    }
+
+    #[test]
+    fn storage_session_state_maps_to_invalid_params() {
+        let err = into_mcp(ServiceError::Storage(StorageError::SessionState {
+            session: "sess-1".into(),
+            state: "published",
+            expected: "draft",
+        }));
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+    }
+
+    #[test]
+    fn jj_empty_revset_maps_to_invalid_params() {
+        let err = into_mcp(ServiceError::Jj(JjError::EmptyRevset {
+            revset: "trunk()..nothing".into(),
+        }));
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+    }
+
+    #[test]
+    fn jj_multiple_heads_maps_to_invalid_params() {
+        let err = into_mcp(ServiceError::Jj(JjError::MultipleHeads {
+            revset: "all()".into(),
+        }));
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+    }
+
+    #[test]
+    fn service_internal_keeps_internal_error_code() {
+        let err = into_mcp(ServiceError::Internal("disk full".into()));
+        assert_eq!(err.code, ErrorCode::INTERNAL_ERROR);
+    }
+
+    #[test]
+    fn jj_failed_stays_internal_error() {
+        // JjFailed is a real backend fault (subprocess crashed /
+        // returned non-zero), distinct from the user-input errors
+        // above. Must keep the internal_error code so clients
+        // treat it as a server problem.
+        let err = into_mcp(ServiceError::Jj(JjError::JjFailed {
+            status: 1,
+            stderr: "boom".into(),
+        }));
+        assert_eq!(err.code, ErrorCode::INTERNAL_ERROR);
+    }
 }
 
 /// Build an axum-mountable MCP service. A single instance fronts every

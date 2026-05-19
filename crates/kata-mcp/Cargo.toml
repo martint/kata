@@ -8,7 +8,9 @@ license.workspace = true
 [dependencies]
 axum = { workspace = true }
 kata-core = { workspace = true, features = ["schema"] }
+kata-jj = { workspace = true }
 kata-service = { workspace = true }
+kata-storage = { workspace = true }
 rmcp = { workspace = true }
 schemars = { workspace = true }
 serde = { workspace = true }

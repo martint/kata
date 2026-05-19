@@ -2042,7 +2042,9 @@ version = "0.0.0"
 dependencies = [
  "axum",
  "kata-core",
+ "kata-jj",
  "kata-service",
+ "kata-storage",
  "rmcp",
  "schemars",
  "serde",
