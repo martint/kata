@@ -281,6 +281,24 @@
     // table. Installed once for the app lifetime; the handler is a
     // no-op when the selection isn't inside a diff cell.
     const uninstallDiffCopy = installDiffCopyHandler();
+
+    // Toggle `body.dragging-in-diff` whenever a drag starts inside
+    // a `.hunks-wrapper`. Used by `.file-header .path` CSS to
+    // re-block selection while the user is mid-drag (so the drag
+    // can't spill into the next file's header), while leaving the
+    // path selectable on plain clicks. See FileDiff.svelte for
+    // the matching CSS rule.
+    const onAnyMouseDown = (e: MouseEvent) => {
+      const t = e.target as Element | null;
+      if (t && t.closest('.hunks-wrapper')) {
+        document.body.classList.add('dragging-in-diff');
+      }
+    };
+    const onAnyMouseUp = () => {
+      document.body.classList.remove('dragging-in-diff');
+    };
+    document.addEventListener('mousedown', onAnyMouseDown);
+    document.addEventListener('mouseup', onAnyMouseUp);
     const unsubscribe = subscribeEvents((event) => {
       if (
         screen.kind === 'list' &&
@@ -305,6 +323,8 @@
     return () => {
       unsubscribe();
       uninstallDiffCopy();
+      document.removeEventListener('mousedown', onAnyMouseDown);
+      document.removeEventListener('mouseup', onAnyMouseUp);
     };
   });
 </script>

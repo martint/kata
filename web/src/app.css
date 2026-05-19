@@ -775,3 +775,15 @@ input[type='text'] {
   background: var(--question-bg);
   color: var(--question-text);
 }
+
+/* While the user is mid-drag inside a diff (App.svelte toggles
+ * `body.dragging-in-diff` on `.hunks-wrapper` mousedown), block
+ * selection on the file path that's normally selectable. Without
+ * this, a drag that runs off the end of the last hunk extends
+ * into the next file's header. On plain clicks (no drag) the path
+ * stays selectable so users can copy it. The rest of `.file-header`
+ * is already `user-select: none` in its component CSS for the
+ * same reason. */
+body.dragging-in-diff .file-header .path {
+  user-select: none;
+}
