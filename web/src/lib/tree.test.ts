@@ -11,7 +11,7 @@ function hunk(adds: number, removes: number): Hunk {
   const lines: HunkLine[] = [];
   for (let i = 0; i < adds; i++) lines.push(hunkLine('added'));
   for (let i = 0; i < removes; i++) lines.push(hunkLine('removed'));
-  return { lines };
+  return { kind: 'regular', lines };
 }
 
 function file(

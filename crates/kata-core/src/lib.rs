@@ -8,7 +8,10 @@ pub mod ids;
 pub use compare::{
     ChangeStatus, PairDiffCounts, PatchsetCompareView, PatchsetEndpoints, PatchsetPair,
 };
-pub use diff::{Diff, FileChange, FileStatus, Hunk, HunkLine, LineOrigin};
+pub use diff::{
+    ConflictHunk, ConflictSide, Diff, FileChange, FileStatus, Hunk, HunkLine, LineOrigin,
+    RegularHunk,
+};
 pub use documents::{
     Annotation, Comment, Flag, Patchset, RepoManifest, ResolutionAction, Response, ReviewManifest,
     SCHEMA_VERSION, Session, SessionStatus,

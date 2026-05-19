@@ -72,6 +72,7 @@ function file(over: Partial<FileChange> = {}): FileChange {
     binary: false,
     hunks: [
       {
+        kind: 'regular',
         base_range: { start: 1, end: 1 },
         tip_range: { start: 1, end: 1 },
         lines: [

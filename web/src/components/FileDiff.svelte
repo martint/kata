@@ -1132,6 +1132,11 @@
     const side = c.side;
     const lines: ContextLine[] = [];
     for (const h of file.hunks ?? []) {
+      // Conflict hunks have no base/tip line geometry to anchor a
+      // comment context-window against — sides exist on their own
+      // numbering, not relative to a base. Outdated-anchor display
+      // already covers the "we can't pinpoint this line" case.
+      if (h.kind !== 'regular') continue;
       for (const ln of h.lines) {
         const num = side === 'tip' ? ln.tip_line : ln.base_line;
         if (num == null) continue;
@@ -1161,6 +1166,7 @@
   const renderedLineKeys = $derived.by(() => {
     const set = new Set<string>();
     for (const h of file.hunks ?? []) {
+      if (h.kind !== 'regular') continue;
       for (const ln of h.lines) {
         if (ln.base_line != null) set.add(`base:${ln.base_line}`);
         if (ln.tip_line != null) set.add(`tip:${ln.tip_line}`);
@@ -1296,6 +1302,13 @@
     let prevBaseFloor: number | null = 1;
     for (let i = 0; i < hunks.length; i++) {
       const h = hunks[i];
+      // Conflict hunks have no base/tip line geometry to grow
+      // context against, so they always render fixed (no expand
+      // affordance above or below).
+      if (h.kind !== 'regular') {
+        out.set(i, { above: 0, below: 0 });
+        continue;
+      }
       const exp = wholeFile ? wholeFileExpansion(i) : expansionFor(i);
       const tipStart = h.tip_range?.start;
       const tipEnd = h.tip_range?.end;
@@ -1322,8 +1335,12 @@
       // claim, the next hunk's `above` is capped against what's left
       // in the gap.
       const next = i < hunks.length - 1 ? hunks[i + 1] : null;
-      const nextTipStart = next?.tip_range?.start ?? tipLines.length + 1;
-      const nextBaseStart = next?.base_range?.start;
+      const nextTipStart =
+        next?.kind === 'regular'
+          ? (next.tip_range?.start ?? tipLines.length + 1)
+          : tipLines.length + 1;
+      const nextBaseStart =
+        next?.kind === 'regular' ? next.base_range?.start : undefined;
       const belowCapTip = Math.max(0, nextTipStart - 1 - tipEnd);
       const belowCapBase =
         baseEnd != null && nextBaseStart != null
@@ -1423,10 +1440,14 @@
   function wholeFileExpansion(i: number): Expansion {
     const hunks = file.hunks ?? [];
     const cur = hunks[i];
-    if (!cur?.tip_range || !tipLines) return { above: 0, below: 0 };
+    if (cur?.kind !== 'regular' || !cur.tip_range || !tipLines)
+      return { above: 0, below: 0 };
     const above = i === 0 ? cur.tip_range.start - 1 : 0;
     const next = i < hunks.length - 1 ? hunks[i + 1] : null;
-    const nextStart = next?.tip_range?.start ?? tipLines.length + 1;
+    const nextStart =
+      next?.kind === 'regular'
+        ? (next.tip_range?.start ?? tipLines.length + 1)
+        : tipLines.length + 1;
     const below = Math.max(0, nextStart - 1 - cur.tip_range.end);
     return { above, below };
   }
@@ -1444,7 +1465,11 @@
     const hunks = file.hunks ?? [];
     const cur = hunks[i];
     const next = hunks[i + 1];
-    if (!cur?.tip_range || !next?.tip_range) return 0;
+    // Conflict hunks have no contiguous source-line geometry to
+    // span a gap with, so a conflict neighbour collapses the
+    // expansion affordance entirely on either side.
+    if (cur?.kind !== 'regular' || next?.kind !== 'regular') return 0;
+    if (!cur.tip_range || !next.tip_range) return 0;
     const curExp = clippedExpansions.get(i) ?? { above: 0, below: 0 };
     const nextExp = clippedExpansions.get(i + 1) ?? { above: 0, below: 0 };
     let gap = Math.max(
@@ -1495,6 +1520,9 @@
    *  done globally in `clippedExpansions` (above) so the second hunk
    *  in a pair sees the first hunk's already-claimed expansion. */
   function withContext(hunk: Hunk, i: number): Hunk {
+    // Conflict hunks have nothing to expand — they're already the
+    // full per-side content. Pass through untouched.
+    if (hunk.kind !== 'regular') return hunk;
     const exp = clippedExpansions.get(i) ?? { above: 0, below: 0 };
     if ((exp.above === 0 && exp.below === 0) || !tipLines) return hunk;
 
@@ -1536,6 +1564,7 @@
     }
 
     return {
+      kind: 'regular',
       base_range:
         hunk.base_range && baseStart != null && baseEnd != null
           ? { start: baseStart - before.length, end: baseEnd + after.length }
@@ -1553,10 +1582,12 @@
    *  whether more room remains. The neighbour's expanded range is
    *  encoded in `clippedExpansions[i-1].below` / `[i+1].above`. */
   function canExpandAbove(eh: Hunk, i: number): boolean {
+    if (eh.kind !== 'regular') return false;
     if (!eh.tip_range) return false;
     if (eh.tip_range.start <= 1) return false;
     const hunks = file.hunks ?? [];
     const prev = i > 0 ? hunks[i - 1] : null;
+    if (prev != null && prev.kind !== 'regular') return false;
     const prevExp = clippedExpansions.get(i - 1) ?? { above: 0, below: 0 };
     if (prev?.tip_range?.end != null) {
       const prevExpandedEnd = prev.tip_range.end + prevExp.below;
@@ -1569,10 +1600,12 @@
     return true;
   }
   function canExpandBelow(eh: Hunk, i: number): boolean {
+    if (eh.kind !== 'regular') return false;
     if (!eh.tip_range) return false;
     if (tipLines != null && eh.tip_range.end >= tipLines.length) return false;
     const hunks = file.hunks ?? [];
     const next = i < hunks.length - 1 ? hunks[i + 1] : null;
+    if (next != null && next.kind !== 'regular') return false;
     const nextExp = clippedExpansions.get(i + 1) ?? { above: 0, below: 0 };
     if (next?.tip_range?.start != null) {
       const nextExpandedStart = next.tip_range.start - nextExp.above;
@@ -2050,7 +2083,34 @@
               </button>
             </div>
           {/if}
-          {#if sideBySide}
+          {#if eh.kind === 'conflict'}
+            <!-- Conflict hunks bypass the regular base/tip pairing
+                 entirely: each side of the merge is its own self-
+                 contained version of the file content, so we stack
+                 them vertically with a label per side. No SBS split,
+                 no word diff, no inline-comment anchoring — comments
+                 on conflict regions are out of scope for this
+                 iteration. -->
+            <div class="conflict-panel">
+              {#each eh.sides as side, sideIdx (sideIdx)}
+                <section class="conflict-side">
+                  <header class="conflict-side-head">
+                    <span class="conflict-badge">⚠ conflict</span>
+                    <span class="conflict-side-label">{side.label}</span>
+                  </header>
+                  {#if side.lines.length === 0}
+                    <p class="conflict-empty muted">(absent on this side)</p>
+                  {:else}
+                    <pre
+                      class="conflict-side-body">{#each side.lines as ln, li (li)}<span class="conflict-line"
+                          >{ln || ' '}</span
+                        >
+{/each}</pre>
+                  {/if}
+                </section>
+              {/each}
+            </div>
+          {:else if sideBySide}
             <HunkLinesSideBySide
               hunk={eh}
               filePath={file.path}
@@ -2530,6 +2590,63 @@
 
   .hunks-wrapper {
     position: relative;
+  }
+
+  /* Conflict region. Each side stacks under the next inside a
+   * single panel — bordered + warn-tinted so the eye registers the
+   * region as "not regular code" before reading anything. Mirrors
+   * the way `jj resolve` shows conflict regions in the terminal
+   * (one labelled section per side). */
+  .conflict-panel {
+    border: 1px solid var(--warn-text);
+    border-radius: 4px;
+    margin: 8px 0;
+    overflow: hidden;
+    background: var(--bg);
+  }
+
+  .conflict-side {
+    border-top: 1px solid var(--warn-text);
+  }
+  .conflict-side:first-child {
+    border-top: none;
+  }
+
+  .conflict-side-head {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 4px 10px;
+    font-size: 11px;
+    background: var(--warn-bg);
+    color: var(--warn-text);
+  }
+
+  .conflict-side-head .conflict-badge {
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .conflict-side-label {
+    font-weight: 600;
+  }
+
+  .conflict-side-body {
+    margin: 0;
+    padding: 6px 10px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 13px;
+    line-height: 1.45;
+    white-space: pre;
+    overflow-x: auto;
+  }
+
+  .conflict-empty {
+    margin: 0;
+    padding: 6px 10px;
+    font-size: 12px;
+    font-style: italic;
   }
 
   /* When the reader is mid drag-select OR the SelectionPopup is

@@ -345,6 +345,41 @@ file the user collapsed mid-review stays collapsed when they come
 back later — a noisy lockfile doesn't keep re-expanding every
 visit.
 
+### 5.6 Conflicts
+
+`jj` keeps conflicted commits as live objects — instead of leaving
+the working copy in the half-broken state `git` resorts to, the
+tree carries the structured conflict regions across all the sides
+of the merge that disagree. Kata leans on that directly:
+
+- **Badge in the commits panel.** Any commit whose tree carries an
+  unresolved conflict gets a `⚠ conflict` chip on its row in the
+  commits panel, with a hover tooltip listing the conflicted paths.
+  No need to check anything out to spot them.
+- **Conflict region in the diff.** When the file's content at a
+  patchset's tip is a conflict, the diff renders that file's hunks
+  as a stacked **conflict panel**: one section per side of the
+  merge, labelled (e.g. `Base`, `from <parent-description>`), with
+  the side's content shown verbatim. Each section sits on the warn
+  palette so the eye registers "this isn't regular code" before
+  reading anything.
+
+Conflict regions don't go through the regular base→tip pairing,
+word diff, or inline-comment anchoring — each side is its own
+self-contained version of the file, and there's no single line in
+the merged result for a comment to anchor to. Commenting on
+specific sides of a conflict is out of scope for this iteration.
+
+**Local-workflow only.** `jj` will not push a conflicted commit to
+a remote git repository, so reviews containing conflict regions
+are useful only in setups where the underlying repo lives on the
+same machine as the reviewer (typical for the human-with-agent
+and agent-with-agent workflows Kata is most often run against
+today). A review that needs to flow to a remote git repo has to
+resolve every conflict in its tip first; until then, the conflict
+panels are a tool for the local participants to discuss what
+the conflict actually is.
+
 ---
 
 ## 6. Commenting

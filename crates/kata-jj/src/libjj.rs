@@ -545,6 +545,25 @@ impl JjBackend for JjLib {
         .map_err(|e| Error::Parse(format!("spawn_blocking: {e}")))?
     }
 
+    async fn read_conflict_at(
+        &self,
+        commit: &KataCommitId,
+        path: &str,
+    ) -> Result<Option<Vec<kata_core::ConflictSide>>> {
+        let loader = self.loader.clone();
+        let commit = commit.clone();
+        let path = path.to_string();
+        tokio::task::spawn_blocking(
+            move || -> Result<Option<Vec<kata_core::ConflictSide>>> {
+                let repo = futures::executor::block_on(loader.load_at_head())
+                    .map_err(|e| Error::Parse(format!("libjj load_at_head: {e}")))?;
+                read_conflict_sides_at(&repo, &commit, &path)
+            },
+        )
+        .await
+        .map_err(|e| Error::Parse(format!("spawn_blocking: {e}")))?
+    }
+
     async fn read_files(
         &self,
         pairs: &[(KataCommitId, String)],
@@ -621,16 +640,17 @@ impl JjBackend for JjLib {
                 let values = entry
                     .values
                     .map_err(|e| Error::Parse(format!("libjj diff entry: {e}")))?;
-                let before_present = values
-                    .before
-                    .as_resolved()
-                    .map(|opt| opt.is_some())
-                    .unwrap_or(false);
-                let after_present = values
-                    .after
-                    .as_resolved()
-                    .map(|opt| opt.is_some())
-                    .unwrap_or(false);
+                // `is_present` returns true for both a resolved
+                // existing file and an unresolved (conflicted)
+                // value. The original `.as_resolved().is_some()`
+                // check classified conflicts as absent — which
+                // surfaced a merge commit's conflicted file as
+                // `Deleted` against either parent, hiding the
+                // conflict from the diff entirely. The conflict
+                // path itself is then exposed downstream by
+                // `read_conflict_at` / the `Conflict` hunk.
+                let before_present = values.before.is_present();
+                let after_present = values.after.is_present();
                 let status = match (before_present, after_present, source_op) {
                     // Rename: the source path is recorded; jj uses
                     // `CopyOperation::Rename` for the
@@ -750,6 +770,23 @@ impl JjBackend for JjLib {
                 } else {
                     Vec::new()
                 };
+                // Paths conflicted at this commit, surfaced for the
+                // UI's `⚠ conflict` badge in the commits panel. We
+                // walk `tree.conflicts()` only when `has_conflict()`
+                // is true so clean commits pay essentially nothing
+                // (one bool check) — important because list_commits
+                // runs on every viewer load and conflicts are the
+                // exception, not the rule.
+                let tree = commit.tree();
+                let conflict_paths = if tree.has_conflict() {
+                    let mut paths: Vec<String> = Vec::new();
+                    for (path, _value) in tree.conflicts() {
+                        paths.push(path.as_internal_file_string().to_string());
+                    }
+                    paths
+                } else {
+                    Vec::new()
+                };
                 out.push(CommitInfo {
                     change_id: KataChangeId::new(commit.change_id().reverse_hex()),
                     commit_id: KataCommitId::new(commit_id.hex()),
@@ -758,6 +795,7 @@ impl JjBackend for JjLib {
                     description_first_line: first_line,
                     description,
                     changed_files,
+                    conflict_paths,
                 });
             }
             Ok(out)
@@ -1110,6 +1148,114 @@ fn file_bytes_from_value(
             read_file_bytes(store, path, id)
         }
         _ => Ok(Vec::new()),
+    }
+}
+
+/// Extract the structured conflict sides for `path` at `commit`, or
+/// `Ok(None)` if the file is resolved (or absent). Side labels are
+/// derived from the commit's parents when the merge's add-count
+/// matches the parent count (the common case for an honest merge
+/// commit); otherwise fall back to `Side N`. `removes` are labelled
+/// `Base` (or `Base N` when there's more than one merge base, which
+/// happens for criss-cross merges).
+fn read_conflict_sides_at(
+    repo: &Arc<ReadonlyRepo>,
+    commit_id: &KataCommitId,
+    path: &str,
+) -> Result<Option<Vec<kata_core::ConflictSide>>> {
+    let commit = lookup_commit(repo, commit_id)?;
+    let repo_path = jj_lib::repo_path::RepoPathBuf::from_internal_string(path)
+        .map_err(|e| Error::Parse(format!("libjj repo_path: {e}")))?;
+    let value = futures::executor::block_on(commit.tree().path_value(repo_path.as_ref()))
+        .map_err(|e| Error::Parse(format!("libjj path_value: {e}")))?;
+    if value.is_resolved() {
+        return Ok(None);
+    }
+    // Materialise per-side bytes by reading each File term out of the
+    // merge. Non-File terms (symlink / tree / absent) are rendered as
+    // an empty side so the reader still sees a slot exists.
+    let store = repo.store();
+    let mut remove_labels: Vec<String> = Vec::new();
+    let removes_vec: Vec<_> = value.removes().cloned().collect();
+    for (i, _) in removes_vec.iter().enumerate() {
+        remove_labels.push(if removes_vec.len() == 1 {
+            "Base".to_string()
+        } else {
+            format!("Base {}", i + 1)
+        });
+    }
+    // Best-effort: label each "add" term after the corresponding
+    // parent's description first line. Works for merge commits whose
+    // conflict shape exactly mirrors their parent set; otherwise we
+    // can't reliably correlate add-index → parent, so fall back to
+    // generic `Side N`.
+    let adds_vec: Vec<_> = value.adds().cloned().collect();
+    let parent_labels = parent_labels_for_adds(repo, &commit, adds_vec.len())?;
+    let mut sides = Vec::with_capacity(removes_vec.len() + adds_vec.len());
+    for (label, term) in remove_labels.iter().zip(removes_vec.iter()) {
+        sides.push(side_from_term(store, repo_path.as_ref(), label, term)?);
+    }
+    for (label, term) in parent_labels.iter().zip(adds_vec.iter()) {
+        sides.push(side_from_term(store, repo_path.as_ref(), label, term)?);
+    }
+    Ok(Some(sides))
+}
+
+/// Build a `ConflictSide` from one Merge term. Non-File terms (and
+/// the trivially-absent term) read as an empty side — the conflict
+/// is still surfaced; the renderer just shows "no content on this
+/// side".
+fn side_from_term(
+    store: &Arc<jj_lib::store::Store>,
+    path: &jj_lib::repo_path::RepoPath,
+    label: &str,
+    term: &Option<jj_lib::backend::TreeValue>,
+) -> Result<kata_core::ConflictSide> {
+    let bytes = match term {
+        Some(jj_lib::backend::TreeValue::File { id, .. }) => read_file_bytes(store, path, id)?,
+        _ => Vec::new(),
+    };
+    let text = String::from_utf8_lossy(&bytes);
+    let lines = text.lines().map(str::to_owned).collect();
+    Ok(kata_core::ConflictSide {
+        label: label.to_string(),
+        lines,
+    })
+}
+
+/// Derive per-`add` labels for a conflict on `commit`. When the
+/// merge's add-count matches the commit's parent-count we label each
+/// add with the corresponding parent's `description_first_line`;
+/// otherwise we use a generic `Side N` so we don't claim a
+/// correspondence we can't substantiate.
+fn parent_labels_for_adds(
+    repo: &Arc<ReadonlyRepo>,
+    commit: &jj_lib::commit::Commit,
+    add_count: usize,
+) -> Result<Vec<String>> {
+    let parents: Vec<_> = commit.parent_ids().to_vec();
+    if parents.len() == add_count {
+        let mut out = Vec::with_capacity(add_count);
+        for (i, parent_id) in parents.iter().enumerate() {
+            let parent = repo.store().get_commit(parent_id).map_err(|e| {
+                Error::Parse(format!("libjj get_commit (conflict-parent): {e}"))
+            })?;
+            let desc = parent
+                .description()
+                .lines()
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            out.push(if desc.is_empty() {
+                format!("Side {}", i + 1)
+            } else {
+                format!("from {desc}")
+            });
+        }
+        Ok(out)
+    } else {
+        Ok((1..=add_count).map(|i| format!("Side {i}")).collect())
     }
 }
 

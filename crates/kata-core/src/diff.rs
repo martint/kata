@@ -36,14 +36,60 @@ pub struct FileChange {
     pub removed: u32,
 }
 
-/// A contiguous region of changed + surrounding context lines.
+/// A region of a file diff. A regular hunk is a contiguous slice of
+/// changed + surrounding context lines (the historical shape); a
+/// conflict hunk wraps the structured conflict sides jj keeps on a
+/// conflicted commit so the renderer can show each side stacked
+/// instead of running the file through the regular diff machinery.
+///
+/// `kind` is the serde discriminator so the JSON wire format
+/// distinguishes the two variants. Today the diff producer only ever
+/// emits one variant per file — a file is either fully regular or
+/// fully a conflict — but the type is per-hunk so a future iteration
+/// can mix regular and conflict hunks in the same file without a
+/// schema break.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct Hunk {
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum Hunk {
+    Regular(RegularHunk),
+    Conflict(ConflictHunk),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RegularHunk {
     /// `None` for pure-insertion hunks where no base lines are involved.
     pub base_range: Option<LineRange>,
     /// `None` for pure-deletion hunks where no tip lines are involved.
     pub tip_range: Option<LineRange>,
     pub lines: Vec<HunkLine>,
+}
+
+/// Structured conflict region. jj keeps conflicted commits as live
+/// objects whose tree values carry every side of the merge instead
+/// of being flattened to a single resolved blob; this is the shape
+/// that information takes on its way to the renderer.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ConflictHunk {
+    /// One entry per side of the merge. For the common 3-way case
+    /// this is `[base, side_1, side_2]`; for N-way merges the list
+    /// extends accordingly. Order is stable across calls but is not
+    /// semantically significant beyond labelling.
+    pub sides: Vec<ConflictSide>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ConflictSide {
+    /// Human-readable label for this side. Auto-derived from parent
+    /// commit metadata where possible (`"from main"`, `"from feature"`,
+    /// or the parent's one-line description); falls back to `"Base"`
+    /// for the merge base term and `"Side N"` for unlabelled sides.
+    pub label: String,
+    /// Raw content lines on this side, in source order. Conflict
+    /// rendering doesn't have a meaningful base/tip distinction —
+    /// each side is its own self-contained version — so we drop the
+    /// HunkLine `origin` / line-number plumbing and just keep the
+    /// bytes.
+    pub lines: Vec<String>,
 }
 
 /// Which side(s) a line exists on within a hunk.

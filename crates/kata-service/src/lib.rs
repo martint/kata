@@ -1881,6 +1881,7 @@ mod compare_tests {
             description_first_line: desc.into(),
             description: desc.into(),
             changed_files: Vec::new(),
+            conflict_paths: Vec::new(),
         }
     }
 

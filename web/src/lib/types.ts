@@ -37,6 +37,10 @@ export interface CommitInfo {
   description: string;
   /** Files this commit modified, added, deleted, or renamed (parent..@). */
   changed_files: string[];
+  /** Paths whose content at this commit is a conflict (jj keeps
+   *  conflicts as live tree values). Empty for clean commits; the
+   *  UI uses this to surface a ⚠ badge in the commits panel. */
+  conflict_paths?: string[];
 }
 
 export interface LineRange {
@@ -180,10 +184,35 @@ export interface HunkLine {
   content: string;
 }
 
-export interface Hunk {
+/** A region of a file diff. The `kind` discriminator tells regular
+ *  hunks (the historical shape — contiguous slice of changed +
+ *  context lines) apart from conflict hunks (a structured view of
+ *  the multiple sides of a jj conflict). The frontend pattern-matches
+ *  on `kind` before reaching for variant-specific fields. */
+export type Hunk = RegularHunk | ConflictHunk;
+
+export interface RegularHunk {
+  kind: 'regular';
   base_range?: LineRange;
   tip_range?: LineRange;
   lines: HunkLine[];
+}
+
+/** A conflict region as jj keeps it. Each side is the file content
+ *  on one branch of the merge, with a `label` derived from the
+ *  parent commit when the system can correlate them (otherwise
+ *  `Base` / `Side N`). Conflict hunks render stacked vertically
+ *  rather than going through the base/tip pairing the regular
+ *  hunks use. */
+export interface ConflictHunk {
+  kind: 'conflict';
+  sides: ConflictSide[];
+}
+
+export interface ConflictSide {
+  label: string;
+  /** Raw file content lines on this side, in source order. */
+  lines: string[];
 }
 
 export interface FileChange {

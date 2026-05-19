@@ -6,8 +6,8 @@
     CommentView,
     ComposerTarget,
     DraftResponseInput,
-    Hunk,
     HunkLine,
+    RegularHunk,
     ResolutionAction,
     ResponseView,
     Side,
@@ -24,7 +24,11 @@
   import { computeHunkWordDiff, wrapRanges } from '../lib/wordDiff';
 
   interface Props {
-    hunk: Hunk;
+    /** Always a `RegularHunk` — conflict hunks render via a
+     *  separate path in `FileDiff` so this component can keep
+     *  the comment-anchoring and word-diff invariants its body
+     *  relies on. */
+    hunk: RegularHunk;
     filePath: string;
     comments: CommentView[];
     /** Author-attached context notes scoped to this file. May be empty.

@@ -6,8 +6,8 @@
     CommentView,
     ComposerTarget,
     DraftResponseInput,
-    Hunk,
     HunkLine,
+    RegularHunk,
     ResolutionAction,
     ResponseView,
     Side,
@@ -25,7 +25,9 @@
   import { alignBlock, alignedRows } from '../lib/hunkAlign';
 
   interface Props {
-    hunk: Hunk;
+    /** Always a `RegularHunk` — conflict hunks render via a
+     *  separate path in `FileDiff`. */
+    hunk: RegularHunk;
     filePath: string;
     comments: CommentView[];
     /** Author-attached context notes scoped to this file. Per-line

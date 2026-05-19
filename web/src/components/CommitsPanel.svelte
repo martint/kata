@@ -644,6 +644,18 @@
                   <code class="change">{short(c.change_id)}</code>
                   <code class="commit">{short(c.commit_id)}</code>
                   <span class="desc">{c.description_first_line || '(no description)'}</span>
+                  {#if (c.conflict_paths?.length ?? 0) > 0}
+                    <!-- Files at this commit that jj recorded as a
+                         conflict. The reader can scroll the diff to
+                         see the structured conflict regions; the
+                         badge is just the heads-up. -->
+                    <span
+                      class="conflict-pill"
+                      title={`Conflicted: ${c.conflict_paths!.join(', ')}`}
+                    >
+                      ⚠ conflict
+                    </span>
+                  {/if}
                   {#if count > 0}
                     <span
                       class="comment-count"
@@ -839,6 +851,22 @@
     font-weight: 500;
     color: var(--link);
     background: var(--link-bg);
+    padding: 1px 7px;
+    border-radius: 9999px;
+    line-height: 1.4;
+  }
+
+  /* Same pill shape as `.comment-count` but in the warn palette so
+   * a conflicted commit stands out without needing a custom icon
+   * stack. `margin-left: auto` is intentionally absent — the chip
+   * sits flush against the description so the comment-count pill
+   * still hugs the right edge of the row when both are present. */
+  .conflict-pill {
+    flex: 0 0 auto;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--warn-text);
+    background: var(--warn-bg);
     padding: 1px 7px;
     border-radius: 9999px;
     line-height: 1.4;

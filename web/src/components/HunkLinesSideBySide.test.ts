@@ -9,10 +9,11 @@ import type { ComponentProps } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
 import { describe, expect, test, vi } from 'vitest';
 import HunkLinesSideBySide from './HunkLinesSideBySide.svelte';
-import type { CommentView, Hunk } from '../lib/types';
+import type { CommentView, RegularHunk } from '../lib/types';
 
-function hunk(): Hunk {
+function hunk(): RegularHunk {
   return {
+    kind: 'regular',
     base_range: { start: 1, end: 3 },
     tip_range: { start: 1, end: 3 },
     lines: [

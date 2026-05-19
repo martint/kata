@@ -136,6 +136,14 @@ pub struct CommitInfo {
     /// Files this commit modified, added, deleted, or renamed (parent..@).
     /// Used by the UI to bucket comments per commit.
     pub changed_files: Vec<String>,
+    /// Paths whose content at this commit is a conflict (jj keeps
+    /// conflicts as live tree values rather than the broken
+    /// working-copy state git resorts to). Empty for clean commits,
+    /// which is the overwhelmingly common case — the field is
+    /// present unconditionally so the UI can ungate its `⚠ conflict`
+    /// affordances on a single property without a separate fetch.
+    #[serde(default)]
+    pub conflict_paths: Vec<String>,
 }
 
 /// A jj revset expression. We keep this as a string and let jj parse it;

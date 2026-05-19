@@ -19,7 +19,7 @@ use imara_diff::intern::InternedInput;
 use imara_diff::sink::Counter;
 use imara_diff::{Algorithm, UnifiedDiffBuilder, diff};
 use kata_core::{
-    CommitId, Diff, FileChange, FileStatus, Hunk, HunkLine, LineOrigin, LineRange,
+    CommitId, ConflictHunk, Diff, FileChange, FileStatus, Hunk, HunkLine, LineOrigin, LineRange,
 };
 
 use crate::backend::JjBackend;
@@ -97,7 +97,13 @@ fn count_lines(hunks: &[Hunk]) -> (u32, u32) {
     let mut added: u32 = 0;
     let mut removed: u32 = 0;
     for h in hunks {
-        for l in &h.lines {
+        let Hunk::Regular(r) = h else {
+            // Conflict hunks have no add/remove notion against a
+            // single base — each side stands on its own — so they
+            // don't contribute to the file's +/- summary.
+            continue;
+        };
+        for l in &r.lines {
             match l.origin {
                 LineOrigin::Added => added += 1,
                 LineOrigin::Removed => removed += 1,
@@ -121,6 +127,22 @@ pub async fn compute_one_file_hunks<B: JjBackend + ?Sized>(
     mut file: FileChange,
 ) -> Result<FileChange> {
     let (base_path, tip_path) = side_paths(&file);
+    // Conflict on the tip side: short-circuit the histogram pipeline
+    // and emit the structured conflict sides as a single `Conflict`
+    // hunk. Base-side conflicts (rare — would mean the BASE of the
+    // patchset itself is conflicted) still fall through to the
+    // regular histogram path so the reader sees *something* rather
+    // than a missing diff; the badge in the commits panel calls out
+    // the conflict separately.
+    if let Some(path) = tip_path
+        && let Some(sides) = backend.read_conflict_at(tip, path).await?
+    {
+        file.hunks = Some(vec![Hunk::Conflict(ConflictHunk { sides })]);
+        file.binary = false;
+        file.added = 0;
+        file.removed = 0;
+        return Ok(file);
+    }
     let mut pairs: Vec<(CommitId, String)> = Vec::with_capacity(2);
     let base_idx = base_path.map(|p| {
         pairs.push((base.clone(), p.to_string()));
@@ -177,6 +199,22 @@ pub async fn build_diff<B: JjBackend + ?Sized>(
     let blobs = backend.read_files(&pairs).await?;
 
     for (f, (bi, ti)) in files.iter_mut().zip(pair_indices.into_iter()) {
+        // Tip-side conflict: emit a `Conflict` hunk with the
+        // structured sides and skip the histogram. See
+        // compute_one_file_hunks for the same shape — duplicated
+        // because the eager batch path here can't share its blob
+        // reads with the conflict reader (the conflict reader walks
+        // the merge structure directly, not just one blob per side).
+        let (_, tip_path) = side_paths(f);
+        if let Some(path) = tip_path
+            && let Some(sides) = backend.read_conflict_at(tip, path).await?
+        {
+            f.hunks = Some(vec![Hunk::Conflict(ConflictHunk { sides })]);
+            f.binary = false;
+            f.added = 0;
+            f.removed = 0;
+            continue;
+        }
         let base_bytes: &[u8] = bi
             .and_then(|i| blobs[i].as_deref())
             .unwrap_or(&[]);
@@ -341,11 +379,11 @@ impl PartialHunk {
         } else {
             None
         };
-        Hunk {
+        Hunk::Regular(kata_core::RegularHunk {
             base_range,
             tip_range,
             lines: self.lines,
-        }
+        })
     }
 }
 
@@ -584,12 +622,23 @@ fn parse_range(spec: &str, line: &str) -> Result<(u32, u32)> {
 mod tests {
     use super::*;
 
+    /// Test helper: unwrap a `Hunk` to its `RegularHunk` payload.
+    /// Every hunk `parse_git_diff` produces is `Regular` — conflict
+    /// hunks only ever come from the libjj tree-walk path — so any
+    /// test that gets back a `Conflict` is a bug, hence the panic.
+    fn reg(h: &Hunk) -> &kata_core::RegularHunk {
+        match h {
+            Hunk::Regular(r) => r,
+            Hunk::Conflict(_) => panic!("expected regular hunk, got conflict"),
+        }
+    }
+
     fn lines(s: &str) -> Vec<(LineOrigin, Option<u32>, Option<u32>, String)> {
         let files = parse_git_diff(s.as_bytes()).unwrap();
         let mut out = Vec::new();
         for f in &files {
             for h in f.hunks.as_ref().unwrap() {
-                for l in &h.lines {
+                for l in &reg(h).lines {
                     out.push((l.origin, l.base_line, l.tip_line, l.content.clone()));
                 }
             }
@@ -614,7 +663,7 @@ diff --git a/foo.txt b/foo.txt
         let f = &files[0];
         assert_eq!(f.path, "foo.txt");
         assert!(matches!(f.status, FileStatus::Modified));
-        let h = &f.hunks.as_ref().unwrap()[0];
+        let h = reg(&f.hunks.as_ref().unwrap()[0]);
         assert_eq!(h.base_range, Some(LineRange { start: 1, end: 3 }));
         assert_eq!(h.tip_range, Some(LineRange { start: 1, end: 3 }));
         assert_eq!(h.lines.len(), 4);
@@ -640,7 +689,7 @@ new file mode 100644
         let files = parse_git_diff(input.as_bytes()).unwrap();
         assert_eq!(files[0].path, "new.txt");
         assert!(matches!(files[0].status, FileStatus::Added));
-        let h = &files[0].hunks.as_ref().unwrap()[0];
+        let h = reg(&files[0].hunks.as_ref().unwrap()[0]);
         assert!(h.base_range.is_none());
         assert_eq!(h.tip_range, Some(LineRange { start: 1, end: 2 }));
     }
@@ -658,7 +707,7 @@ deleted file mode 100644
 ";
         let files = parse_git_diff(input.as_bytes()).unwrap();
         assert!(matches!(files[0].status, FileStatus::Deleted));
-        let h = &files[0].hunks.as_ref().unwrap()[0];
+        let h = reg(&files[0].hunks.as_ref().unwrap()[0]);
         assert_eq!(h.base_range, Some(LineRange { start: 1, end: 2 }));
         assert!(h.tip_range.is_none());
     }
@@ -763,7 +812,7 @@ diff --git a/f b/f
 +new
 ";
         let files = parse_git_diff(input.as_bytes()).unwrap();
-        let h = &files[0].hunks.as_ref().unwrap()[0];
+        let h = reg(&files[0].hunks.as_ref().unwrap()[0]);
         assert_eq!(h.lines.len(), 2);
         assert_eq!(h.lines[0].origin, LineOrigin::Removed);
         assert_eq!(h.lines[1].origin, LineOrigin::Added);

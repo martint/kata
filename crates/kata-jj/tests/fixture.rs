@@ -149,7 +149,9 @@ async fn diff_hunks_have_correct_line_numbers() {
     let file = diff.files.iter().find(|f| f.path == "file.txt").unwrap();
     let hunks = file.hunks.as_ref().expect("text file should have hunks");
     assert!(!hunks.is_empty());
-    let hunk = &hunks[0];
+    let kata_core::Hunk::Regular(hunk) = &hunks[0] else {
+        panic!("expected a regular hunk for a non-conflicted modify")
+    };
 
     let removed: Vec<_> = hunk.lines.iter()
         .filter(|l| matches!(l.origin, kata_core::LineOrigin::Removed))
@@ -254,5 +256,83 @@ async fn anchor_outdated_when_content_gone() {
         }
         AnchorResolution::Drifted { .. } => {} // acceptable if fuzzy threshold is lenient
         other => panic!("expected Outdated (or Drifted), got {other:?}"),
+    }
+}
+
+/// Build a merge commit whose tree is conflicted, and verify that
+/// (a) `list_commits` surfaces the conflicted path on the commit's
+/// `conflict_paths`, and (b) `build_diff` emits a `Hunk::Conflict`
+/// with one side per parent rather than running the file through
+/// the regular histogram path.
+#[tokio::test]
+async fn merge_commit_with_conflict_emits_conflict_hunk_and_path() {
+    let fx = Fixture::new();
+    // Common ancestor.
+    fx.write("conflicted.txt", "shared baseline\n");
+    fx.jj(&["describe", "-m", "base"]);
+    fx.jj(&["bookmark", "create", "base-mark", "-r", "@"]);
+
+    // Side A: edits the same line one way.
+    fx.jj(&["new", "-m", "side a"]);
+    fx.write("conflicted.txt", "side A's version\n");
+    fx.jj(&["bookmark", "create", "side-a", "-r", "@"]);
+    let (_, a_commit) = current_change_and_commit(&fx.root, "@");
+
+    // Side B: edits the same line another way, starting from the
+    // shared base.
+    fx.jj(&["new", "base-mark", "-m", "side b"]);
+    fx.write("conflicted.txt", "side B's version\n");
+    fx.jj(&["bookmark", "create", "side-b", "-r", "@"]);
+    let (_, b_commit) = current_change_and_commit(&fx.root, "@");
+
+    // Merge — `jj` will accept the merge but keep the file as a
+    // conflicted tree value because the two sides edited the same
+    // line in incompatible ways.
+    fx.jj(&["new", &a_commit.to_string(), &b_commit.to_string(), "-m", "merge"]);
+    let (_, merge_commit) = current_change_and_commit(&fx.root, "@");
+
+    let cli = fx.cli();
+
+    // (a) The merge commit's metadata should list `conflicted.txt`
+    //     under `conflict_paths`. We resolve the merge via revset to
+    //     match how the UI would.
+    let revset = kata_core::RevSet::new(format!("{merge_commit}"));
+    let commits = cli.list_commits(&revset).await.unwrap();
+    let merge_meta = commits
+        .iter()
+        .find(|c| c.commit_id == merge_commit)
+        .expect("merge commit should be in list_commits output");
+    assert!(
+        merge_meta.conflict_paths.iter().any(|p| p == "conflicted.txt"),
+        "expected conflict_paths to include conflicted.txt, got {:?}",
+        merge_meta.conflict_paths,
+    );
+
+    // (b) The diff against side A should render the conflict as a
+    //     Conflict hunk with one side per parent — not as a regular
+    //     histogram diff that flattens the conflict.
+    let diff = build_diff(&cli, &a_commit, &merge_commit).await.unwrap();
+    let file = diff
+        .files
+        .iter()
+        .find(|f| f.path == "conflicted.txt")
+        .expect("conflicted.txt should be in the merge diff");
+    let hunks = file.hunks.as_ref().expect("conflict file should still ship hunks");
+    let kata_core::Hunk::Conflict(conflict) = &hunks[0] else {
+        panic!("expected a Conflict hunk, got {:?}", hunks[0])
+    };
+    // Removes (the merge bases) + adds (the parents) — at minimum
+    // we expect 1 base + 2 sides, so 3 entries total.
+    assert!(
+        conflict.sides.len() >= 3,
+        "expected at least 3 conflict sides (1 base + 2 parents), got {}",
+        conflict.sides.len(),
+    );
+    // Side labels: removes get "Base"; adds get either parent
+    // descriptions (when the merge structure matches the parent
+    // count) or generic "Side N". Just check that labels are
+    // non-empty and distinct enough for the renderer.
+    for side in &conflict.sides {
+        assert!(!side.label.is_empty(), "side label should not be empty");
     }
 }

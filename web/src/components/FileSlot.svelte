@@ -344,7 +344,13 @@
       const lines = f.added + f.removed;
       return Math.max(120, lines * 20 + 80);
     }
-    const lineCount = f.hunks.reduce((sum, h) => sum + h.lines.length, 0);
+    const lineCount = f.hunks.reduce((sum, h) => {
+      if (h.kind === 'regular') return sum + h.lines.length;
+      // Conflict hunks: count every side's lines so the height
+      // estimate reflects the stacked-side layout the renderer
+      // produces.
+      return sum + h.sides.reduce((s, side) => s + side.lines.length, 0);
+    }, 0);
     return lineCount * 20 + f.hunks.length * 30 + 60;
   }
 

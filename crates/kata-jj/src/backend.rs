@@ -1,7 +1,9 @@
 use std::path::Path;
 
 use async_trait::async_trait;
-use kata_core::{Bookmark, ChangeId, CommitId, CommitInfo, FileChange, OpId, OpSummary, RevSet};
+use kata_core::{
+    Bookmark, ChangeId, CommitId, CommitInfo, ConflictSide, FileChange, OpId, OpSummary, RevSet,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
@@ -42,6 +44,21 @@ pub trait JjBackend: Send + Sync {
     /// Read a file's contents at a specific commit. `Ok(None)` if the file
     /// does not exist at that commit.
     async fn read_file(&self, commit: &CommitId, path: &str) -> Result<Option<Vec<u8>>>;
+
+    /// Read the structured conflict sides of `path` at `commit`. Returns
+    /// `Ok(None)` when the file is either resolved or absent — the caller
+    /// then falls back to the regular [`Self::read_file`] path.
+    /// Implementations that don't expose conflict structure (none today —
+    /// the in-process libjj backend overrides this) keep the default
+    /// `Ok(None)` so the rest of the diff pipeline degrades gracefully
+    /// to "flatten the conflict to whatever `read_file` returned".
+    async fn read_conflict_at(
+        &self,
+        _commit: &CommitId,
+        _path: &str,
+    ) -> Result<Option<Vec<ConflictSide>>> {
+        Ok(None)
+    }
 
     /// Read many `(commit, path)` blobs in one call. Implementations
     /// can amortise process startup across the batch — the [`JjCli`]
