@@ -1258,6 +1258,10 @@
    * highlights or pollute the copied text. See HunkLines.svelte. */
   .sbs-threads {
     background: transparent;
+    /* See HunkLines.svelte — `user-select: none` keeps the row's
+     * empty padding out of a vertical drag-selection running
+     * through the diff; the inner `.thread-sticky` re-enables
+     * `text` for the actual comment / annotation content. */
     user-select: none;
   }
 
@@ -1332,6 +1336,10 @@
   /* Blue tint + left stripe so inline threads visually separate from
    * surrounding diff rows. See HunkLines.svelte for rationale. */
   .thread-sticky {
+    /* Override the parent `.sbs-threads` row's `user-select: none`
+     * so comment / annotation text is selectable. See HunkLines.
+     * svelte. */
+    user-select: text;
     /* See HunkLines.svelte — same measured / fallback / right-trim
      * pattern, same `--message-max-w` cap paired with the composer
      * overlay so the white .comment / composer box lands in the

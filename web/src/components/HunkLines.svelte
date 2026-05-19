@@ -1179,6 +1179,13 @@
    * for both visual continuity and copy-as-text. */
   .thread-row {
     background: transparent;
+    /* The row gets `user-select: none` so a drag-selection running
+     * vertically down through the diff doesn't fragment its
+     * highlights across the thread region or pollute the copied
+     * text with comment bodies. The inner `.thread-sticky` (which
+     * holds the actual comment / annotation) re-enables `text` so
+     * the user can still copy text out of a comment by clicking on
+     * it directly. */
     user-select: none;
   }
 
@@ -1298,6 +1305,12 @@
    * the surrounding diff rows; with the previous --bg-panel background
    * they blended into context lines and were easy to miss. */
   .thread-sticky {
+    /* Override the parent `.thread-row`'s `user-select: none` so
+     * the user can click into a comment and drag-select its body.
+     * The parent rule keeps the surrounding row (padding, gutter
+     * spacing) outside of any selection that runs vertically
+     * through the diff. */
+    user-select: text;
     /* `--measured-gutter` is published by FileDiff via ResizeObserver on
      * the first `.content` cell — the rendered offset where the diff
      * content begins. `--gutter-offset` (set inline on this element)
