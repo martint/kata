@@ -52,6 +52,24 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// Seed a self-contained demo workspace + database and start the
+    /// server pointed at it. The frontend's `?demo=1` overlay
+    /// narrates a guided tour through the seeded data. Seeding
+    /// shells out to `jj` (the only `kata` subcommand that needs
+    /// the binary at all — `serve` itself does not).
+    Demo(DemoArgs),
+}
+
+#[derive(Debug, Parser)]
+struct DemoArgs {
+    /// `host:port` to bind on. Same default as `serve`.
+    #[arg(long, env = "KATA_BIND", default_value = "127.0.0.1:7878")]
+    bind: SocketAddr,
+    /// Identity used for writes from the running browser session.
+    /// Defaults to the demo's seeded author so the UI doesn't
+    /// look like a stranger walked in.
+    #[arg(long, env = "KATA_AUTHOR", default_value = "alice@example.com")]
+    author: String,
 }
 
 #[derive(Debug, Parser)]
@@ -132,6 +150,47 @@ fn is_slug_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '-' || c == '_'
 }
 
+/// Seed the demo workspace + database under `data`, then start the
+/// regular HTTP server pointed at it. `data` is whatever the global
+/// `--data` flag resolved to; in the typical demo flow that's a
+/// tempdir the user wants thrown away on exit, but we honour an
+/// explicit `--data` too so the same invocation can rebuild a
+/// reproducible demo state in a known location for screenshotting,
+/// bug repro, etc.
+async fn run_demo(
+    data: PathBuf,
+    args: DemoArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let seeded = kata_demo::seed_demo(&data).await?;
+    tracing::info!(
+        repo = %seeded.repo_name,
+        workspace = %seeded.workspace_path.display(),
+        bind = %args.bind,
+        "demo seeded; starting server",
+    );
+    // The seeded workspace is just one of the workspaces the
+    // server registers — reuse `serve` instead of duplicating the
+    // build path. The seeded review is at /r/<repo>/1 once the
+    // browser hits the bind address.
+    let workspace_arg = format!(
+        "{}={}",
+        seeded.repo_name,
+        seeded.workspace_path.display()
+    );
+    let serve_args = ServeArgs {
+        workspaces: vec![workspace_arg],
+        author: args.author,
+        bind: args.bind,
+        web_dir: None,
+        mcp_author: None,
+        // Demo runs locally; no point polling jj for branch
+        // movement on a workspace nobody else touches.
+        branch_poll_secs: 0,
+        mcp_cors_origins: Vec::new(),
+    };
+    serve(data.clone(), seeded.db_path, serve_args).await
+}
+
 /// Print a warning that the target DB has data and read a y/N answer
 /// from stdin. Anything other than "y" / "yes" is taken as no.
 ///
@@ -201,6 +260,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match cli.command {
         Command::Serve(args) => serve(data, db_path, args).await,
+        Command::Demo(demo_args) => run_demo(data, demo_args).await,
         Command::Export { dir } => {
             // Open the existing DB read-only conceptually — we don't
             // touch it, but the SqliteStorage abstraction always opens

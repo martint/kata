@@ -48,6 +48,18 @@ cargo build --release
 Open `http://127.0.0.1:7878`, pick a bookmark, type a revset, and the
 new review is ready to comment on.
 
+Want to see what Kata looks like without setting up a workspace?
+
+```sh
+./target/release/kata demo --data /tmp/kata-demo
+```
+
+This seeds a self-contained jj workspace + database with a small
+review, then starts the server pointed at it. Open the URL it prints
+and append `?demo=1` to launch a guided tour through the core
+features. (The seeder shells out to the `jj` binary — that's the
+only `kata` subcommand that needs it.)
+
 Every flag mirrors an environment variable (`KATA_WORKSPACE`,
 `KATA_DATA`, `KATA_AUTHOR`, `KATA_BIND`, `KATA_WEB_DIR`, …) so it drops
 cleanly into systemd, Docker, or whatever config management you're
@@ -103,6 +115,7 @@ available slugs.
 | `kata-service` | Repo-agnostic review service shared by both transports.       |
 | `kata-server`  | `axum` HTTP server; serves the API and the embedded web app.  |
 | `kata-mcp`     | MCP transport (Streamable HTTP) over the same service.        |
+| `kata-demo`    | Reusable seeder for the `kata demo` subcommand's guided tour. |
 
 The Svelte 5 frontend lives in `web/`. The release binary embeds
 `web/dist` via `rust-embed`. For UI development, run `cd web && bun

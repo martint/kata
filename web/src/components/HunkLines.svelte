@@ -881,6 +881,7 @@
                    awkward filler-coloured gap to the left. -->
               <div
                 class="thread-sticky"
+                data-tour="comment-thread"
                 style="--gutter-offset: {lnCols * 65}px"
               >
                 {#each notes as n (n.annotation_id)}

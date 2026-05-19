@@ -261,7 +261,7 @@
   const isComposingReviewWide = $derived(composing?.kind === 'review');
 </script>
 
-<section class="commits">
+<section class="commits" data-tour="commits-panel">
   <header>
     <button
       class="toggle"
@@ -574,6 +574,7 @@
               class="add-comment"
               title="Comment on the whole review"
               aria-label="Comment on the whole review"
+              data-tour="add-review-comment"
               disabled={isComposingReviewWide}
               onclick={(e) => {
                 e.stopPropagation();
@@ -620,7 +621,10 @@
           {@const count = countByCommit.get(c.commit_id) ?? 0}
           {@const threads = buckets.byChange.get(c.change_id) ?? []}
           {@const composingHere = isComposingHere(c.change_id)}
-          <li class="commit {selectedChangeId === c.change_id ? 'selected' : ''}">
+          <li
+            class="commit {selectedChangeId === c.change_id ? 'selected' : ''}"
+            data-tour="commit-row"
+          >
             <div class="row">
               {#if body}
                 <button

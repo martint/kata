@@ -12,6 +12,26 @@
   import Chevron from './components/Chevron.svelte';
   import ReviewList from './components/ReviewList.svelte';
   import ReviewViewer, { type ReviewToolbarState } from './components/ReviewViewer.svelte';
+  import DemoOverlay from './demo/DemoOverlay.svelte';
+
+  /** Demo tour gate. `?demo=1` on initial load latches a
+   *  `kata:demo:active` flag in localStorage; the overlay then
+   *  stays mounted across the navigations the tour itself triggers
+   *  (each step's `pushState` would otherwise drop the query param
+   *  and unmount us). Skip / Done clears both. */
+  const DEMO_ACTIVE_KEY = 'kata:demo:active';
+  let showDemo = $state(false);
+  function updateDemoGate() {
+    if (typeof window === 'undefined') return;
+    const fromUrl = new URLSearchParams(window.location.search).get('demo') === '1';
+    if (fromUrl) {
+      localStorage.setItem(DEMO_ACTIVE_KEY, '1');
+    }
+    showDemo = localStorage.getItem(DEMO_ACTIVE_KEY) === '1';
+  }
+  $effect(() => {
+    updateDemoGate();
+  });
 
 
   type Screen =
@@ -310,6 +330,7 @@
     });
     window.addEventListener('popstate', () => {
       void syncFromUrl();
+      updateDemoGate();
     });
     (async () => {
       try {
@@ -323,8 +344,6 @@
     return () => {
       unsubscribe();
       uninstallDiffCopy();
-      document.removeEventListener('mousedown', onAnyMouseDown);
-      document.removeEventListener('mouseup', onAnyMouseUp);
     };
   });
 </script>
@@ -458,35 +477,37 @@
       </span>
       {#if toolbar.patchsets}
         {@const ps = toolbar.patchsets}
-        <label class="ps-picker">
-          <span class="muted">Patchset</span>
-          <select
-            value={ps.selected}
-            onchange={(e) =>
-              ps.select(Number((e.currentTarget as HTMLSelectElement).value))}
-          >
-            {#each ps.options as opt (opt.n)}
-              <option value={opt.n}>{opt.label}</option>
-            {/each}
-          </select>
-        </label>
-        <label class="ps-picker">
-          <span class="muted">compared to</span>
-          <select
-            value={ps.compareWith ?? ''}
-            onchange={(e) => {
-              const v = (e.currentTarget as HTMLSelectElement).value;
-              ps.selectCompareWith(v === '' ? null : Number(v));
-            }}
-          >
-            <option value="">base</option>
-            {#each ps.options as opt (opt.n)}
-              {#if opt.n !== ps.selected}
-                <option value={opt.n}>PS{opt.n}</option>
-              {/if}
-            {/each}
-          </select>
-        </label>
+        <span class="ps-picker-group" data-tour="patchset-picker">
+          <label class="ps-picker">
+            <span class="muted">Patchset</span>
+            <select
+              value={ps.selected}
+              onchange={(e) =>
+                ps.select(Number((e.currentTarget as HTMLSelectElement).value))}
+            >
+              {#each ps.options as opt (opt.n)}
+                <option value={opt.n}>{opt.label}</option>
+              {/each}
+            </select>
+          </label>
+          <label class="ps-picker">
+            <span class="muted">compared to</span>
+            <select
+              value={ps.compareWith ?? ''}
+              onchange={(e) => {
+                const v = (e.currentTarget as HTMLSelectElement).value;
+                ps.selectCompareWith(v === '' ? null : Number(v));
+              }}
+            >
+              <option value="">base</option>
+              {#each ps.options as opt (opt.n)}
+                {#if opt.n !== ps.selected}
+                  <option value={opt.n}>PS{opt.n}</option>
+                {/if}
+              {/each}
+            </select>
+          </label>
+        </span>
       {/if}
       <!-- Float controls to the right so the title gets breathing
            room from the chips next to it. -->
@@ -499,7 +520,12 @@
            shift — the chips themselves keep their position. -->
       {#if toolbar.comments}
         {@const c = toolbar.comments}
-        <div class="comment-nav" role="group" aria-label="Comment navigation">
+        <div
+          class="comment-nav"
+          role="group"
+          aria-label="Comment navigation"
+          data-tour="comment-nav"
+        >
           <button
             type="button"
             onclick={c.prev}
@@ -530,7 +556,7 @@
       {/if}
       {#if toolbar.filter}
         {@const filter = toolbar.filter}
-        <div class="filter-chips">
+        <div class="filter-chips" data-tour="filter-chips">
           <span class="label">Status</span>
           <button
             type="button"
@@ -580,7 +606,12 @@
       {/if}
       {#if toolbar.view}
         {@const v = toolbar.view}
-        <div class="view-toggle" role="radiogroup" aria-label="View mode">
+        <div
+          class="view-toggle"
+          role="radiogroup"
+          aria-label="View mode"
+          data-tour="view-toggle"
+        >
           <button
             type="button"
             class="seg"
@@ -660,4 +691,8 @@
     {/key}
   {/if}
 </main>
+
+{#if showDemo}
+  <DemoOverlay />
+{/if}
 

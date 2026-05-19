@@ -13,6 +13,7 @@ clap = { workspace = true }
 futures = { workspace = true }
 mime_guess = { workspace = true }
 kata-core = { workspace = true }
+kata-demo = { workspace = true }
 kata-jj = { workspace = true }
 kata-mcp = { workspace = true }
 kata-service = { workspace = true }

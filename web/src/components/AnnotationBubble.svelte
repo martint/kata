@@ -78,6 +78,7 @@
   class="annotation"
   class:collapsed={folded}
   data-annotation-id={annotation.annotation_id}
+  data-tour="annotation"
 >
   <header>
     {#if showFold}

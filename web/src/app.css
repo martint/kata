@@ -344,6 +344,16 @@ header.app .review-title .review-name {
   max-width: 28ch;
 }
 
+header.app .ps-picker-group {
+  /* Wrapper used by the demo tour to highlight both pickers as a
+   * single unit. Acts as a flex container so the two `.ps-picker`
+   * labels keep their inline layout, then sits as a flex item in
+   * the header row. */
+  display: inline-flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
 header.app .ps-picker {
   display: inline-flex;
   align-items: baseline;

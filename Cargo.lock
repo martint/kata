@@ -2020,6 +2020,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "kata-demo"
+version = "0.0.0"
+dependencies = [
+ "chrono",
+ "kata-core",
+ "kata-jj",
+ "kata-service",
+ "kata-storage",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "kata-jj"
 version = "0.0.0"
 dependencies = [
@@ -2066,6 +2080,7 @@ dependencies = [
  "futures",
  "http-body-util",
  "kata-core",
+ "kata-demo",
  "kata-jj",
  "kata-mcp",
  "kata-service",

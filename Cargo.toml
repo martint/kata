@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/kata-core",
+    "crates/kata-demo",
     "crates/kata-jj",
     "crates/kata-mcp",
     "crates/kata-server",
@@ -43,6 +44,7 @@ schemars = "1"
 uuid = { version = "1", features = ["v7", "serde"] }
 
 kata-core = { path = "crates/kata-core" }
+kata-demo = { path = "crates/kata-demo" }
 kata-jj = { path = "crates/kata-jj" }
 kata-mcp = { path = "crates/kata-mcp" }
 kata-server = { path = "crates/kata-server" }

@@ -1698,6 +1698,7 @@
         class="toggle"
         aria-label={collapsed ? 'expand' : 'collapse'}
         onclick={() => (collapsed = !collapsed)}
+        data-tour="file-fold"
       >
         {collapsed ? '▸' : '▾'}
       </button>

@@ -44,7 +44,7 @@
   });
 </script>
 
-<nav class="file-tree" aria-label="Changed files">
+<nav class="file-tree" aria-label="Changed files" data-tour="file-tree">
   <header>
     <h3>Files ({files.length})</h3>
     {#if navTotal > 0 && onprev && onnext}

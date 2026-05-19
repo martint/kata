@@ -231,6 +231,7 @@
             aria-expanded={!collapsed}
             title={collapsed ? 'Expand this thread' : 'Fold this thread'}
             onclick={() => toggleFold(c.comment_id)}
+            data-tour="thread-fold"
           ><Chevron dir={collapsed ? 'right' : 'down'} size={10} filled /></button>
         {/if}
         <strong>{c.author}</strong>

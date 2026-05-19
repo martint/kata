@@ -523,7 +523,7 @@
   {:else if summaries && liveSummaries.length === 0 && !showArchived}
     <p class="muted">No active reviews. Toggle "Show archived" to see archived ones.</p>
   {:else if summaries}
-    <ul class="review-list">
+    <ul class="review-list" data-tour="review-list">
       {#each liveSummaries as s (s.manifest.review_id)}
         <li>
           <button class="row" onclick={() => onopen(s.manifest.number)}>

@@ -2336,7 +2336,7 @@
   }
 </script>
 
-<section class="header">
+<section class="header" data-tour="review-summary">
   <!-- Title (#N name + Archived pill) lives in the top header bar so
        it stays visible while the user scrolls. See App.svelte's
        `.header-row.review` row. -->
