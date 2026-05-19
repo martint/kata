@@ -176,7 +176,7 @@ pub async fn resolve_anchor<B: JjBackend + ?Sized>(
     //    differ from the patchset tip (typical for per-commit
     //    scoped views, where comments anchor to the scoped commit
     //    but the patchset endpoint we compare against is the tip).
-    if let Some(range) = find_exact(&current_lines, &snippet) {
+    if let Some(range) = find_exact(&current_lines, &snippet, original_range) {
         if range == original_range {
             return Ok(AnchorResolution::Valid);
         }
@@ -185,7 +185,7 @@ pub async fn resolve_anchor<B: JjBackend + ?Sized>(
 
     // 2. Fuzzy: sliding window of the same length, ranked by similarity.
     //    Same "no-move-when-same-range" guard as the exact branch.
-    if let Some((range, ratio)) = find_fuzzy(&current_lines, &snippet)
+    if let Some((range, ratio)) = find_fuzzy(&current_lines, &snippet, original_range)
         && ratio >= FUZZY_THRESHOLD
     {
         if range == original_range {
@@ -211,19 +211,30 @@ fn slice_range<'a>(lines: &'a [&'a str], range: LineRange) -> Vec<&'a str> {
     lines[start..end].to_vec()
 }
 
-fn find_exact(haystack: &[&str], needle: &[&str]) -> Option<LineRange> {
+fn find_exact(haystack: &[&str], needle: &[&str], original: LineRange) -> Option<LineRange> {
     if needle.is_empty() || haystack.len() < needle.len() {
         return None;
     }
-    let mut hits = haystack
+    let hits: Vec<usize> = haystack
         .windows(needle.len())
         .enumerate()
-        .filter(|(_, w)| *w == needle);
-    let (idx, _) = hits.next()?;
-    // Multiple matches → ambiguous; let the fuzzy pass decide.
-    if hits.next().is_some() {
+        .filter_map(|(i, w)| if w == needle { Some(i) } else { None })
+        .collect();
+    if hits.is_empty() {
         return None;
     }
+    // When the needle has multiple exact matches (think a closing
+    // `}` that appears N times), pick the one closest to the
+    // original line range instead of returning the first or
+    // bailing to the fuzzy pass. A reviewer who left a comment at
+    // line 200 of a 1000-line file with five `}`s should see the
+    // anchor land near 200, not on the first brace at the top of
+    // the file.
+    let original_start = original.start.saturating_sub(1) as usize;
+    let idx = hits
+        .into_iter()
+        .min_by_key(|&i| (i as i64 - original_start as i64).unsigned_abs())
+        .expect("hits non-empty");
     Some(LineRange {
         start: (idx as u32) + 1,
         end: (idx as u32) + needle.len() as u32,
@@ -241,7 +252,11 @@ fn find_exact(haystack: &[&str], needle: &[&str]) -> Option<LineRange> {
 /// position, total O(n · window). Same `ratio = 2·matches / (a+b)`
 /// shape that `similar::TextDiff::ratio` produces, just measured over
 /// line tokens instead of characters.
-fn find_fuzzy(haystack: &[&str], needle: &[&str]) -> Option<(LineRange, f32)> {
+fn find_fuzzy(
+    haystack: &[&str],
+    needle: &[&str],
+    original: LineRange,
+) -> Option<(LineRange, f32)> {
     let window = needle.len();
     if window == 0 || haystack.len() < window {
         return None;
@@ -254,9 +269,17 @@ fn find_fuzzy(haystack: &[&str], needle: &[&str]) -> Option<(LineRange, f32)> {
     for &line in needle {
         *needle_counts.entry(line).or_insert(0) += 1;
     }
-    let mut best: Option<(usize, f32)> = None;
+    // Score every window, then pick the best ratio; ties broken by
+    // proximity to the original line range. Without the tie-break,
+    // a one-line comment whose content is a generic line (a closing
+    // brace, a blank line, a single keyword) drifts to the FIRST
+    // occurrence of that line in the file, which is "seemingly
+    // random" from the reviewer's perspective. Picking the closest
+    // surviving occurrence is what they expect.
+    let original_start = original.start.saturating_sub(1) as i64;
     let total = (window + window) as f32;
     let mut remaining = HashMap::with_capacity(needle_counts.len());
+    let mut best: Option<(usize, f32, u64)> = None;
     for i in 0..=haystack.len() - window {
         remaining.clone_from(&needle_counts);
         let mut overlap: u32 = 0;
@@ -269,12 +292,14 @@ fn find_fuzzy(haystack: &[&str], needle: &[&str]) -> Option<(LineRange, f32)> {
             }
         }
         let ratio = (overlap as f32 * 2.0) / total;
+        let distance = (i as i64 - original_start).unsigned_abs();
         match best {
-            Some((_, b)) if ratio <= b => {}
-            _ => best = Some((i, ratio)),
+            Some((_, b, _)) if ratio < b => {}
+            Some((_, b, d)) if (ratio - b).abs() < f32::EPSILON && distance >= d => {}
+            _ => best = Some((i, ratio, distance)),
         }
     }
-    let (i, ratio) = best?;
+    let (i, ratio, _) = best?;
     Some((
         LineRange {
             start: (i as u32) + 1,
@@ -293,4 +318,53 @@ fn original_bytes_to_excerpt(bytes: Option<Vec<u8>>, range: LineRange) -> String
         .skip(start)
         .take(end - start)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A 1-line comment whose content is `}` shouldn't drift to
+    /// the FIRST `}` in the file when there are several — that's
+    /// the "seemingly random position" behaviour reviewers
+    /// reported. Tie-break by proximity to the original line.
+    #[test]
+    fn find_exact_with_multiple_matches_picks_closest_to_original() {
+        let lines = ["fn a() {\n", "}\n", "fn b() {\n", "}\n", "fn c() {\n", "}\n"];
+        // Comment was on line 4 (the middle `}`).
+        let original = LineRange { start: 4, end: 4 };
+        let needle = ["}\n"];
+        let result = find_exact(&lines, &needle, original);
+        assert_eq!(result, Some(LineRange { start: 4, end: 4 }));
+    }
+
+    /// Same scenario but the original line moved by one — exact
+    /// match still picks the closest brace to where the comment
+    /// was, not the very first brace in the file.
+    #[test]
+    fn find_exact_picks_closest_when_lines_shifted() {
+        let lines = ["// added\n", "fn a() {\n", "}\n", "fn b() {\n", "}\n"];
+        // Original anchor was line 2 (the first `}` in the OLD file).
+        let original = LineRange { start: 2, end: 2 };
+        let needle = ["}\n"];
+        let result = find_exact(&lines, &needle, original);
+        // Line 3 in the new file is the closest brace to old line 2.
+        assert_eq!(result, Some(LineRange { start: 3, end: 3 }));
+    }
+
+    /// When fuzzy windows tie on ratio (e.g. a 1-line needle that
+    /// matches several places in the file), pick the closest to
+    /// the original — same rationale as the exact-match tie-break.
+    #[test]
+    fn find_fuzzy_picks_closest_window_on_ratio_tie() {
+        let lines = ["x\n", "}\n", "x\n", "x\n", "}\n", "x\n"];
+        // Original anchor was line 4 in the old file.
+        let original = LineRange { start: 4, end: 4 };
+        let needle = ["}\n"];
+        let (range, ratio) = find_fuzzy(&lines, &needle, original).unwrap();
+        // Both braces (lines 2 and 5) have ratio 1.0; line 5 is
+        // closer to original line 4, so the tie-break picks it.
+        assert!((ratio - 1.0).abs() < f32::EPSILON);
+        assert_eq!(range, LineRange { start: 5, end: 5 });
+    }
 }
