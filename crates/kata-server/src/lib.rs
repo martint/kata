@@ -5,6 +5,7 @@
 //! [`routes`] module adapts that surface to axum HTTP. A future MCP server
 //! reuses the same [`ReviewService`] without going through HTTP.
 
+pub mod auth;
 pub mod config;
 pub mod embedded;
 pub mod error;
@@ -12,6 +13,7 @@ pub mod routes;
 pub mod service;
 pub mod state;
 
+pub use auth::{AuthConfig, AuthMode};
 pub use config::ServerConfig;
 pub use error::{AppError, AppResult};
 pub use routes::{router, router_with_assets, router_with_embedded_assets};

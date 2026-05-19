@@ -5,6 +5,8 @@ use std::sync::Arc;
 use clap::{Parser, Subcommand};
 use kata_core::{Author, RepoManifest, SCHEMA_VERSION};
 use kata_jj::JjLib;
+use kata_server::auth::{AuthConfig, AuthMode, parse_upstream_cidr, validate_bind_safety};
+use kata_server::config::TlsConfig;
 use kata_server::{
     AppState, ServerConfig, router_with_assets, router_with_embedded_assets,
 };
@@ -81,12 +83,55 @@ struct ServeArgs {
     workspaces: Vec<String>,
 
     /// Identity used for writes when the client doesn't override it.
+    /// Only consulted in `--auth-mode trust-client`; in `trust-
+    /// forwarded-header` mode this default is never used (a request
+    /// without the trusted header is a 401, not a fall-through).
     #[arg(long, env = "KATA_AUTHOR")]
     author: String,
 
-    /// `host:port` to bind on.
-    #[arg(long, env = "KATA_BIND", default_value = "0.0.0.0:7878")]
+    /// `host:port` to bind on. Default is loopback so a fresh install
+    /// is safe by default. Override with `0.0.0.0:<port>` to expose
+    /// on a network interface — also the right moment to think about
+    /// `--auth-mode` (see below).
+    #[arg(long, env = "KATA_BIND", default_value = "127.0.0.1:7878")]
     bind: SocketAddr,
+
+    /// How the server decides who is acting on a request.
+    /// `trust-client` (default) honours `X-Review-Author` on HTTP and
+    /// `?as=` on MCP — safe on a localhost / single-user setup,
+    /// unsafe for anything shared. `trust-forwarded-header` reads
+    /// the actor from a header an upstream proxy is responsible for
+    /// setting (`--auth-trusted-header`); use this when sitting
+    /// behind oauth2-proxy / Authelia / Pomerium / similar.
+    #[arg(long, env = "KATA_AUTH_MODE", value_enum, default_value_t = AuthMode::TrustClient)]
+    auth_mode: AuthMode,
+
+    /// Header to read the actor from in `--auth-mode trust-
+    /// forwarded-header`. Defaults to `X-Forwarded-Email`, which is
+    /// what `oauth2-proxy` sets by default. Header names are case-
+    /// insensitive.
+    #[arg(long, env = "KATA_AUTH_TRUSTED_HEADER", default_value = "X-Forwarded-Email")]
+    auth_trusted_header: String,
+
+    /// CIDR range allowed to set the trusted header. Pass multiple
+    /// times for multiple ranges, or `0.0.0.0/0`/`::/0` to allow
+    /// any source (only sensible inside an isolated network).
+    /// Required when `--auth-mode trust-forwarded-header` is paired
+    /// with a non-loopback bind — without it, the server refuses to
+    /// start. Loopback binds skip the check entirely.
+    #[arg(long = "auth-trust-upstream", env = "KATA_AUTH_TRUST_UPSTREAM", value_parser = parse_upstream_cidr)]
+    auth_trust_upstream: Vec<ipnet::IpNet>,
+
+    /// Path to a PEM-encoded TLS certificate chain. Pair with
+    /// `--tls-key`. When both are set, the listener terminates TLS
+    /// in-process via rustls. Omit both to serve plain HTTP and
+    /// terminate TLS upstream.
+    #[arg(long, env = "KATA_TLS_CERT")]
+    tls_cert: Option<PathBuf>,
+
+    /// Path to a PEM-encoded TLS private key matching `--tls-cert`.
+    #[arg(long, env = "KATA_TLS_KEY")]
+    tls_key: Option<PathBuf>,
 
     /// Override the embedded Svelte bundle with one served from disk
     /// (e.g. `web/dist` during local UI work). Omit to use the bundle
@@ -187,6 +232,13 @@ async fn run_demo(
         // movement on a workspace nobody else touches.
         branch_poll_secs: 0,
         mcp_cors_origins: Vec::new(),
+        // The demo is single-user on the same host; the historical
+        // client-supplied identity model is the right default.
+        auth_mode: AuthMode::TrustClient,
+        auth_trusted_header: "X-Forwarded-Email".into(),
+        auth_trust_upstream: Vec::new(),
+        tls_cert: None,
+        tls_key: None,
     };
     serve(data.clone(), seeded.db_path, serve_args).await
 }
@@ -217,17 +269,51 @@ fn confirm_proceed(db_path: &Path) -> std::io::Result<bool> {
     ))
 }
 
+/// State the `/mcp` handler reads each request. The auth config is
+/// alongside the dispatcher because the actor lookup is mode-aware:
+/// in `trust-client` mode the historical `?as=` query param wins
+/// (with the dispatcher's default as fallback); in `trust-
+/// forwarded-header` mode the configured trusted header is the only
+/// source, and a missing header is a 401.
+#[derive(Clone)]
+struct McpState {
+    dispatcher: kata_mcp::McpDispatcher,
+    auth: AuthConfig,
+}
+
 async fn mcp_handler(
-    axum::extract::State(dispatcher): axum::extract::State<kata_mcp::McpDispatcher>,
+    axum::extract::State(state): axum::extract::State<McpState>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
     req: axum::extract::Request,
 ) -> axum::response::Response {
-    let author = params
-        .get(kata_mcp::AUTHOR_QUERY_PARAM)
-        .map(|s| s.trim().to_owned())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| dispatcher.default_author().to_string());
-    dispatcher
+    use axum::response::IntoResponse;
+    let author = match state.auth.mode {
+        AuthMode::TrustClient => params
+            .get(kata_mcp::AUTHOR_QUERY_PARAM)
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| state.dispatcher.default_author().to_string()),
+        AuthMode::TrustForwardedHeader => {
+            let header = &state.auth.trusted_header;
+            let value = req.headers().get(header.as_str()).and_then(|v| v.to_str().ok());
+            match value.map(str::trim).filter(|s| !s.is_empty()) {
+                Some(s) => s.to_owned(),
+                None => {
+                    tracing::warn!(
+                        header = header.as_str(),
+                        "MCP request missing trusted header (auth-mode=trust-forwarded-header)",
+                    );
+                    return (
+                        axum::http::StatusCode::UNAUTHORIZED,
+                        format!("Missing {header} header\n"),
+                    )
+                        .into_response();
+                }
+            }
+        }
+    };
+    state
+        .dispatcher
         .for_author(&author)
         .handle(req)
         .await
@@ -303,10 +389,38 @@ async fn serve(
         .iter()
         .map(|raw| parse_workspace(raw))
         .collect::<Result<Vec<_>, _>>()?;
+
+    // Build the auth config, then run the bind/mode safety checks
+    // before any I/O. We want a misconfigured deployment to die at
+    // startup with a clear message, not silently begin serving in a
+    // shape the operator didn't intend.
+    let auth = AuthConfig {
+        mode: args.auth_mode,
+        trusted_header: args.auth_trusted_header.clone(),
+        upstream_allowlist: args.auth_trust_upstream.clone(),
+    };
+    let tls = match (args.tls_cert.as_ref(), args.tls_key.as_ref()) {
+        (Some(cert), Some(key)) => Some(TlsConfig {
+            cert_path: cert.clone(),
+            key_path: key.clone(),
+        }),
+        (Some(_), None) | (None, Some(_)) => {
+            return Err(
+                "--tls-cert and --tls-key must be set together (or both omitted)".into(),
+            );
+        }
+        (None, None) => None,
+    };
+    if let Err(e) = validate_bind_safety(args.bind, &auth) {
+        return Err(e.to_string().into());
+    }
+
     let cfg = ServerConfig {
         review_root: data.clone(),
         author: Author::new(args.author.clone()),
         bind_addr: args.bind,
+        auth: auth.clone(),
+        tls: tls.clone(),
     };
 
     // `kata.db` lives at `--data/kata.db`. WAL journal mode + a partial
@@ -345,6 +459,8 @@ async fn serve(
     let state = AppState {
         service: service.clone(),
         default_author: cfg.author.clone(),
+        auth: cfg.auth.clone(),
+        bind_addr: cfg.bind_addr,
     };
 
     let mut app = match &args.web_dir {
@@ -369,9 +485,13 @@ async fn serve(
         "mounting MCP at /mcp",
     );
     let dispatcher = kata_mcp::McpDispatcher::new(service.clone(), default_mcp_author);
+    let mcp_state = McpState {
+        dispatcher,
+        auth: cfg.auth.clone(),
+    };
     let mut mcp_router = axum::Router::new()
         .route("/", axum::routing::any(mcp_handler))
-        .with_state(dispatcher);
+        .with_state(mcp_state);
     if !args.mcp_cors_origins.is_empty() {
         let origins = args
             .mcp_cors_origins
@@ -404,18 +524,103 @@ async fn serve(
     }
     app = app.nest("/mcp", mcp_router);
 
-    let listener = tokio::net::TcpListener::bind(cfg.bind_addr).await?;
-    tracing::info!(addr = %cfg.bind_addr, "kata listening");
+    // The upstream-IP guard layer reads `ConnectInfo<SocketAddr>` per
+    // request, so the make-service has to be built with connect-info
+    // for both the plain and TLS paths. The layer itself is a thin
+    // wrapper that only does work in trust-forwarded-header mode on a
+    // non-loopback bind.
+    let guard_state = GuardState {
+        auth: cfg.auth.clone(),
+        bind: cfg.bind_addr,
+    };
+    let app = app.layer(axum::middleware::from_fn_with_state(
+        guard_state,
+        upstream_guard,
+    ));
+    let make_service = app.into_make_service_with_connect_info::<SocketAddr>();
 
-    // We intentionally do not use `with_graceful_shutdown`: the SSE event
-    // stream and the MCP `StreamableHttpService` are designed to stay open
-    // forever, so a graceful drain never completes. Dropping the serve
-    // future closes the listener and lets the process exit immediately.
+    // axum-server replaces axum::serve so we can wrap the same listener
+    // in rustls for the TLS branch without spinning up two different
+    // serve futures. The graceful-shutdown caveat from before still
+    // holds — we never call it for the SSE / MCP reasons noted in the
+    // old code — so a ctrl-c just drops the future.
+    let scheme = if cfg.tls.is_some() { "https" } else { "http" };
+    tracing::info!(addr = %cfg.bind_addr, scheme, auth_mode = ?cfg.auth.mode, "kata listening");
+    if cfg.auth.mode == AuthMode::TrustClient && !cfg.bind_addr.ip().is_loopback() {
+        // Loud at startup because the combination is silently
+        // catastrophic — any client on the network can claim any
+        // identity. We accept the deployment but make sure the
+        // operator sees it in their logs.
+        tracing::warn!(
+            "auth-mode=trust-client on a non-loopback bind ({}). Any caller can claim any identity. \
+             Move auth to a fronting proxy and switch to --auth-mode trust-forwarded-header.",
+            cfg.bind_addr,
+        );
+    }
+    let serve = async move {
+        if let Some(tls) = &cfg.tls {
+            let tls_cfg = axum_server::tls_rustls::RustlsConfig::from_pem_file(
+                &tls.cert_path,
+                &tls.key_path,
+            )
+            .await
+            .map_err(|e| {
+                format!(
+                    "loading TLS cert/key from {:?} / {:?}: {e}",
+                    tls.cert_path, tls.key_path,
+                )
+            })?;
+            axum_server::bind_rustls(cfg.bind_addr, tls_cfg)
+                .serve(make_service)
+                .await
+                .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })
+        } else {
+            axum_server::bind(cfg.bind_addr)
+                .serve(make_service)
+                .await
+                .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })
+        }
+    };
     tokio::select! {
-        res = axum::serve(listener, app) => res?,
+        res = serve => res?,
         _ = tokio::signal::ctrl_c() => {
             tracing::info!("shutting down");
         }
     }
     Ok(())
+}
+
+/// State bundle the upstream-guard middleware needs. Kept separate
+/// from `AppState` so the layer doesn't pull in the whole service
+/// just to read two fields.
+#[derive(Clone)]
+struct GuardState {
+    auth: AuthConfig,
+    bind: SocketAddr,
+}
+
+/// Per-request middleware: in trust-forwarded-header mode on a non-
+/// loopback bind, reject requests whose remote address isn't in the
+/// configured upstream allowlist. The check is cheap (a slice scan
+/// over a handful of CIDRs) and short-circuits entirely for the
+/// other branches.
+async fn upstream_guard(
+    axum::extract::State(state): axum::extract::State<GuardState>,
+    axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<SocketAddr>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    if state.auth.enforce_allowlist(state.bind) && !state.auth.upstream_allowed(remote.ip()) {
+        tracing::warn!(
+            remote = %remote.ip(),
+            "rejecting request: source not in --auth-trust-upstream allowlist",
+        );
+        return (
+            axum::http::StatusCode::FORBIDDEN,
+            "Forbidden: source not in upstream allowlist\n",
+        )
+            .into_response();
+    }
+    next.run(req).await
 }

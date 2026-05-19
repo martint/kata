@@ -24,6 +24,15 @@ struct Harness {
 
 impl Harness {
     async fn new() -> Self {
+        Self::with_auth(kata_server::auth::AuthConfig {
+            mode: kata_server::auth::AuthMode::TrustClient,
+            trusted_header: "X-Forwarded-Email".into(),
+            upstream_allowlist: Vec::new(),
+        })
+        .await
+    }
+
+    async fn with_auth(auth: kata_server::auth::AuthConfig) -> Self {
         let workspace = TempDir::new().unwrap();
         let storage_root = TempDir::new().unwrap();
         run_jj(workspace.path(), &["git", "init", "."]);
@@ -64,6 +73,8 @@ impl Harness {
         let state = AppState {
             service,
             default_author: Author::new("alice@example.com"),
+            auth,
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
         };
         let router = router(state);
         Self {
@@ -1328,3 +1339,98 @@ async fn libjj_interdiff_matches_real_edit_at_bottom_of_stack() {
     assert_eq!(file["kind"], "file");
     assert!(file["hunks"].as_array().unwrap().len() > 0);
 }
+
+#[tokio::test]
+async fn trust_client_falls_back_to_default_author_without_header() {
+    // No `X-Review-Author` header: the server-configured default
+    // (`alice@example.com`) wins. This is the historical /api/whoami
+    // contract that the UI relies on for "who am I writing as".
+    let h = Harness::new().await;
+    let (status, value) = h.json("GET", "/api/whoami", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["author"], "alice@example.com");
+}
+
+#[tokio::test]
+async fn trust_client_honors_x_review_author() {
+    // Trust-client mode: the client sets `X-Review-Author` and we
+    // believe them. Same call shape as the existing
+    // `session_via_x_review_author_header` test but checked at the
+    // /api/whoami surface to keep the assertion focused.
+    let h = Harness::new().await;
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/whoami")
+        .header("x-review-author", "bob@example.com")
+        .body(Body::empty())
+        .unwrap();
+    let resp = h.router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value =
+        serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(body["author"], "bob@example.com");
+}
+
+#[tokio::test]
+async fn trust_forwarded_header_reads_configured_header() {
+    // In trust-forwarded-header mode, the configured trusted header
+    // is the only source of the actor. The client-supplied
+    // `X-Review-Author` is ignored entirely so a misbehaving client
+    // can't override the proxy's verdict.
+    let h = Harness::with_auth(kata_server::auth::AuthConfig {
+        mode: kata_server::auth::AuthMode::TrustForwardedHeader,
+        trusted_header: "X-Forwarded-Email".into(),
+        upstream_allowlist: Vec::new(),
+    })
+    .await;
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/whoami")
+        .header("X-Forwarded-Email", "carol@example.com")
+        // Client tries to lie — must be ignored.
+        .header("x-review-author", "attacker@example.com")
+        .body(Body::empty())
+        .unwrap();
+    let resp = h.router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value =
+        serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(body["author"], "carol@example.com");
+}
+
+#[tokio::test]
+async fn trust_forwarded_header_rejects_missing_header() {
+    // The point of trust-forwarded-header is "the upstream proxy is
+    // required to authenticate the user". A request that reaches us
+    // without the trusted header means the proxy didn't — which is
+    // a 401, never a fall-through to the server default.
+    let h = Harness::with_auth(kata_server::auth::AuthConfig {
+        mode: kata_server::auth::AuthMode::TrustForwardedHeader,
+        trusted_header: "X-Forwarded-Email".into(),
+        upstream_allowlist: Vec::new(),
+    })
+    .await;
+    let (status, _) = h.json("GET", "/api/whoami", None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn trust_forwarded_header_rejects_empty_header() {
+    // An empty header is just as wrong as a missing one — the proxy
+    // shouldn't be forwarding identity-less requests.
+    let h = Harness::with_auth(kata_server::auth::AuthConfig {
+        mode: kata_server::auth::AuthMode::TrustForwardedHeader,
+        trusted_header: "X-Forwarded-Email".into(),
+        upstream_allowlist: Vec::new(),
+    })
+    .await;
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/whoami")
+        .header("X-Forwarded-Email", "   ")
+        .body(Body::empty())
+        .unwrap();
+    let resp = h.router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+

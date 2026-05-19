@@ -29,6 +29,7 @@ impl IntoResponse for AppError {
         let status = match &self.0 {
             ServiceError::NotFound(_) => StatusCode::NOT_FOUND,
             ServiceError::BadRequest(_) => StatusCode::BAD_REQUEST,
+            ServiceError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
             ServiceError::Storage(kata_storage::Error::NotFound { .. }) => {
                 StatusCode::NOT_FOUND
             }

@@ -843,6 +843,45 @@ which makes deep-linking and sharing first-class.
 
 ---
 
+## 18a. Identity and deployment posture
+
+Every comment, response, annotation, session, and review carries
+an **author** — a free-form identity string that the system attaches
+to the artefact at write time. The product never invents an author;
+something on the request has to identify the caller.
+
+Kata supports two ways the server learns who's calling:
+
+- **Client-trusted mode** (`--auth-mode trust-client`, the default).
+  The client supplies its own identity — `X-Review-Author` on HTTP,
+  `?as=` on MCP — and the server believes it. Falls back to the
+  server's configured default when the client supplies nothing. Fine
+  for localhost / single-user setups; unsuitable for any shared
+  deployment, because nothing stops a caller from claiming any
+  identity.
+- **Proxy-trusted mode** (`--auth-mode trust-forwarded-header`). The
+  server reads the actor from a header an upstream proxy is
+  responsible for setting (default `X-Forwarded-Email`). Client-
+  supplied identity headers are ignored. A request without the
+  trusted header — or from outside the configured upstream-IP
+  allowlist — is rejected with a 401/403; there is no fall-through
+  to the default. The deployment story is "put oauth2-proxy /
+  Authelia / Pomerium / Caddy in front, terminate TLS there, and
+  forward the verified email."
+
+Kata can also terminate TLS itself (`--tls-cert` + `--tls-key`,
+in-process via rustls), but the default operations recipe in the
+README is the proxy-trusted shape — it solves auth, TLS, and
+request observability in one place.
+
+These are properties of the deployment, not the product surface.
+A reviewer never sees them from the UI; the only effect is that
+in proxy-trusted mode, the author identity surfaced in `/api/whoami`
+and stamped on every write is whatever the proxy said it was, not
+whatever the browser sent.
+
+---
+
 ## 19. Explicitly out of scope
 
 A few capabilities are intentionally omitted, because they would

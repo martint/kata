@@ -18,6 +18,8 @@ license = "Apache-2.0"
 [workspace.dependencies]
 async-trait = "0.1"
 axum = { version = "0.8", features = ["macros", "json", "tokio"] }
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+ipnet = "2.10"
 futures = "0.3"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
 clap = { version = "4", features = ["derive", "env"] }

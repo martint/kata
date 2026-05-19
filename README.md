@@ -67,6 +67,51 @@ already using. Add more workspaces by repeating `--workspace`; bare
 paths derive the slug from the directory name, or pass `name=path` to
 override.
 
+## Deploying for a team
+
+The default `--bind 127.0.0.1:7878` is loopback-only and the default
+`--auth-mode trust-client` reads the actor from a client-supplied
+header (`X-Review-Author`) or `?as=` on MCP — safe on a single-user
+laptop, **wrong** for anything shared, because any caller on the
+network can claim any identity. To host Kata for a team:
+
+1. **Terminate TLS upstream** in a reverse proxy that also handles
+   authentication (oauth2-proxy / Authelia / Pomerium / Caddy with
+   the [`forward_auth`](https://caddyserver.com/docs/caddyfile/directives/forward_auth)
+   directive). Configure it to forward the authenticated user's
+   email to Kata in a header.
+2. **Run Kata in trust-forwarded-header mode**, with an upstream
+   allowlist that names the proxy's source IP/CIDR:
+
+   ```sh
+   kata serve \
+     --workspace main=/path/to/repo \
+     --data /var/lib/kata \
+     --author "system@example.com" \
+     --bind 0.0.0.0:7878 \
+     --auth-mode trust-forwarded-header \
+     --auth-trusted-header X-Forwarded-Email \
+     --auth-trust-upstream 10.0.0.5/32
+   ```
+
+   In this mode, client-supplied identity (`X-Review-Author` /
+   `?as=`) is ignored. A request that reaches Kata without the
+   trusted header — or from outside the allowlist — gets a 401 /
+   403. Loopback binds skip the allowlist check (only same-host
+   processes can connect).
+
+If you prefer a single-binary deployment without a fronting proxy,
+Kata can terminate TLS itself:
+
+```sh
+kata serve --tls-cert /etc/kata/cert.pem --tls-key /etc/kata/key.pem ...
+```
+
+Refreshing the cert is the operator's job (cert-bot, ACME script,
+etc.); Kata reloads it on restart. For most production deployments
+the fronting-proxy recipe is the right call — it solves auth, TLS,
+and request observability in one place.
+
 ## How it works
 
 A **review** pins a revset, a base commit, and a tip commit — that's

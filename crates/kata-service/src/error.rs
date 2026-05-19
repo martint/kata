@@ -14,6 +14,14 @@ pub enum ServiceError {
     #[error("{0}")]
     BadRequest(String),
 
+    /// The request didn't carry enough authentication to identify
+    /// the actor. Surfaced from the auth-mode-aware author
+    /// extractors in `kata-server` (and turned into a 401 by
+    /// `AppError`) when the configured trusted header is missing
+    /// or empty.
+    #[error("{0}")]
+    Unauthorized(String),
+
     #[error("internal error: {0}")]
     Internal(String),
 }

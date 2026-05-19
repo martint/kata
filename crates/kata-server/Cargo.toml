@@ -8,7 +8,9 @@ license.workspace = true
 [dependencies]
 async-trait = { workspace = true }
 axum = { workspace = true }
+axum-server = { workspace = true }
 chrono = { workspace = true }
+ipnet = { workspace = true }
 clap = { workspace = true }
 futures = { workspace = true }
 mime_guess = { workspace = true }
