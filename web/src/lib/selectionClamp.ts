@@ -44,7 +44,16 @@ export function installSelectionClamp(root: HTMLElement): () => void {
 
   function onMouseDown(e: MouseEvent) {
     const t = e.target as Element | null;
-    dragStartTable = (t?.closest('table') as HTMLElement | null) ?? null;
+    if (!t) return;
+    // Skip activation for clicks on interactive elements — buttons,
+    // chevrons, etc. Flipping `user-select: none` on the sibling
+    // tables would disturb any selection that's still alive in those
+    // tables from a previous drag (the browser may collapse or
+    // reflow the selection when its host element becomes
+    // unselectable mid-drag). Buttons aren't the start of a text
+    // drag, so there's nothing to clamp here.
+    if (t.closest('button')) return;
+    dragStartTable = (t.closest('table') as HTMLElement | null) ?? null;
     if (!dragStartTable) return;
     for (const tbl of root.querySelectorAll<HTMLElement>('table')) {
       if (tbl === dragStartTable) continue;

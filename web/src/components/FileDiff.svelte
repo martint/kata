@@ -285,6 +285,14 @@
       // it to null.
       const t = e.target as HTMLElement | null;
       if (t?.closest('.selection-popup')) return;
+      // Skip when the mouseup is on a button or other interactive
+      // element. A click on the chevron / "+ comment" button can
+      // sometimes leave the browser with a stray text selection
+      // (especially in a double-click sequence where the reflow
+      // after the first click puts the second click on text), and
+      // we don't want that to spawn the selection popup — the user's
+      // intent was to operate the button, not to comment on text.
+      if (t?.closest('button')) return;
       const x = e.clientX;
       const y = e.clientY;
       // Defer to next frame: the selection isn't always finalised by
@@ -339,6 +347,46 @@
     return installSelectionClamp(hunksWrapperEl);
   });
 
+  /** Rows we've painted `.selected` onto in response to a text drag-
+   *  select. Tracked so we can clean them up on the next update. */
+  let textSelectedRows: HTMLElement[] = [];
+  /** Apply the `.selected` row tint to EVERY row touched by an active
+   *  text selection — fills the inter-line gap on multi-line drags
+   *  and gives partial first/last lines the same left-stripe gutter
+   *  marker that fully-selected lines get. The character-precise
+   *  range still shows via `::selection` painted on top of the row
+   *  tint (different intensity = tiered visual, see the CSS rule
+   *  below). */
+  $effect(() => {
+    if (!hunksWrapperEl) return;
+    let lastKey = '';
+    function update() {
+      if (!hunksWrapperEl) return;
+      const sel = diffSelectionFor(hunksWrapperEl);
+      const key = sel ? `${sel.side}:${sel.startLine}-${sel.endLine}` : '';
+      if (key === lastKey) return;
+      lastKey = key;
+      for (const el of textSelectedRows) el.classList.remove('selected');
+      textSelectedRows = [];
+      if (!sel) return;
+      for (let ln = sel.startLine; ln <= sel.endLine; ln++) {
+        const matches = hunksWrapperEl.querySelectorAll(
+          `[data-side="${sel.side}"][data-line="${ln}"]`,
+        );
+        for (const el of matches) {
+          (el as HTMLElement).classList.add('selected');
+          textSelectedRows.push(el as HTMLElement);
+        }
+      }
+    }
+    document.addEventListener('selectionchange', update);
+    return () => {
+      document.removeEventListener('selectionchange', update);
+      for (const el of textSelectedRows) el.classList.remove('selected');
+      textSelectedRows = [];
+    };
+  });
+
   function commentOnSelection() {
     const s = selectionPopup;
     if (!s) return;
@@ -351,13 +399,15 @@
       columns: { start: s.startCol, end: s.endCol },
     });
     selectionPopup = null;
-    // Intentionally keep the native browser selection alive — the
-    // row-level `.selected` tint (added by composeSelected below) is
-    // a per-LINE highlight and would obscure the column-precise
-    // range the reader actually drag-selected. The browser's native
-    // selection paint sits on top of the tint and is what tells the
-    // reader "your comment is anchored to exactly this text". The
-    // next mousedown collapses it naturally.
+    // Collapse the document selection. The in-progress composer's
+    // synthetic `column-anchor` (painted by `columnAnchorsFor` in
+    // HunkLines / SBS) now carries the precise-range visual, so we
+    // no longer need the browser's native selection paint. Leaving
+    // the selection alive caused a regression where a later click
+    // on a chevron in a different hunk would EXTEND the stale
+    // anchor across hunks, making the entire intervening text look
+    // selected.
+    window.getSelection()?.removeAllRanges();
   }
 
   async function copySelection() {
@@ -494,12 +544,19 @@
 
   /** Apply the range-selection highlight to rows within this file when a
    *  line-level composer is open here. Direct DOM so toggling `composing`
-   *  doesn't re-evaluate every row in every hunk. */
+   *  doesn't re-evaluate every row in every hunk.
+   *
+   *  Skipped for column-range composers — those keep the user's native
+   *  text selection alive (see `commentOnSelection`), which already
+   *  shows the precise sub-line range the comment will anchor to.
+   *  Tinting whole rows on top would make it look like the comment
+   *  covers whole lines, hiding what the reviewer actually selected. */
   $effect(() => {
     for (const el of composeSelected) el.classList.remove('selected');
     composeSelected = [];
     if (!sectionEl) return;
     if (composing?.kind !== 'line' || composing.file !== file.path) return;
+    if (composing.columns) return;
     for (let ln = composing.startLine; ln <= composing.endLine; ln++) {
       const matches = sectionEl.querySelectorAll(
         `[data-side="${composing.side}"][data-line="${ln}"]`,
@@ -2051,6 +2108,26 @@
     /* Disable the browser's overscroll-bounce so users can't drag past
      * the diff's left/right edges. */
     overscroll-behavior-x: contain;
+  }
+
+  /* Single-color highlight via row tint. `.selected` (applied by
+   * the gutter `dragSelected` effect AND by the text-drag effect in
+   * the script block above) paints `--selection-tint` over each
+   * selected row's content cell — fills the inter-line gap, single
+   * color, and the existing left stripe in `.selected` gives the
+   * "this line has a selection" gutter cue.
+   *
+   * Inside `.selected` rows, the browser's `::selection` paint is
+   * suppressed (transparent) so the row tint isn't overlaid by a
+   * second paint of the same color (the visible "double tint"). The
+   * trade-off: on partial first/last lines of a multi-line text
+   * drag the WHOLE row is tinted even though only some characters
+   * are technically selected. True column-precise paint with no
+   * inter-line gaps would require custom-painted overlays computed
+   * from `Range.getBoundingClientRect` — a much bigger change. */
+  .hunks :global(.content.selected ::selection),
+  .hunks :global(.content.selected::selection) {
+    background: transparent;
   }
 
   /* Inter-hunk separator + the expand-context affordances share the

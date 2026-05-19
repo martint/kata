@@ -144,10 +144,6 @@
     for (const n of annotationsAt(side, line)) out.push({ kind: 'note', n });
     return out;
   }
-  function idOf(e: { kind: 'comment'; c: CommentView } | { kind: 'note'; n: AnnotationView }): string {
-    return e.kind === 'comment' ? e.c.comment_id : e.n.annotation_id;
-  }
-
   /** True iff every thread + note at the line is effectively folded
    *  (folded and not unread-force-expanded). Drives the marker
    *  state and the click direction. */
@@ -162,15 +158,6 @@
       }
     }
     return true;
-  }
-  function toggleAllAt(side: Side, line: number) {
-    if (!foldStore) return;
-    const entries = entriesAt(side, line);
-    const target = !allFoldedAt(side, line);
-    for (const e of entries) {
-      foldStore.set('comment', idOf(e), target);
-    }
-    foldVersionCtx?.bump();
   }
 
   /** Aggregate anchor range for any thread+note at (side, line) —
@@ -406,6 +393,8 @@
     const set = new Set<string>();
     for (const c of comments) {
       if (!c.side) continue;
+      // Outdated anchors get the gutter chevron, not the inline
+      // highlight — see HunkLines.svelte.
       if (c.anchor.kind === 'outdated') continue;
       const effective =
         c.anchor.kind === 'moved' || c.anchor.kind === 'drifted'
@@ -419,9 +408,165 @@
     return set;
   });
 
+  /** See HunkLines.svelte — full-row tint applies only to lines with at
+   *  least one no-columns comment OR any annotation; outdated
+   *  excluded. */
+  const fullLineCommentedLines = $derived.by(() => {
+    const set = new Set<string>();
+    for (const c of comments) {
+      if (!c.side) continue;
+      if (c.anchor.kind === 'outdated') continue;
+      if (c.columns) continue;
+      const effective =
+        c.anchor.kind === 'moved' || c.anchor.kind === 'drifted'
+          ? c.anchor.new_lines
+          : c.lines;
+      if (!effective) continue;
+      for (let l = effective.start; l <= effective.end; l++) {
+        set.add(`${c.side}:${l}`);
+      }
+    }
+    for (const n of annotations) {
+      if (!n.side || !n.lines) continue;
+      if (n.anchor.kind === 'outdated') continue;
+      const effective =
+        n.anchor.kind === 'moved' || n.anchor.kind === 'drifted'
+          ? n.anchor.new_lines
+          : n.lines;
+      if (!effective) continue;
+      for (let l = effective.start; l <= effective.end; l++) {
+        set.add(`${n.side}:${l}`);
+      }
+    }
+    return set;
+  });
+
+  /** See HunkLines.svelte's `outdatedEntriesFor` — the chevron in
+   *  this prototype is reserved for outdated comments only. */
+  function outdatedEntriesFor(side: Side, line: number): Array<
+    { kind: 'comment'; c: CommentView } | { kind: 'note'; n: AnnotationView }
+  > {
+    const out: Array<
+      { kind: 'comment'; c: CommentView } | { kind: 'note'; n: AnnotationView }
+    > = [];
+    for (const c of comments) {
+      if (c.side !== side) continue;
+      if (c.anchor.kind !== 'outdated') continue;
+      if (!c.lines || c.lines.end !== line) continue;
+      out.push({ kind: 'comment', c });
+    }
+    for (const n of annotations) {
+      if (n.side !== side) continue;
+      if (n.anchor.kind !== 'outdated') continue;
+      if (!n.lines || n.lines.end !== line) continue;
+      out.push({ kind: 'note', n });
+    }
+    return out;
+  }
+
+  function allOutdatedFoldedAt(side: Side, line: number): boolean {
+    const entries = outdatedEntriesFor(side, line);
+    if (entries.length === 0) return true;
+    for (const en of entries) {
+      if (en.kind === 'comment') {
+        if (isEffectivelyExpanded(en.c.comment_id)) return false;
+      } else {
+        if (!isFolded(en.n.annotation_id)) return false;
+      }
+    }
+    return true;
+  }
+
+  function toggleOutdatedAt(side: Side, line: number) {
+    if (!foldStore) return;
+    const entries = outdatedEntriesFor(side, line);
+    const target = !allOutdatedFoldedAt(side, line);
+    for (const en of entries) {
+      foldStore.set(
+        'comment',
+        en.kind === 'comment' ? en.c.comment_id : en.n.annotation_id,
+        target,
+      );
+    }
+    foldVersionCtx?.bump();
+  }
+
   function isCommented(side: Side, line: number | null | undefined): boolean {
     if (!showComments) return false;
     return line != null && commentedLines.has(`${side}:${line}`);
+  }
+
+  function isFullLineCommented(side: Side, line: number | null | undefined): boolean {
+    if (!showComments) return false;
+    return line != null && fullLineCommentedLines.has(`${side}:${line}`);
+  }
+
+  /** See HunkLines.svelte's `coveringEntriesFor` — matches anything
+   *  whose anchor range covers `(side, line)`, not just items ending
+   *  exactly at `line`. */
+  function coveringEntriesFor(side: Side, line: number): Array<
+    { kind: 'comment'; c: CommentView } | { kind: 'note'; n: AnnotationView }
+  > {
+    const out: Array<
+      { kind: 'comment'; c: CommentView } | { kind: 'note'; n: AnnotationView }
+    > = [];
+    for (const c of comments) {
+      if (c.side !== side) continue;
+      const effective =
+        c.anchor.kind === 'moved' || c.anchor.kind === 'drifted'
+          ? c.anchor.new_lines
+          : c.lines;
+      if (!effective) continue;
+      if (line < effective.start || line > effective.end) continue;
+      out.push({ kind: 'comment', c });
+    }
+    for (const n of annotations) {
+      if (n.side !== side) continue;
+      const effective =
+        n.anchor.kind === 'moved' || n.anchor.kind === 'drifted'
+          ? n.anchor.new_lines
+          : n.lines;
+      if (!effective) continue;
+      if (line < effective.start || line > effective.end) continue;
+      out.push({ kind: 'note', n });
+    }
+    return out;
+  }
+
+  /** Click handler — see HunkLines.svelte's `onContentClick`. */
+  function onContentClick(e: MouseEvent, side: Side, line: number | null | undefined) {
+    if (line == null) return;
+    if (!showComments) return;
+    if (!foldStore) return;
+    const t = e.target as HTMLElement | null;
+    const onAnchor = !!t?.closest('.column-anchor');
+    const onFullLine = isFullLineCommented(side, line);
+    if (!onAnchor && !onFullLine) return;
+    const entries = coveringEntriesFor(side, line);
+    if (entries.length === 0) return;
+    let anyExpanded = false;
+    for (const en of entries) {
+      if (en.kind === 'comment') {
+        if (isEffectivelyExpanded(en.c.comment_id)) {
+          anyExpanded = true;
+          break;
+        }
+      } else {
+        if (!isFolded(en.n.annotation_id)) {
+          anyExpanded = true;
+          break;
+        }
+      }
+    }
+    const target = anyExpanded;
+    for (const en of entries) {
+      foldStore.set(
+        'comment',
+        en.kind === 'comment' ? en.c.comment_id : en.n.annotation_id,
+        target,
+      );
+    }
+    foldVersionCtx?.bump();
   }
 
   function onPointerDown(e: PointerEvent, side: Side, line: number) {
@@ -452,7 +597,7 @@
       ) as HTMLElement | null;
       if (cell && cell.getAttribute('data-side') === side) {
         const ln = Number(cell.getAttribute('data-line'));
-        if (!isNaN(ln)) {
+        if (!isNaN(ln) && ln !== dragging.end) {
           dragging = { ...dragging, end: ln };
         }
       }
@@ -511,27 +656,32 @@
   }
 
   function withWordDiff(html: string | undefined, line: HunkLine | null): string | undefined {
-    if (!html || !line) return html;
-    let out = html;
+    if (!line) return html;
     const idx = hunkLineIndex(line);
-    if (idx != null) {
-      const wd = wordDiff.get(idx);
-      if (wd) out = wrapRanges(out, wd.ranges, `wd-${wd.kind}`);
-    }
-    // Layer column-anchor overlays from any intra-line comments on this row.
+    const wd = idx != null ? wordDiff.get(idx) : undefined;
     const side: Side =
       line.origin === 'removed' ? 'base' : line.tip_line != null ? 'tip' : 'base';
     const lineNum = side === 'base' ? line.base_line : line.tip_line;
-    if (lineNum != null) {
-      const cols = columnAnchorsFor(side, lineNum);
-      if (cols.length > 0) out = wrapRanges(out, cols, 'column-anchor');
-    }
+    const cols = lineNum != null ? columnAnchorsFor(side, lineNum) : [];
+    if (!html && !wd && cols.length === 0) return html;
+    // See HunkLines.svelte — fall through with escaped plain text
+    // when there's a wrap to apply but syntax-highlighted HTML isn't
+    // ready, so the in-progress composer's column anchor still
+    // visualizes.
+    let out = html ?? escapeHtml(line.content.replace(/\n$/, ''));
+    if (wd) out = wrapRanges(out, wd.ranges, `wd-${wd.kind}`);
+    if (cols.length > 0) out = wrapRanges(out, cols, 'column-anchor');
     return out;
+  }
+
+  function escapeHtml(s: string): string {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
 
   /** See HunkLines.svelte's columnAnchorsFor — same multi-line role
    *  split (first → start col..EOL; middle → whole line; last →
-   *  BOL..end col). */
+   *  BOL..end col), plus the same in-progress-composer fallback so
+   *  the precise range stays painted while the composer is open. */
   function columnAnchorsFor(side: Side, line: number): { start: number; end: number }[] {
     const out: { start: number; end: number }[] = [];
     for (const c of comments) {
@@ -551,6 +701,25 @@
         out.push({ start: c.columns.start, end: Number.MAX_SAFE_INTEGER });
       } else if (line === effective.end) {
         out.push({ start: 0, end: c.columns.end });
+      } else {
+        out.push({ start: 0, end: Number.MAX_SAFE_INTEGER });
+      }
+    }
+    if (
+      composing?.kind === 'line' &&
+      composing.file === filePath &&
+      composing.side === side &&
+      composing.columns &&
+      line >= composing.startLine &&
+      line <= composing.endLine
+    ) {
+      const { startLine, endLine, columns } = composing;
+      if (startLine === endLine) {
+        out.push({ start: columns.start, end: columns.end });
+      } else if (line === startLine) {
+        out.push({ start: columns.start, end: Number.MAX_SAFE_INTEGER });
+      } else if (line === endLine) {
+        out.push({ start: 0, end: columns.end });
       } else {
         out.push({ start: 0, end: Number.MAX_SAFE_INTEGER });
       }
@@ -579,7 +748,7 @@
           {@const leftHasMarker =
             leftLine != null &&
             showComments &&
-            threadsAt('base', leftLine).length + annotationsAt('base', leftLine).length > 0}
+            outdatedEntriesFor('base', leftLine).length > 0}
           {@const leftStackZ = leftHasMarker ? rows.length - i + 1 : undefined}
           <tr class="sbs-row {row.kind}">
             <!-- data-side/data-line are also on the gutter cell so the
@@ -616,17 +785,18 @@
               {/if}
               {#if row.left?.base_line != null && showComments}
                 {@const ln = row.left.base_line}
-                {@const count = threadsAt('base', ln).length + annotationsAt('base', ln).length}
-                {@const folded = allFoldedAt('base', ln)}
+                {@const count = outdatedEntriesFor('base', ln).length}
+                {@const folded = allOutdatedFoldedAt('base', ln)}
                 {#if count > 0}
                   <button
                     type="button"
                     class="thread-marker"
                     class:folded
                     aria-pressed={!folded}
-                    aria-label="{count} comment{count === 1 ? '' : 's'}; click to {folded ? 'expand' : 'collapse'}"
-                    title="{count} comment{count === 1 ? '' : 's'} — click to {folded ? 'expand' : 'collapse'}"
-                    onclick={() => toggleAllAt('base', ln)}
+                    aria-label="{count} outdated comment{count === 1 ? '' : 's'}; click to {folded ? 'expand' : 'collapse'}"
+                    title="{count} outdated comment{count === 1 ? '' : 's'} — click to {folded ? 'expand' : 'collapse'}"
+                    onmousedown={(e) => e.preventDefault()}
+                    onclick={() => toggleOutdatedAt('base', ln)}
                     onmouseenter={() => {
                       const r = foldedRangeAt('base', ln);
                       hoveredAnchor = r ? { side: 'base', start: r.start, end: r.end } : null;
@@ -638,9 +808,10 @@
               {row.left?.base_line ?? row.left?.tip_line ?? ''}
             </td>
             <td
-              class={`content ${row.left ? row.left.origin : 'empty'}${isCommented('base', leftLine) ? ' commented' : ''}`}
+              class={`content ${row.left ? row.left.origin : 'empty'}${isCommented('base', leftLine) ? ' commented' : ''}${isFullLineCommented('base', leftLine) ? ' commented-fullline' : ''}`}
               data-side="base"
               data-line={leftLine ?? ''}
+              onclick={(e) => onContentClick(e, 'base', leftLine)}
             >
               {#if row.left}
                 {@const html = withWordDiff(highlightedLeft(row.left), row.left)}
@@ -743,7 +914,7 @@
           {@const rightHasMarker =
             rightLine != null &&
             showComments &&
-            threadsAt('tip', rightLine).length + annotationsAt('tip', rightLine).length > 0}
+            outdatedEntriesFor('tip', rightLine).length > 0}
           {@const rightStackZ = rightHasMarker ? rows.length - i + 1 : undefined}
           <tr class="sbs-row {row.kind}">
             <td
@@ -774,17 +945,18 @@
               {/if}
               {#if row.right?.tip_line != null && showComments}
                 {@const ln = row.right.tip_line}
-                {@const count = threadsAt('tip', ln).length + annotationsAt('tip', ln).length}
-                {@const folded = allFoldedAt('tip', ln)}
+                {@const count = outdatedEntriesFor('tip', ln).length}
+                {@const folded = allOutdatedFoldedAt('tip', ln)}
                 {#if count > 0}
                   <button
                     type="button"
                     class="thread-marker"
                     class:folded
                     aria-pressed={!folded}
-                    aria-label="{count} comment{count === 1 ? '' : 's'}; click to {folded ? 'expand' : 'collapse'}"
-                    title="{count} comment{count === 1 ? '' : 's'} — click to {folded ? 'expand' : 'collapse'}"
-                    onclick={() => toggleAllAt('tip', ln)}
+                    aria-label="{count} outdated comment{count === 1 ? '' : 's'}; click to {folded ? 'expand' : 'collapse'}"
+                    title="{count} outdated comment{count === 1 ? '' : 's'} — click to {folded ? 'expand' : 'collapse'}"
+                    onmousedown={(e) => e.preventDefault()}
+                    onclick={() => toggleOutdatedAt('tip', ln)}
                     onmouseenter={() => {
                       const r = foldedRangeAt('tip', ln);
                       hoveredAnchor = r ? { side: 'tip', start: r.start, end: r.end } : null;
@@ -796,9 +968,10 @@
               {row.right?.tip_line ?? row.right?.base_line ?? ''}
             </td>
             <td
-              class={`content ${row.right ? row.right.origin : 'empty'}${isCommented('tip', rightLine) ? ' commented' : ''}`}
+              class={`content ${row.right ? row.right.origin : 'empty'}${isCommented('tip', rightLine) ? ' commented' : ''}${isFullLineCommented('tip', rightLine) ? ' commented-fullline' : ''}`}
               data-side="tip"
               data-line={rightLine ?? ''}
+              onclick={(e) => onContentClick(e, 'tip', rightLine)}
             >
               {#if row.right}
                 {@const html = withWordDiff(highlightedRight(row.right), row.right)}
@@ -1004,8 +1177,10 @@
     border-radius: 2px;
   }
 
-  /* See HunkLines.svelte for the column-anchor design rationale. */
+  /* See HunkLines.svelte — bg tint + underline for the click-on-
+   * highlight prototype. */
   :global(.content .column-anchor) {
+    background: var(--link-bg);
     box-shadow: inset 0 -2px 0 var(--link);
     cursor: pointer;
   }
@@ -1020,13 +1195,16 @@
     background-image: linear-gradient(var(--selection-tint), var(--selection-tint));
   }
 
-  /* Content cell of a row covered by a posted comment's anchor range —
-   * tints the row so multi-line ranges visibly span their lines instead
-   * of looking attached to just the last one. Stripe matches the
-   * `.thread-sticky` accent so the eye links the two together. */
+  /* PROTOTYPE — see HunkLines.svelte. `.commented` carries the gutter
+   * stripe (any comment on the line); `.commented-fullline` carries
+   * the row tint + pointer cursor (at least one no-columns comment or
+   * annotation, where the whole row is the click target). */
   .content.commented {
     box-shadow: inset 3px 0 0 var(--link);
+  }
+  .content.commented-fullline {
     background-image: linear-gradient(var(--selection-tint), var(--selection-tint));
+    cursor: pointer;
   }
 
   /* Centered on the gutter/diff boundary so it never overlaps the
@@ -1142,6 +1320,9 @@
    * without colliding. See HunkLines.svelte for the full design
    * rationale. */
   .thread-marker {
+    /* In the click-on-highlight prototype the chevron is reserved
+     * for OUTDATED comments — the template only renders it when
+     * `outdatedEntriesFor(side, line)` is non-empty. */
     position: absolute;
     left: -2px;
     /* Centered on the row boundary; the bottom half overflows the

@@ -182,19 +182,6 @@
     return true;
   }
 
-  /** Normalize the fold state of every thread at the line. If any
-   *  is currently expanded → fold them all; if all are folded →
-   *  expand them all. So a click is always idempotent in its
-   *  direction. */
-  function toggleAllAt(a: { side: Side; line: number }) {
-    if (!foldStore) return;
-    const entries = entriesFor(a);
-    const target = !allFoldedAt(a); // true = fold all, false = expand all
-    for (const e of entries) {
-      foldStore.set('comment', idOf(e), target);
-    }
-    foldVersionCtx?.bump();
-  }
 
   /** Toggle fold of one item (annotation or thread) by id. Used by
    *  the per-bubble chevron on AnnotationBubble; CommentThread has
@@ -321,23 +308,30 @@
    *  straight through. */
   function htmlWithWordDiff(line: HunkLine, idx: number): string | undefined {
     let base = htmlFor(line);
-    if (!base) return base;
     const wd = wordDiff.get(idx);
+    const a = anchor(line);
+    const cols = a ? columnAnchorsFor(a) : [];
+    // No highlighting from any source → caller renders plain text.
+    if (!base && !wd && cols.length === 0) return base;
+    // Need to wrap (word-diff or column-anchor) but the renderer hasn't
+    // produced syntax-highlighted HTML for this line yet (or never
+    // will — binary file, unsupported language). Use escaped plain
+    // text as the base so the wrap has something to apply against;
+    // otherwise the column-anchor wouldn't visualize the in-progress
+    // composer's range during the compose step and the reviewer
+    // would briefly lose sight of what they're commenting on.
+    if (!base) base = escapeHtml(line.content.replace(/\n$/, ''));
     if (wd) {
       base = wrapRanges(base, wd.ranges, `wd-${wd.kind}`);
     }
-    // Intra-line column anchors from any comment anchored to this
-    // line. Only the still-Valid/Moved comments contribute a
-    // highlight — drifted/outdated lines degrade to line-level
-    // (the column offsets no longer map cleanly to the new text).
-    const a = anchor(line);
-    if (a) {
-      const cols = columnAnchorsFor(a);
-      if (cols.length > 0) {
-        base = wrapRanges(base, cols, 'column-anchor');
-      }
+    if (cols.length > 0) {
+      base = wrapRanges(base, cols, 'column-anchor');
     }
     return base;
+  }
+
+  function escapeHtml(s: string): string {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
 
   /** Column ranges to highlight on this row from any line-level
@@ -378,6 +372,32 @@
         out.push({ start: 0, end: c.columns.end });
       } else {
         // Middle line: entirely covered.
+        out.push({ start: 0, end: Number.MAX_SAFE_INTEGER });
+      }
+    }
+    // In-progress composer with columns: paint the same column anchor
+    // for it so the reviewer keeps seeing the precise range while the
+    // composer is open. The browser's native text selection is gone
+    // by then (the composer's textarea autofocus collapses it); this
+    // synthetic anchor stands in. Disappears when the composer closes
+    // (cancel) or the comment is published (`comments` then carries
+    // the real one).
+    if (
+      composing?.kind === 'line' &&
+      composing.file === filePath &&
+      composing.side === a.side &&
+      composing.columns &&
+      a.line >= composing.startLine &&
+      a.line <= composing.endLine
+    ) {
+      const { startLine, endLine, columns } = composing;
+      if (startLine === endLine) {
+        out.push({ start: columns.start, end: columns.end });
+      } else if (a.line === startLine) {
+        out.push({ start: columns.start, end: Number.MAX_SAFE_INTEGER });
+      } else if (a.line === endLine) {
+        out.push({ start: 0, end: columns.end });
+      } else {
         out.push({ start: 0, end: Number.MAX_SAFE_INTEGER });
       }
     }
@@ -468,6 +488,13 @@
     const set = new Set<string>();
     for (const c of comments) {
       if (!c.side) continue;
+      // Outdated anchors are excluded from the highlight — their
+      // original content has changed, so tinting the *new* content
+      // there would mislead the reader. Those comments still render
+      // inline (their thread row appears at the original line) but
+      // they get the gutter chevron instead, signalling "comment
+      // here, but the line below isn't what was originally
+      // commented on." See the chevron rendering further down.
       if (c.anchor.kind === 'outdated') continue;
       const effective =
         c.anchor.kind === 'moved' || c.anchor.kind === 'drifted'
@@ -481,9 +508,174 @@
     return set;
   });
 
+  /** Subset of `commentedLines` that have at least one comment WITHOUT
+   *  `columns` — those get the full-row background tint in the click-
+   *  on-highlight model. Lines with only column-anchored comments get
+   *  no row tint; their highlight is the underlined-text bg painted
+   *  by `.column-anchor`. Annotations are always whole-line, so any
+   *  annotation on the line also triggers the full-row tint. Outdated
+   *  anchors skipped here too (same reason as `commentedLines`). */
+  const fullLineCommentedLines = $derived.by(() => {
+    const set = new Set<string>();
+    for (const c of comments) {
+      if (!c.side) continue;
+      if (c.anchor.kind === 'outdated') continue;
+      if (c.columns) continue;
+      const effective =
+        c.anchor.kind === 'moved' || c.anchor.kind === 'drifted'
+          ? c.anchor.new_lines
+          : c.lines;
+      if (!effective) continue;
+      for (let l = effective.start; l <= effective.end; l++) {
+        set.add(`${c.side}:${l}`);
+      }
+    }
+    for (const n of annotations) {
+      if (!n.side || !n.lines) continue;
+      if (n.anchor.kind === 'outdated') continue;
+      const effective =
+        n.anchor.kind === 'moved' || n.anchor.kind === 'drifted'
+          ? n.anchor.new_lines
+          : n.lines;
+      if (!effective) continue;
+      for (let l = effective.start; l <= effective.end; l++) {
+        set.add(`${n.side}:${l}`);
+      }
+    }
+    return set;
+  });
+
+  /** Comments and annotations whose anchor is OUTDATED and whose
+   *  effective end-line is this row. They get a gutter chevron (the
+   *  inline-highlight model can't anchor a precise highlight, since
+   *  the content has changed), clicking it toggles fold on the
+   *  outdated items. */
+  function outdatedEntriesFor(a: { side: Side; line: number }): Array<
+    { kind: 'comment'; c: CommentView } | { kind: 'note'; n: AnnotationView }
+  > {
+    const out: Array<
+      { kind: 'comment'; c: CommentView } | { kind: 'note'; n: AnnotationView }
+    > = [];
+    for (const c of comments) {
+      if (c.side !== a.side) continue;
+      if (c.anchor.kind !== 'outdated') continue;
+      if (!c.lines || c.lines.end !== a.line) continue;
+      out.push({ kind: 'comment', c });
+    }
+    for (const n of annotations) {
+      if (n.side !== a.side) continue;
+      if (n.anchor.kind !== 'outdated') continue;
+      if (!n.lines || n.lines.end !== a.line) continue;
+      out.push({ kind: 'note', n });
+    }
+    return out;
+  }
+
+  function allOutdatedFoldedAt(a: { side: Side; line: number }): boolean {
+    const entries = outdatedEntriesFor(a);
+    if (entries.length === 0) return true;
+    for (const e of entries) {
+      if (e.kind === 'comment') {
+        if (isEffectivelyExpanded(e.c.comment_id)) return false;
+      } else {
+        if (!isFolded(e.n.annotation_id)) return false;
+      }
+    }
+    return true;
+  }
+
+  function toggleOutdatedAt(a: { side: Side; line: number }) {
+    if (!foldStore) return;
+    const entries = outdatedEntriesFor(a);
+    const target = !allOutdatedFoldedAt(a);
+    for (const e of entries) {
+      foldStore.set('comment', idOf(e), target);
+    }
+    foldVersionCtx?.bump();
+  }
+
   function isCommented(a: { side: Side; line: number } | null): boolean {
     if (!showComments) return false;
     return a != null && commentedLines.has(`${a.side}:${a.line}`);
+  }
+
+  function isFullLineCommented(a: { side: Side; line: number } | null): boolean {
+    if (!showComments) return false;
+    return a != null && fullLineCommentedLines.has(`${a.side}:${a.line}`);
+  }
+
+  /** Comments / annotations whose anchor range COVERS this line —
+   *  unlike `threadsFor` / `annotationsFor`, which only match items
+   *  ending exactly at `a.line`. Needed so a click anywhere on a
+   *  multi-line highlight (not just the last row) finds and toggles
+   *  the comment. */
+  function coveringEntriesFor(a: { side: Side; line: number }): Array<
+    { kind: 'comment'; c: CommentView } | { kind: 'note'; n: AnnotationView }
+  > {
+    const out: Array<
+      { kind: 'comment'; c: CommentView } | { kind: 'note'; n: AnnotationView }
+    > = [];
+    for (const c of comments) {
+      if (c.side !== a.side) continue;
+      const effective =
+        c.anchor.kind === 'moved' || c.anchor.kind === 'drifted'
+          ? c.anchor.new_lines
+          : c.lines;
+      if (!effective) continue;
+      if (a.line < effective.start || a.line > effective.end) continue;
+      out.push({ kind: 'comment', c });
+    }
+    for (const n of annotations) {
+      if (n.side !== a.side) continue;
+      const effective =
+        n.anchor.kind === 'moved' || n.anchor.kind === 'drifted'
+          ? n.anchor.new_lines
+          : n.lines;
+      if (!effective) continue;
+      if (a.line < effective.start || a.line > effective.end) continue;
+      out.push({ kind: 'note', n });
+    }
+    return out;
+  }
+
+  /** Click handler for `.content` cells. In the prototype, a click
+   *  on a highlighted area (either a `.column-anchor` span or
+   *  anywhere on a `.commented-fullline` row) toggles fold on every
+   *  comment COVERING this line — works on any line of a multi-line
+   *  range, not just the end line the chevron used to live on. Drag-
+   *  selects still fire the selection popup as before; click events
+   *  only fire for non-drag clicks, so the two paths don't collide. */
+  function onContentClick(e: MouseEvent, a: { side: Side; line: number } | null) {
+    if (!a) return;
+    if (!showComments) return;
+    if (!foldStore) return;
+    const t = e.target as HTMLElement | null;
+    const onAnchor = !!t?.closest('.column-anchor');
+    const onFullLine = isFullLineCommented(a);
+    if (!onAnchor && !onFullLine) return;
+    const entries = coveringEntriesFor(a);
+    if (entries.length === 0) return;
+    // If any entry is currently expanded → fold all; otherwise expand
+    // all. Same "normalize" rule the gutter marker's toggleAllAt uses.
+    let anyExpanded = false;
+    for (const e of entries) {
+      if (e.kind === 'comment') {
+        if (isEffectivelyExpanded(e.c.comment_id)) {
+          anyExpanded = true;
+          break;
+        }
+      } else {
+        if (!isFolded(e.n.annotation_id)) {
+          anyExpanded = true;
+          break;
+        }
+      }
+    }
+    const target = anyExpanded;
+    for (const e of entries) {
+      foldStore.set('comment', idOf(e), target);
+    }
+    foldVersionCtx?.bump();
   }
 
   function onPointerDown(e: PointerEvent, side: Side, line: number) {
@@ -512,7 +704,7 @@
       const row = (el as HTMLElement | null)?.closest('[data-line]') as HTMLElement | null;
       if (row && row.getAttribute('data-side') === side) {
         const ln = Number(row.getAttribute('data-line'));
-        if (!isNaN(ln)) {
+        if (!isNaN(ln) && ln !== dragging.end) {
           dragging = { ...dragging, end: ln };
         }
       }
@@ -545,14 +737,15 @@
       {@const a = anchor(line)}
       {@const stripped = line.content.replace(/\n$/, '')}
       {@const html = htmlWithWordDiff(line, i)}
-      <!-- Gutter-marker bookkeeping, hoisted up so the gutter cells
-           below render the marker without recomputing per-cell.
-           `markerCount === 0` means no comments at all on this row;
-           `markerFolded` is the AGGREGATE state — true only when
-           every thread at this line is currently folded. -->
+      <!-- Gutter-marker bookkeeping. In the click-on-highlight
+           prototype the chevron is reserved for OUTDATED comments
+           only — non-outdated comments use the inline highlight as
+           their toggle affordance. Outdated comments can't have a
+           meaningful inline highlight (their original content
+           changed), so the chevron is the only marker available. -->
       {@const markerCount =
-        showComments && a ? threadsFor(a).length + annotationsFor(a).length : 0}
-      {@const markerFolded = a != null && allFoldedAt(a)}
+        showComments && a ? outdatedEntriesFor(a).length : 0}
+      {@const markerFolded = a != null && allOutdatedFoldedAt(a)}
       <!-- Higher z-index for earlier rows that host a marker, so
            the chevron's overflowing bottom half paints over the
            next row's sticky `.ln`. Non-marker rows stay at the
@@ -560,7 +753,7 @@
            index 1 baseline + (totalLines - i) so the earliest
            marker wins. -->
       {@const stackZ = markerCount > 0 ? hunk.lines.length - i + 1 : undefined}
-      <tr class={`${rowClass(line.origin)}${isCommented(a) ? ' commented' : ''}`}>
+      <tr class={`${rowClass(line.origin)}${isCommented(a) ? ' commented' : ''}${isFullLineCommented(a) ? ' commented-fullline' : ''}`}>
         {#if showBase}
           <!-- data-side/data-line are also on the gutter cell so that the
                drag-selection logic finds it via `elementFromPoint` while
@@ -600,9 +793,10 @@
                 class="thread-marker"
                 class:folded={markerFolded}
                 aria-pressed={!markerFolded}
-                aria-label="{markerCount} comment{markerCount === 1 ? '' : 's'}; click to {markerFolded ? 'expand' : 'collapse'}"
-                title="{markerCount} comment{markerCount === 1 ? '' : 's'} — click to {markerFolded ? 'expand' : 'collapse'}"
-                onclick={() => toggleAllAt(a)}
+                aria-label="{markerCount} outdated comment{markerCount === 1 ? '' : 's'}; click to {markerFolded ? 'expand' : 'collapse'}"
+                title="{markerCount} outdated comment{markerCount === 1 ? '' : 's'} — click to {markerFolded ? 'expand' : 'collapse'}"
+                onmousedown={(e) => e.preventDefault()}
+                onclick={() => toggleOutdatedAt(a)}
                 onmouseenter={() => {
                   const r = foldedRange(a);
                   hoveredAnchor = r ? { side: a.side, start: r.start, end: r.end } : null;
@@ -636,9 +830,10 @@
                 class="thread-marker"
                 class:folded={markerFolded}
                 aria-pressed={!markerFolded}
-                aria-label="{markerCount} comment{markerCount === 1 ? '' : 's'}; click to {markerFolded ? 'expand' : 'collapse'}"
-                title="{markerCount} comment{markerCount === 1 ? '' : 's'} — click to {markerFolded ? 'expand' : 'collapse'}"
-                onclick={() => toggleAllAt(a)}
+                aria-label="{markerCount} outdated comment{markerCount === 1 ? '' : 's'}; click to {markerFolded ? 'expand' : 'collapse'}"
+                title="{markerCount} outdated comment{markerCount === 1 ? '' : 's'} — click to {markerFolded ? 'expand' : 'collapse'}"
+                onmousedown={(e) => e.preventDefault()}
+                onclick={() => toggleOutdatedAt(a)}
                 onmouseenter={() => {
                   const r = foldedRange(a);
                   hoveredAnchor = r ? { side: a.side, start: r.start, end: r.end } : null;
@@ -653,6 +848,7 @@
           class="content"
           data-side={a?.side ?? ''}
           data-line={a?.line ?? ''}
+          onclick={(e) => onContentClick(e, a)}
         >
           {#if html}
             <pre>{@html html || '&nbsp;'}</pre>
@@ -812,6 +1008,12 @@
    * inside a wd-added/wd-removed run. Color picks up the comment palette
    * so the eye links it to the inline thread below. */
   :global(.content .column-anchor) {
+    /* Background tint + underline. Click-on-highlight prototype: the
+     * underline-only treatment was hard to spot on long lines and
+     * didn't read as "this is the click target." The bg makes the
+     * affordance obvious and matches the full-line tint applied to
+     * `.row.commented-fullline` for whole-line comments below. */
+    background: var(--link-bg);
     box-shadow: inset 0 -2px 0 var(--link);
     cursor: pointer;
   }
@@ -830,15 +1032,24 @@
     background-image: linear-gradient(var(--selection-tint), var(--selection-tint));
   }
 
-  /* A row covered by a posted comment's anchor range. Tints the content
-   * cell so the reader sees which line(s) the thread (rendered below
-   * the last covered row) is about — particularly important for
-   * multi-line ranges, which would otherwise look indistinguishable
-   * from a thread attached to a single line. The left stripe matches
-   * the `.thread-sticky` accent so the eye links the two together. */
+  /* PROTOTYPE — click-on-highlight comment UI:
+   * - `.row.commented` (any comment, including column-anchored) gets
+   *   the vertical blue gutter stripe so the reader sees the line
+   *   "has a comment" at a glance, same density signal the gutter
+   *   chevron used to give.
+   * - `.row.commented-fullline` (at least one no-columns comment OR
+   *   any annotation on the line) ALSO gets the full-row tint and a
+   *   pointer cursor — the whole content area becomes the click
+   *   target that toggles the comment.
+   * Lines that only have column-anchored comments don't get the
+   *   full-row tint; their highlight is the underlined-text bg
+   *   painted by `.column-anchor` above. */
   .row.commented .content {
     box-shadow: inset 3px 0 0 var(--link);
+  }
+  .row.commented-fullline .content {
     background-image: linear-gradient(var(--selection-tint), var(--selection-tint));
+    cursor: pointer;
   }
 
   .ln {
@@ -1046,6 +1257,10 @@
    * whether folded or expanded. Hover gets a subtle tint so the
    * click target is discoverable. */
   .thread-marker {
+    /* In the click-on-highlight prototype the chevron is reserved
+     * for OUTDATED comments — the template only renders it when
+     * `outdatedEntriesFor(a)` is non-empty. Non-outdated comments
+     * use the inline highlight as their toggle. */
     position: absolute;
     left: -2px;
     /* Centered on the row boundary — half above, half below — so

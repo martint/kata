@@ -1800,6 +1800,15 @@
         ...current,
         drafts: { ...current.drafts, comments: next },
       };
+      // Brand new drafts: force expanded. `defaultThreadsCollapsed`
+      // would otherwise fold them on creation in modes where the
+      // default is "collapsed" (e.g. comments-only mode), which
+      // hides what the user just typed behind a click-to-expand —
+      // not what they expect right after authoring.
+      if (!editingId) {
+        foldStore.set('comment', view.comment_id, false);
+        foldVersion++;
+      }
       composing = null;
     } catch (e) {
       error = (e as Error).message;
