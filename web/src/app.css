@@ -319,6 +319,75 @@ header.app .tree-button {
   header.app button {
     padding: 4px 8px;
   }
+
+  /* ---- Row 2 pruning on phones --------------------------------- */
+  /* The review-row carries a lot on desktop: title, patchset
+   * pickers with labels, search, comment-nav, filter chip groups
+   * with their "Status" / "Severity" headers, and the three-segment
+   * view toggle. On a 375px viewport all of that wraps to two or
+   * three lines and reads as visual debris. Prune aggressively: hide
+   * group labels, drop the position counter, shorten the title, tighten
+   * chip padding. The functional affordances all stay — they're just
+   * harder to mistake for noise. */
+
+  /* Title: tighter max-width so a long review name doesn't push the
+   * cluster past the right edge. The ellipsis already handles overflow. */
+  header.app .review-title .review-name {
+    max-width: 14ch;
+  }
+
+  /* Patchset pickers: hide the "Patchset" / "compared to" text
+   * labels, leave the bare <select> controls. The dropdown's first
+   * option ("PSn") makes the role obvious. */
+  header.app .ps-picker .muted {
+    display: none;
+  }
+  header.app .ps-picker-group {
+    gap: 4px;
+  }
+  header.app .ps-picker select {
+    padding: 2px 4px;
+    font-size: 11px;
+  }
+
+  /* Filter chips: hide the "Status" / "Severity" group labels and
+   * the vertical separator between them. The chips themselves carry
+   * the meaning. Tighten chip padding so all six fit comfortably. */
+  header.app .filter-chips .label,
+  header.app .filter-chips .sep {
+    display: none;
+  }
+  header.app .filter-chips {
+    gap: 4px;
+  }
+  header.app .chip {
+    padding: 2px 6px;
+    font-size: 10px;
+  }
+
+  /* Comment-nav: hide the M/N counter and keep just the chevrons.
+   * The position number is a desktop convenience; on a cramped phone
+   * row the prev/next pair is the load-bearing part. */
+  header.app .comment-nav .position {
+    display: none;
+  }
+  header.app .comment-nav {
+    gap: 2px;
+  }
+
+  /* View toggle: compact text. "Both / Diffs / Comments" already
+   * fits, but the padding bloats it; shrink that. */
+  header.app .view-toggle .seg {
+    padding: 2px 6px;
+  }
+
+  /* Filter-empty hint: it only renders when every chip in a group is
+   * off, which is a deliberate user action — so its full prose ("Filter
+   * hides N comments — show all") is fine. Just shrink padding to match
+   * the cluster around it. */
+  header.app .filter-empty-hint {
+    padding: 2px 6px;
+  }
 }
 
 /* ---- Row 2 (review): title + filter chips + comment nav --------- */
