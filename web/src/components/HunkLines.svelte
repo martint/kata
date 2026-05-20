@@ -1158,6 +1158,13 @@
     color: var(--text-faint);
     user-select: none;
     background: var(--bg);
+    /* Force the sticky background to mask anything underneath. Without
+     * `background-clip: padding-box` the inherited cell background can
+     * sit BEHIND a transparent gutter on some mobile browsers, which
+     * is exactly the "text bleeds through the gutter" artefact during
+     * horizontal scroll. Padding-box clips so the painted area covers
+     * the cell exactly. */
+    background-clip: padding-box;
     /* `--border` (not `--border-muted`) so this rule is visible at
      * the same intensity as the matching pseudo-element painted
      * through the inter-hunk separators; otherwise the in-table
@@ -1168,10 +1175,15 @@
      * the line number AND the "+" button stay visible while long lines
      * scroll out to the right. The textarea-focus workaround in
      * CommentComposer.svelte already absorbs the ~1.5s Firefox cost that
-     * scaled with the number of sticky cells, so we can afford this. */
+     * scaled with the number of sticky cells, so we can afford this.
+     *
+     * `z-index: 5` (not 1) so the gutter cleanly paints over scrolling
+     * content. `1` was enough on desktop but mobile browsers compose
+     * table cell layers slightly differently and the lower value lets
+     * scrolled text bleed through. */
     position: sticky;
     left: 0;
-    z-index: 1;
+    z-index: 5;
   }
 
   .row.added .ln {

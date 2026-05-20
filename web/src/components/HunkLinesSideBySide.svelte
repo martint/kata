@@ -1172,11 +1172,20 @@
     border-right: 1px solid var(--border);
     font-size: 11px;
     background: var(--bg);
+    /* Force the sticky background to mask scrolled content underneath.
+     * See HunkLines.svelte — without `background-clip: padding-box`
+     * mobile browsers can let text bleed through during horizontal
+     * scroll on the parent `.sbs-side`. */
+    background-clip: padding-box;
     /* Pin the line-number gutter (and the "+" button it now contains) so
-     * they stay visible while long lines scroll horizontally. */
+     * they stay visible while long lines scroll horizontally.
+     *
+     * `z-index: 5` matches HunkLines.svelte — the higher value is what
+     * keeps the gutter opaquely above the scrolling content on mobile
+     * browsers that compose table-cell layers loosely. */
     position: sticky;
     left: 0;
-    z-index: 1;
+    z-index: 5;
     text-align: right;
   }
 
