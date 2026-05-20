@@ -128,6 +128,16 @@ header.app {
   position: sticky;
   top: 0;
   z-index: 30;
+  /* Force a clean stacking + compositing context. iOS Safari has a
+   * well-known quirk where `position: sticky` + `z-index` doesn't
+   * always paint a sticky parent above scrolled descendants, so
+   * the diff text bleeds through the header strip during a fast
+   * scroll. `isolation: isolate` declares a new stacking context
+   * so descendants can't out-stack us; the GPU-layer transform
+   * (`translateZ(0)`) is the empirical companion fix — together
+   * they make every browser tested mask correctly. */
+  isolation: isolate;
+  transform: translateZ(0);
 }
 
 header.app .header-row {
