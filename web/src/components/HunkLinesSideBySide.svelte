@@ -1103,6 +1103,18 @@
      * has nothing to clip. */
     overflow-y: clip;
     overscroll-behavior-x: contain;
+    /* Permit both single-finger pan axes. Horizontal stays in this
+     * box (overflow-x: auto); vertical has nowhere to go here
+     * (overflow-y: clip) so it bubbles to the parent `.hunks`
+     * scroll context, which in turn passes vertical pans through
+     * to the page. `pan-x` alone (what we tried first) blocked
+     * vertical pan on this element entirely, so once a touch
+     * landed on an SBS column you could only scroll horizontally.
+     * The "stuck horizontal scroll" issue this was meant to
+     * address only resurfaces if the user's pan crosses a child
+     * with `touch-action: none`; permitting both axes from the
+     * start gives the browser room to disambiguate. */
+    touch-action: pan-x pan-y;
   }
 
   /* Visual divider between the two sides. The 1-px line is the

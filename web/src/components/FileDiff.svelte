@@ -2710,6 +2710,18 @@
     /* Disable the browser's overscroll-bounce so users can't drag past
      * the diff's left/right edges. */
     overscroll-behavior-x: contain;
+    /* Explicitly permit both single-finger pan axes inside this scroll
+     * context. Horizontal pans scroll the diff (overflow-x: auto
+     * handles that); vertical pans have nothing to scroll within
+     * `.hunks` itself (its height grows to fit content) so the
+     * browser passes them up to the page's vertical scroll. Setting
+     * touch-action explicitly stops mobile browsers from locking the
+     * gesture when a touch crosses a sticky child mid-scroll —
+     * without it, the diff would "get stuck" while horizontally
+     * panning over the gutter. `pan-x pan-y` (not just `pan-x`)
+     * because `pan-x` alone blocks vertical pan on the element
+     * entirely rather than letting it bubble. */
+    touch-action: pan-x pan-y;
     /* Per CSS, `overflow-x: auto` implies `overflow-y: auto` (the
      * other axis can't stay `visible`), so the last hunk's row
      * gutter would clip any element that overflows downward. The
