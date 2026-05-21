@@ -7,6 +7,9 @@ import type { ReviewId, SessionId } from './types';
 export type ServerEvent =
   | { kind: 'review-created'; repo: string; review_id: ReviewId }
   | { kind: 'review-updated'; repo: string; review_id: ReviewId }
+  /** The review was permanently deleted. Open viewers should drop
+   *  state and return to the list; the home screen should reload. */
+  | { kind: 'review-deleted'; repo: string; review_id: ReviewId }
   /** Background watcher detected that the branch has moved relative to
    *  the latest patchset — the UI surfaces a Refresh button in response. */
   | { kind: 'review-branch-moved'; repo: string; review_id: ReviewId }

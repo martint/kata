@@ -20,6 +20,13 @@ pub enum Event {
         repo: String,
         review_id: ReviewId,
     },
+    /// The review row and all its sessions/comments/responses/
+    /// annotations/visits were deleted. Open viewers should drop
+    /// state and return to the list.
+    ReviewDeleted {
+        repo: String,
+        review_id: ReviewId,
+    },
     /// The underlying branch moved relative to the review's latest
     /// patchset — refreshing the review would advance it. Emitted by
     /// the background watcher (see [`crate::ReviewService::spawn_branch_watcher`]).

@@ -335,8 +335,24 @@
       if (
         screen.kind === 'list' &&
         event.repo === repo &&
-        (event.kind === 'review-created' || event.kind === 'review-updated')
+        (event.kind === 'review-created' ||
+          event.kind === 'review-updated' ||
+          event.kind === 'review-deleted')
       ) {
+        void loadList(repo);
+      }
+      // If the currently-open review was deleted (from this tab's
+      // own request, or another tab's), drop back to the list. The
+      // viewer would otherwise sit on a stale manifest until the
+      // next manual refresh.
+      if (
+        screen.kind === 'review' &&
+        event.kind === 'review-deleted' &&
+        event.repo === repo &&
+        event.review_id === screen.view.manifest.review_id
+      ) {
+        history.replaceState({}, '', '/');
+        screen = { kind: 'list' };
         void loadList(repo);
       }
     });

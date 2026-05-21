@@ -626,6 +626,32 @@ impl Storage for SqliteStorage {
         .await
     }
 
+    async fn delete_review(&self, repo: &RepoId, review: &ReviewId) -> Result<()> {
+        ensure_repo_id(repo)?;
+        ensure_review_id(review)?;
+        let repo_str = repo.as_str().to_owned();
+        let review_str = review.as_str().to_owned();
+        self.with_conn(move |conn| {
+            // annotations don't have a CASCADE FK back to reviews
+            // (see V008__annotations.sql), so wipe them explicitly.
+            // Everything else (sessions, comments, responses,
+            // review_visits) is reached via the cascading FKs declared
+            // in V001/V004.
+            let tx = conn.transaction()?;
+            tx.execute(
+                "DELETE FROM annotations WHERE repo_id = ?1 AND review_id = ?2",
+                params![repo_str, review_str],
+            )?;
+            tx.execute(
+                "DELETE FROM reviews WHERE repo_id = ?1 AND review_id = ?2",
+                params![repo_str, review_str],
+            )?;
+            tx.commit()?;
+            Ok(())
+        })
+        .await
+    }
+
     // ---- sessions -------------------------------------------------------
 
     async fn open_or_create_session(
@@ -1508,6 +1534,114 @@ mod round_trip_tests {
         assert_eq!(list.len(), 1, "second upsert must replace, not append");
         assert_eq!(list[0].body, "edited");
         assert_eq!(list[0].updated_at, ts("2026-01-03T00:00:00Z"));
+    }
+
+    #[tokio::test]
+    async fn delete_review_removes_review_and_dependent_rows() {
+        let store = SqliteStorage::open_in_memory().await.unwrap();
+        let (repo, manifest, author, sid) = seed_review(&store).await;
+
+        // Seed every dependent shape we cascade through: an annotation
+        // (no FK back to reviews, so the impl deletes it directly), a
+        // draft comment (FK on session_id), and a review-visit row
+        // (FK on review_id).
+        let ann_id = AnnotationId::new(fresh_id("an"));
+        store
+            .upsert_annotation(
+                &repo,
+                &Annotation {
+                    schema_version: SCHEMA_VERSION,
+                    annotation_id: ann_id.clone(),
+                    review_id: manifest.review_id.clone(),
+                    author: author.clone(),
+                    created_at: ts("2026-01-02T00:00:00Z"),
+                    updated_at: ts("2026-01-02T00:00:00Z"),
+                    patchset: 1,
+                    anchor_change_id: ChangeId::new("ch-tip"),
+                    anchor_commit_id: CommitId::new("co-tip"),
+                    file: None,
+                    side: None,
+                    lines: None,
+                    body: "context".into(),
+                },
+            )
+            .await
+            .unwrap();
+        let comment = Comment {
+            schema_version: SCHEMA_VERSION,
+            comment_id: CommentId::new(fresh_id("cm")),
+            session_id: sid.clone(),
+            review_id: manifest.review_id.clone(),
+            author: author.clone(),
+            created_at: ts("2026-01-02T00:00:00Z"),
+            patchset: 1,
+            anchor_change_id: ChangeId::new("ch-tip"),
+            anchor_commit_id: CommitId::new("co-tip"),
+            file: None,
+            side: None,
+            lines: None,
+            columns: None,
+            review_wide: true,
+            flag: Flag::Suggestion,
+            body: "draft".into(),
+        };
+        store.upsert_draft_comment(&repo, &comment).await.unwrap();
+        let visit_op = OpId::new("op-visit");
+        store
+            .record_review_visit(&repo, &manifest.review_id, &author, &visit_op)
+            .await
+            .unwrap();
+
+        store
+            .delete_review(&repo, &manifest.review_id)
+            .await
+            .unwrap();
+
+        // Review row itself is gone.
+        let err = store
+            .open_review(&repo, &manifest.review_id)
+            .await
+            .expect_err("open_review on a deleted review must error");
+        assert!(
+            matches!(err, Error::NotFound { .. }),
+            "expected NotFound, got {err:?}",
+        );
+
+        // Dependents are gone.
+        let anns = store
+            .list_annotations(&repo, &manifest.review_id)
+            .await
+            .unwrap();
+        assert!(anns.is_empty(), "annotations must be cleared");
+        let drafts = store
+            .list_drafts_for(&repo, &manifest.review_id, &author)
+            .await
+            .unwrap();
+        assert!(
+            drafts.comments.is_empty(),
+            "draft comments must be cleared via session cascade",
+        );
+        let visit = store
+            .last_review_visit(&repo, &manifest.review_id, &author)
+            .await
+            .unwrap();
+        assert!(visit.is_none(), "review visits must be cleared");
+    }
+
+    #[tokio::test]
+    async fn delete_review_is_idempotent() {
+        let store = SqliteStorage::open_in_memory().await.unwrap();
+        let (repo, manifest, _author, _sid) = seed_review(&store).await;
+
+        store
+            .delete_review(&repo, &manifest.review_id)
+            .await
+            .unwrap();
+        // Second call against a now-missing row must succeed silently.
+        store
+            .delete_review(&repo, &manifest.review_id)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

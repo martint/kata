@@ -146,6 +146,11 @@ export const api = {
     request<ReviewManifest>('POST', `${repoBase(repo)}/reviews/${number}/archive`),
   unarchiveReview: (repo: string, number: number) =>
     request<ReviewManifest>('DELETE', `${repoBase(repo)}/reviews/${number}/archive`),
+  /** Permanently delete a review and all its sessions, comments,
+   *  responses, annotations, and visit timestamps. Creator-only.
+   *  Other tabs learn via the `review-deleted` SSE event. */
+  deleteReview: (repo: string, number: number) =>
+    request<void>('DELETE', `${repoBase(repo)}/reviews/${number}`),
   commitDiff: (repo: string, number: number, changeId: string) =>
     request<CommitDiffView>(
       'GET',

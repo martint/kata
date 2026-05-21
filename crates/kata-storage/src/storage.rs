@@ -76,6 +76,12 @@ pub trait Storage: Send + Sync {
     /// updated `last_seen_*` after the bookmark moves.
     async fn update_review(&self, repo: &RepoId, manifest: &ReviewManifest) -> Result<()>;
 
+    /// Delete a review and everything that hangs off it: sessions,
+    /// comments, responses, annotations, visit timestamps. No
+    /// soft-delete — archive covers that case. Idempotent: deleting
+    /// a review that doesn't exist is not an error.
+    async fn delete_review(&self, repo: &RepoId, review: &ReviewId) -> Result<()>;
+
     // ---- sessions -------------------------------------------------------
 
     /// Return the author's open draft session for `review`, creating one if

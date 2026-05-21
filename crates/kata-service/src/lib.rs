@@ -1322,6 +1322,32 @@ impl ReviewService {
         Ok(manifest)
     }
 
+    /// Permanently delete a review and every dependent record
+    /// (sessions, comments, responses, annotations, visit
+    /// timestamps). Only the creator may delete; the home-screen
+    /// affordance is hidden for other viewers. Idempotent — calling
+    /// twice doesn't error on the second call.
+    pub async fn delete_review(
+        &self,
+        repo: &RepoId,
+        review: &ReviewId,
+        actor: &Author,
+    ) -> ServiceResult<()> {
+        let manifest = self.storage.open_review(repo, review).await?;
+        if actor != &manifest.created_by {
+            return Err(ServiceError::BadRequest(
+                "only the review's creator can delete it".into(),
+            ));
+        }
+        self.storage.delete_review(repo, review).await?;
+        let repo_name = self.repo_name(repo).unwrap_or_default();
+        self.emit(Event::ReviewDeleted {
+            repo: repo_name,
+            review_id: review.clone(),
+        });
+        Ok(())
+    }
+
     // ---- sessions ------------------------------------------------------
 
     pub async fn start_session(
@@ -2353,5 +2379,50 @@ mod annotation_creator_only_tests {
             .delete_annotation(&repo, &manifest.review_id, &creator, &annotation.annotation_id)
             .await
             .expect("creator should be able to delete");
+    }
+
+    #[tokio::test]
+    async fn non_creator_cannot_delete_review() {
+        let storage = Arc::new(SqliteStorage::open_in_memory().await.unwrap());
+        let (repo, manifest, _creator) = seed(storage.clone()).await;
+        let service = service_for(storage.clone()).await;
+        let bob = Author::new("bob@example.com");
+        let err = service
+            .delete_review(&repo, &manifest.review_id, &bob)
+            .await
+            .expect_err("non-creator must be rejected");
+        match err {
+            ServiceError::BadRequest(msg) => {
+                assert!(
+                    msg.contains("only the review's creator"),
+                    "unexpected message: {msg:?}"
+                );
+            }
+            other => panic!("expected BadRequest, got {other:?}"),
+        }
+        // Review row must still be there.
+        storage
+            .open_review(&repo, &manifest.review_id)
+            .await
+            .expect("review must survive rejected delete");
+    }
+
+    #[tokio::test]
+    async fn creator_can_delete_their_review() {
+        let storage = Arc::new(SqliteStorage::open_in_memory().await.unwrap());
+        let (repo, manifest, creator) = seed(storage.clone()).await;
+        let service = service_for(storage.clone()).await;
+        service
+            .delete_review(&repo, &manifest.review_id, &creator)
+            .await
+            .expect("creator should be able to delete");
+        let err = storage
+            .open_review(&repo, &manifest.review_id)
+            .await
+            .expect_err("review must be gone");
+        assert!(matches!(
+            err,
+            kata_storage::Error::NotFound { .. },
+        ));
     }
 }
