@@ -895,17 +895,76 @@ command again into a fresh path for a clean state.
 
 ---
 
+## 17a. Repository browser
+
+The browser is a read-only view of the underlying jj workspace —
+not a review. Lives at `/r/<repo>/browse`, with a "Browse" link
+in the app header that's visible whenever a repo is selected.
+
+The pane has two columns:
+
+- **Log graph** (left). A column-stem-laid-out commit graph
+  (port of Sapling-renderdag, mirroring jjuicy's algorithm).
+  Layout is computed server-side; the client renders SVG paths
+  between pre-computed `(col, row)` coordinates and a small
+  set of tagged edge shapes (`ToNode`, `ToIntersection`,
+  `FromNode`, `ToMissing`). Each row's text portion shows the
+  subject, bookmark chips, the `@` marker on the working-copy
+  row, and a short commit-id. The default revset is
+  `bookmarks() | @ | latest(@-.. | ..@, 50)`; a search box at
+  the top of the pane accepts any free-form revset.
+- **Detail** (right). When the reader picks a commit, the
+  detail pane shows description, author, timestamp, refs
+  pointing at it, the changed-files list, and any conflict
+  paths. Each file path is clickable.
+
+Clicking a file path opens the **file viewer** in the right
+pane. The file viewer renders contents at the selected commit
+through the same Shiki pipeline the diff viewer uses (so
+languages already supported in diffs work here too); binary
+files (bytes that don't decode as UTF-8) render a placeholder
+with their size.
+
+The file viewer's **History** button switches the log pane to
+`files("<path>")` so the reader can see the chain of commits
+that touched the file. The file viewer itself stays open
+alongside, so the reader can read the file while scanning the
+history below.
+
+The commit detail's **Create review** button navigates to the
+new-review form with the revset pre-filled to
+`<commit>-..<commit>` — the canonical one-commit review shape.
+The reviewer confirms the bookmark / summary and submits.
+
+Out of scope for the browser, deliberately:
+
+- Mutations. No rebase, squash, abandon, push/fetch, or
+  description edits. History is the author's domain; the
+  reviewer's tool shouldn't rewrite it.
+- Multi-revision selection or drag-to-aggregate operations.
+  That's jj client UX, not review UX.
+
+---
+
 ## 18. URL structure summary
 
 - `/` — review list (current workspace).
+- `/?prefill_revset=<expr>` — review list with the new-review
+  form's revset pre-populated (used by the browser's "Create
+  review from this commit" handoff).
 - `/r/<repo>/<number>` — review viewer, latest patchset, cumulative
   diff.
+- `/r/<repo>/browse` — repository browser (see §17a).
 - Query string adds optional state:
   - `?ps=N` — current patchset.
   - `?cmp=M` — "compared to" patchset (interdiff mode).
-  - `?commit=<change_id>` — pair list scoping in interdiff mode.
+  - `?commit=<change_id>` — pair list scoping in interdiff mode,
+    *or* the selected commit in browse mode.
   - `?scope=<change_id>` — scope the diff to a single commit
     (outside interdiff mode).
+  - `?path=<file>` — file currently open in the browser's file
+    viewer.
+  - `?revset=<expr>` — log expression in browse mode.
   - `?debug` — opt-in debug affordances.
   - `?demo=1` — arm the guided tour.
 - Hash anchors: `#c-<id>`, `#n-<id>`, `#file-<encoded path>`,

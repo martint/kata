@@ -132,6 +132,17 @@ export const api = {
       `${repoBase(repo)}/browse/file?${params.toString()}`,
     );
   },
+  /** Commits that touched `path`, in topological order. Same
+   *  `LogPage` shape the regular browse log returns so the SVG
+   *  renderer can present it without adapters. */
+  browseFileHistory: (repo: string, path: string, maxRows?: number) => {
+    const params = new URLSearchParams({ path });
+    if (maxRows !== undefined) params.set('max_rows', String(maxRows));
+    return request<LogPage>(
+      'GET',
+      `${repoBase(repo)}/browse/file-history?${params.toString()}`,
+    );
+  },
 
   /** Probe a revset against the jj backend to count its commits.
    *  Used by the new-review form to warn before submitting an empty

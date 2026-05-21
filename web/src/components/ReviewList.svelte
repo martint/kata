@@ -10,6 +10,10 @@
     summaries: ReviewSummary[] | null;
     loading: boolean;
     createdBy: string;
+    /** Pre-fills the new-review form's revset. Set by the browse
+     *  pane's "Create review from this commit" handoff via the
+     *  `?prefill_revset=` URL parameter. */
+    prefillRevset?: string;
     onchangerepo: (name: string) => void;
     onopen: (number: number) => void;
   }
@@ -19,6 +23,7 @@
     summaries,
     loading,
     createdBy,
+    prefillRevset,
     onchangerepo,
     onopen,
   }: Props = $props();
@@ -27,8 +32,10 @@
   let bookmarksLoading: boolean = $state(true);
   let bookmarksError: string | null = $state(null);
   let selected: string = $state('');
-  let revset: string = $state('');
-  let revsetEdited: boolean = $state(false);
+  let revset: string = $state(prefillRevset ?? '');
+  // When the URL handed us a revset, treat it as a user-edit so the
+  // bookmark-driven auto-derive below doesn't clobber it.
+  let revsetEdited: boolean = $state(prefillRevset !== undefined);
   let summary: string = $state('');
   let summaryMode = $state<'edit' | 'preview'>('edit');
   let creating: boolean = $state(false);

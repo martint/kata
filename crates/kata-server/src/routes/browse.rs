@@ -88,6 +88,49 @@ pub struct FileContent {
     pub size: usize,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct FileHistoryQuery {
+    pub path: String,
+    #[serde(default)]
+    pub max_rows: Option<usize>,
+}
+
+/// `GET /api/repos/{repo}/browse/file-history?path=…` — commits
+/// that touched `path`, newest-first via the underlying topo
+/// order. Sharing the [`LogPage`] shape with the regular browse
+/// log so the same renderer code paths work without per-endpoint
+/// adapters. Server-side construction of `files("<path>")` keeps
+/// revset-escaping out of the frontend.
+pub async fn file_history(
+    State(state): State<AppState>,
+    Path(repo_name): Path<String>,
+    Query(q): Query<FileHistoryQuery>,
+) -> AppResult<Json<LogPage>> {
+    let repo = state.service.resolve_repo(&repo_name)?;
+    // `files("path")` is the revset function jj-lib provides for
+    // "commits that touched this path". Wrapping in `::@` would
+    // restrict to the workspace's ancestry — but a file's
+    // history may legitimately live on bookmarks the workspace
+    // hasn't followed, so use the unbounded form and let the
+    // row cap below trim.
+    let escaped = escape_for_revset(&q.path);
+    let revset_str = format!(r#"files("{escaped}")"#);
+    let max_rows = q
+        .max_rows
+        .unwrap_or(DEFAULT_MAX_ROWS)
+        .min(MAX_ROWS_CEILING);
+    let revset = kata_core::RevSet::new(revset_str);
+    let page = state.service.browse_log(&repo, &revset, max_rows).await?;
+    Ok(Json(page))
+}
+
+/// Escape a path for embedding inside `files("…")` in a revset.
+/// Backslashes and double-quotes are the two characters the
+/// revset language reads specially inside double-quoted strings.
+fn escape_for_revset(s: &str) -> String {
+    s.replace('\\', r"\\").replace('"', r#"\""#)
+}
+
 /// `GET /api/repos/{repo}/browse/file?commit=…&path=…` — return
 /// the file's contents at a specific commit. The UI renders this
 /// with the same Shiki-driven highlighting pipeline used by the

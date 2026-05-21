@@ -850,12 +850,14 @@
       Loading review <code>{screen.label}</code>…
     </p>
   {:else if screen.kind === 'list'}
+    {@const prefill = new URLSearchParams(location.search).get('prefill_revset') ?? undefined}
     <ReviewList
       {repos}
       {repo}
       summaries={summaries}
       loading={loading}
       createdBy={whoami?.author ?? ''}
+      prefillRevset={prefill}
       onchangerepo={switchRepo}
       onopen={openReview}
     />

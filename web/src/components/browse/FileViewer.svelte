@@ -25,11 +25,17 @@
     commit,
     path,
     onclose,
+    onhistory,
   }: {
     repo: string;
     commit: CommitId;
     path: string;
     onclose: () => void;
+    /** Optional. When set, the file viewer renders a "History"
+     *  button in its header that, on click, hands `path` back to
+     *  the parent. The parent typically switches the log pane to
+     *  show commits that touched this file. */
+    onhistory?: (path: string) => void;
   } = $props();
 
   type Content =
@@ -112,6 +118,14 @@
         binary · {formatBytes(content.size)}
       {/if}
     </span>
+    {#if onhistory}
+      <button
+        type="button"
+        class="action"
+        onclick={() => onhistory?.(path)}
+        title="Switch the log to commits that touched this file"
+      >History</button>
+    {/if}
     <button type="button" class="close" onclick={onclose}>Close</button>
   </header>
   {#if content.kind === 'loading'}
@@ -182,7 +196,8 @@
     color: var(--text-muted);
   }
 
-  .viewer-header .close {
+  .viewer-header .close,
+  .viewer-header .action {
     padding: 2px 10px;
     font-size: 12px;
   }

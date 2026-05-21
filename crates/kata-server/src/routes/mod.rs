@@ -77,6 +77,10 @@ fn api_routes() -> Router<AppState> {
         )
         .route("/api/repos/{repo_name}/browse/file", get(browse::file))
         .route(
+            "/api/repos/{repo_name}/browse/file-history",
+            get(browse::file_history),
+        )
+        .route(
             "/api/repos/{repo_name}/reviews",
             get(reviews::list_reviews).post(reviews::create_review),
         )

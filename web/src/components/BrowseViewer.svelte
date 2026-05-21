@@ -120,6 +120,29 @@
     viewingPath = null;
   }
 
+  /** Switch the log to show only commits that touched `path`.
+   *  Constructs the revset client-side because the server-side
+   *  `file-history` endpoint exists for that exact shape — using
+   *  the regular log endpoint with this revset gives us the same
+   *  data without an extra endpoint round-trip. */
+  function showFileHistory(path: string) {
+    const escaped = path.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    const expr = `files("${escaped}")`;
+    revsetInput = expr;
+    revset = expr;
+    // Keep the file viewer open so the user can read the file
+    // while scanning its history below.
+  }
+
+  /** Navigate to the new-review form with the revset pre-filled
+   *  to `<commit>-..<commit>` — the canonical "single-commit
+   *  review" shape. The reviewer can adjust before submitting. */
+  function createReviewFromCommit(commitId: string) {
+    const expr = `${commitId}-..${commitId}`;
+    const params = new URLSearchParams({ prefill_revset: expr });
+    location.href = `/?${params.toString()}`;
+  }
+
   function submitRevset(e: Event) {
     e.preventDefault();
     revset = revsetInput.trim();
@@ -197,6 +220,7 @@
         commit={selected}
         path={viewingPath}
         onclose={closeFile}
+        onhistory={showFileHistory}
       />
     {:else if detail}
       {@const c = detail.commit}
@@ -260,6 +284,12 @@
         {/if}
 
         <footer class="detail-actions">
+          <button
+            type="button"
+            class="primary"
+            onclick={() => createReviewFromCommit(c.commit_id)}
+            title="Open the new-review form with this commit's revset pre-filled"
+          >Create review</button>
           <button
             type="button"
             class="close"
@@ -463,6 +493,17 @@
     margin-top: 16px;
     display: flex;
     justify-content: flex-end;
+    gap: 8px;
+  }
+
+  .detail-actions .primary {
+    background: var(--link);
+    color: var(--on-accent);
+    border: 1px solid var(--link);
+  }
+
+  .detail-actions .primary:hover {
+    filter: brightness(1.05);
   }
 
   .clear {

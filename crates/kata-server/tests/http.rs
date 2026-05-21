@@ -1880,3 +1880,33 @@ async fn browse_file_404s_on_missing_path() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
+#[tokio::test]
+async fn browse_file_history_returns_commits_that_touched_the_path() {
+    // The harness's `a.txt` is touched by both seeded commits
+    // (created at "initial", edited at "tweak"). Hitting the
+    // file-history endpoint for that path should surface both
+    // rows.
+    let h = Harness::new().await;
+    let (status, body) = h
+        .json(
+            "GET",
+            "/api/repos/main/browse/file-history?path=a.txt",
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let rows = body["rows"].as_array().expect("rows array");
+    assert!(
+        rows.len() >= 2,
+        "expected at least 2 commits in a.txt's history, got {}",
+        rows.len(),
+    );
+    // Each row carries the regular LogRow shape, so the SVG
+    // renderer that handles the main log handles this too.
+    for row in rows {
+        assert!(row["commit"]["commit_id"].is_string());
+        assert!(row["location"]["col"].is_number());
+        assert!(row["lines"].is_array());
+    }
+}
+

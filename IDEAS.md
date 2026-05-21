@@ -288,64 +288,45 @@ Working paths today:
 
 ## Repository browser
 
-Today the only way to look at code in Kata is to make a review — the
-file tree, commits panel, and diff are all scoped to a revset's
-`base..tip`. Anything outside that window (a file the review doesn't
-touch, the workspace's current log, a single file's history across
-commits) is invisible. Reviewers who want to cross-reference end up
-dropping to a terminal or another tool.
+**Status:** shipped. Read-only, four pieces — log graph, commit
+detail, file viewer, file history — plus a "Create review from
+this commit" handoff. Mutations (rebase / squash / abandon /
+push / fetch) deliberately remain out of scope: the review
+tool's job stays "look at code", not "rewrite history".
 
-A repository-browser view alongside the review viewer would close
-that gap. The reference shape is
-[jjuicy](https://github.com/starburstdata/jjuicy): a left pane with
-the queryable log, a right pane that inspects whatever the user
-selects (description, parents, changed files), browse-any-file
-affordances, and history queries on individual paths.
+Lives at `/r/<repo>/browse` with a "Browse" link in the app
+header. Default revset is `bookmarks() | @ | latest(@-.. |
+..@, 50)`; the search box at the top of the log pane takes any
+free-form expression.
 
-Scope decisions to make before building:
+Wire shape:
 
-- **Read-only or read-write?** jjuicy lets you drag revisions to
-  rebase, drag files to squash, edit descriptions, push/fetch.
-  That's a *full* jj client UI, and it changes the product
-  positioning from "code review tool" to "review tool plus jj GUI".
-  A read-only browser (log + revision detail + file viewer + per-
-  file history) is the smaller, cleaner addition; it composes with
-  the existing review surface without overlapping it.
-- **Where it lives.** A new top-level route — `/r/<repo>/browse` or
-  similar — keeps it cleanly separated from `/r/<repo>/<n>`. The
-  app header gets a workspace-level "Browse" affordance next to the
-  "Reviews" list.
-- **What it shows out of the box.** Probably the log of recent
-  commits (using a revset like `::@-100` so unrelated branches in
-  the workspace appear too), with the workspace's current `@` and
-  bookmarks marked. Clicking a commit opens its detail pane:
-  description, parents, the per-commit changed-files list (which
-  already exists in `CommitInfo`), and a link "scope a new review
-  to this commit" that hands off to the create-review form with
-  the revset pre-filled.
-- **File viewer.** Read-only viewer for any file at any
-  `(commit, path)`. The existing `JjBackend::read_file` already
-  returns the bytes; the renderer is just the file-content side of
-  the diff viewer without the diff. Syntax highlighting comes
-  along for free.
-- **Per-file history.** Walk a revset that includes commits
-  touching the path (`files(<path>) & ::@`). For each commit, show
-  description + author + timestamp + a link to view the file at
-  that revision. Composes with the file viewer.
+- **Log graph.** Column-stem layout (port of jjuicy's
+  Sapling-style algorithm, `kata-jj::log_graph`) ships per-row
+  `(col, row)` coordinates and tagged edge shapes to the client.
+  Frontend renders SVG paths — no DAG knowledge required.
+- **Commit detail.** Description, refs, changed-files list
+  (clickable), conflict list, "Create review from this commit"
+  button.
+- **File viewer.** Read-only file content at a `(commit, path)`,
+  fed through the diff viewer's existing Shiki pipeline. Binary
+  files render a placeholder.
+- **Per-file history.** "History" button on the file viewer
+  switches the log pane to `files("<path>")` so the user can
+  see which commits touched it.
+- **Create-review handoff.** Navigates to the new-review form
+  with `?prefill_revset=<commit>-..<commit>` — reviewer
+  confirms or edits before submitting.
 
-What deliberately *doesn't* fit, even though jjuicy has it:
+Possible follow-ups (no current demand signal):
 
-- **Mutations** (rebase via drag, squash, abandon, edit
-  description, push/fetch). The review tool's whole point is that
-  history is the author's domain — having the reviewer's tool
-  rewrite it muddies the trust boundary. Read-only is a feature.
-- **Multi-revision selection / aggregate operations.** Same
-  reason — that's jj client UX, not review UX.
-
-Worth picking up when reviewers start asking "I just want to look
-at file X right quick" or "what did this used to look like before
-the rewrite". Until then the make-a-review escape hatch covers the
-case, awkwardly.
+- **Pagination beyond the row cap.** The layout algorithm
+  already supports it via `has_more`; the client doesn't issue
+  follow-up pages yet. Worth adding when reviewers hit the cap.
+- **Per-line "blame" view.** Walking history per line is a
+  different shape from per-file history; expensive, and most of
+  the use case is covered by per-file history + the diff
+  viewer. Land if asked.
 
 ## In-app search across the diff
 
