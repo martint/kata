@@ -18,6 +18,7 @@
     "@testing-library/user-event": "^14.6.1",
     "@tsconfig/svelte": "^5.0.4",
     "jsdom": "^29.1.1",
+    "playwright": "^1.60.0",
     "svelte": "^5.16.0",
     "svelte-check": "^4.1.1",
     "typescript": "^5.7.2",
