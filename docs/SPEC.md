@@ -936,7 +936,31 @@ new-review form with the revset pre-filled to
 `<commit>-..<commit>` — the canonical one-commit review shape.
 The reviewer confirms the bookmark / summary and submits.
 
-Out of scope for the browser, deliberately:
+### Revision ids everywhere
+
+A consistent visual treatment applies to every place the UI
+renders a change-id or commit-id — review viewer, commits
+panel, divergence banner, graph log, commit detail, file
+viewer. Change-ids render in purple; commit-ids render in
+blue. The colours are deliberate: change-ids are stable across
+jj rewrites (purple ≈ "the ticket number"), commit-ids point
+at one specific revision (blue ≈ "this exact revision").
+
+Where the id sits inside a larger clickable element (a row
+that already scopes the diff, a graph row that already
+selects the commit), the id renders as a coloured inline
+pill — clicking the row still does its existing thing. Where
+the id is standalone, the pill is a link to
+`/r/<repo>/browse?{commit|change}=<id>` so the reader can
+jump into the repository browser without losing context.
+`?change=<id>` is resolved server-side to the change's
+current commit; the URL canonicalises to `?commit=…` on
+arrival so a shared link keeps following the change as it
+rewrites only if the original sender meant it to.
+
+### Out of scope
+
+Deliberately omitted from the browser:
 
 - Mutations. No rebase, squash, abandon, push/fetch, or
   description edits. History is the author's domain; the

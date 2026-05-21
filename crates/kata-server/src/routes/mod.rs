@@ -75,6 +75,10 @@ fn api_routes() -> Router<AppState> {
             "/api/repos/{repo_name}/browse/commits/{commit_id}",
             get(browse::commit),
         )
+        .route(
+            "/api/repos/{repo_name}/browse/changes/{change_id}",
+            get(browse::change),
+        )
         .route("/api/repos/{repo_name}/browse/file", get(browse::file))
         .route(
             "/api/repos/{repo_name}/browse/file-history",

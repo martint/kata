@@ -2,6 +2,7 @@ import type {
   Annotation,
   AnnotationInput,
   Bookmark,
+  ChangeId,
   Comment,
   CommitDiffView,
   CommitId,
@@ -120,6 +121,14 @@ export const api = {
     request<LogRow | null>(
       'GET',
       `${repoBase(repo)}/browse/commits/${enc(commit_id)}`,
+    ),
+  /** Resolve a change_id to the current commit's LogRow. Used
+   *  by `?change=…` URLs the browser canonicalises to a
+   *  commit_id on load. `null` for unknown ids. */
+  browseChange: (repo: string, change_id: ChangeId) =>
+    request<LogRow | null>(
+      'GET',
+      `${repoBase(repo)}/browse/changes/${enc(change_id)}`,
     ),
   /** File contents at a (commit, path). `binary: true` means the
    *  bytes didn't decode as UTF-8 and `content` is empty — the

@@ -20,17 +20,30 @@
   import type { LogRow, CommitId } from '../../lib/types';
   import GraphNode from './GraphNode.svelte';
   import GraphLine from './GraphLine.svelte';
+  import RevId from '../RevId.svelte';
 
   let {
+    repo,
     rows,
     selectedCommitId = null,
+    rangeIds = new Set(),
     onselect,
     columnWidth = 18,
     rowHeight = 30,
   }: {
+    repo: string;
     rows: LogRow[];
+    /** The "anchor" commit — the one shown in the detail pane.
+     *  Always also a member of `rangeIds`. */
     selectedCommitId?: CommitId | null;
-    onselect: (commitId: CommitId) => void;
+    /** Commit-ids in the current selection range. One element
+     *  for a plain click; many for a shift-click range. Rows in
+     *  this set get the `.in-range` highlight. */
+    rangeIds?: Set<string>;
+    /** Plain click sets `extendRange: false` (resets the
+     *  selection to just this row). Shift-click sets
+     *  `extendRange: true` so the parent can extend a range. */
+    onselect: (commitId: CommitId, opts: { extendRange: boolean }) => void;
     columnWidth?: number;
     rowHeight?: number;
   } = $props();
@@ -61,10 +74,6 @@
     });
     return out;
   });
-
-  function shortId(id: string): string {
-    return id.length > 8 ? id.slice(0, 8) : id;
-  }
 </script>
 
 <div class="graph-log">
@@ -89,7 +98,8 @@
           {rowHeight}
           isWorkingCopy={row.is_working_copy ?? false}
           hasBookmarks={(row.bookmarks ?? []).length > 0}
-          selected={row.commit.commit_id === selectedCommitId}
+          selected={row.commit.commit_id === selectedCommitId
+            || rangeIds.has(row.commit.commit_id)}
         />
       {/each}
     </svg>
@@ -103,8 +113,11 @@
           type="button"
           class="row"
           class:selected={row.commit.commit_id === selectedCommitId}
+          class:in-range={rangeIds.has(row.commit.commit_id) &&
+            row.commit.commit_id !== selectedCommitId}
           style:height="{rowHeight}px"
-          onclick={() => onselect(row.commit.commit_id)}
+          onclick={(e) =>
+            onselect(row.commit.commit_id, { extendRange: e.shiftKey })}
         >
           <span class="subject">{subj}</span>
           {#if (row.bookmarks ?? []).length > 0}
@@ -115,7 +128,10 @@
           {#if row.is_working_copy}
             <span class="wc">@</span>
           {/if}
-          <span class="meta">{shortId(row.commit.commit_id)}</span>
+          <span class="meta">
+            <RevId id={row.commit.change_id} kind="change" {repo} inline />
+            <RevId id={row.commit.commit_id} kind="commit" {repo} inline />
+          </span>
         </button>
       {/each}
     </div>
@@ -123,9 +139,16 @@
 </div>
 
 <style>
+  /* Fills whatever the parent flex column leaves over (the search
+   * bar above it has fixed height). `min-height: 0` is the magic
+   * incantation that lets a flex child shrink past its content,
+   * which is what enables the scroll bar — without it the
+   * container expands to fit the rows and the pane stops
+   * scrolling at all. */
   .graph-log {
+    flex: 1;
+    min-height: 0;
     overflow-y: auto;
-    height: 100%;
   }
 
   .rows {
@@ -168,8 +191,16 @@
     background: var(--bg-elevated);
   }
 
+  /* Anchor row of a selection. Always also `.in-range`. */
   .row.selected {
     background: var(--link-bg);
+  }
+
+  /* Non-anchor rows in a shift-extended range. Lighter tint so
+   * the anchor remains visually distinct as the row whose
+   * details are shown in the right pane. */
+  .row.in-range {
+    background: color-mix(in srgb, var(--link-bg) 60%, transparent);
   }
 
   .subject {
@@ -200,11 +231,13 @@
     font-weight: 600;
   }
 
+  /* Container for the trailing RevId pills. Pushed to the right
+   * end of the row by `margin-left: auto`; RevId itself owns the
+   * font, size, and colour. */
   .meta {
     margin-left: auto;
     flex: 0 0 auto;
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 11px;
-    color: var(--text-muted);
+    display: inline-flex;
+    gap: 4px;
   }
 </style>

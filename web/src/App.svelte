@@ -56,6 +56,10 @@
         /** Pre-selected commit from the URL (`?commit=…`). The
          *  viewer overrides on click. */
         initialCommit: string | undefined;
+        /** Pre-selected change from the URL (`?change=…`). The
+         *  viewer resolves it to the current commit_id and
+         *  canonicalises the URL to `?commit=…`. */
+        initialChange: string | undefined;
         /** Pre-opened file path (`?path=…`). When set, the
          *  detail pane shows the file viewer instead of the
          *  commit detail. */
@@ -81,6 +85,7 @@
         kind: 'browse',
         repo: decodeURIComponent(browse[1]),
         initialCommit: params.get('commit') ?? undefined,
+        initialChange: params.get('change') ?? undefined,
         initialPath: params.get('path') ?? undefined,
         initialRevset: params.get('revset') ?? undefined,
       };
@@ -267,31 +272,6 @@
     await showReview(repo, number, undefined, undefined, undefined, undefined, false);
   }
 
-  /** Navigate to the repository browser for the current repo.
-   *  Optionally pre-selects a commit and/or revset. Pushes history
-   *  so the browser back button returns to where the user came
-   *  from. */
-  function openBrowse(
-    opts: { commit?: string; path?: string; revset?: string } = {},
-  ) {
-    const params = new URLSearchParams();
-    if (opts.commit) params.set('commit', opts.commit);
-    if (opts.path) params.set('path', opts.path);
-    if (opts.revset) params.set('revset', opts.revset);
-    const qs = params.toString();
-    const target = `/r/${encodeURIComponent(repo)}/browse${qs ? `?${qs}` : ''}`;
-    if (location.pathname + location.search !== target) {
-      history.pushState({}, '', target);
-    }
-    screen = {
-      kind: 'browse',
-      repo,
-      initialCommit: opts.commit,
-      initialPath: opts.path,
-      initialRevset: opts.revset,
-    };
-  }
-
   /** Called by BrowseViewer when its internal selection, file, or
    *  revset changes. Updates the URL via replaceState so the
    *  browser history isn't spammed with every commit click (only
@@ -370,6 +350,7 @@
         kind: 'browse',
         repo: browseRepo,
         initialCommit: params.get('commit') ?? undefined,
+        initialChange: params.get('change') ?? undefined,
         initialPath: params.get('path') ?? undefined,
         initialRevset: params.get('revset') ?? undefined,
       };
@@ -517,18 +498,6 @@
         Kata
       </a>
     </h1>
-    {#if repo}
-      <a
-        href="/r/{encodeURIComponent(repo)}/browse"
-        class="browse-link"
-        class:current={screen.kind === 'browse'}
-        onclick={(e) => {
-          e.preventDefault();
-          openBrowse();
-        }}
-        title="Browse the repository (log + file viewer)"
-      >Browse</a>
-    {/if}
     {#if screen.kind === 'review'}
       <button
         onclick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
@@ -839,7 +808,7 @@
   {/if}
 </header>
 
-<main class={screen.kind === 'review' ? 'wide' : ''}>
+<main class:wide={screen.kind === 'review'} class:browse-main={screen.kind === 'browse'}>
   {#if error}
     <p class="error">{error}</p>
   {/if}
@@ -862,10 +831,11 @@
       onopen={openReview}
     />
   {:else if screen.kind === 'browse'}
-    {#key `${popstateGen}|${screen.repo}|${screen.initialCommit ?? ''}|${screen.initialPath ?? ''}|${screen.initialRevset ?? ''}`}
+    {#key `${popstateGen}|${screen.repo}|${screen.initialCommit ?? ''}|${screen.initialChange ?? ''}|${screen.initialPath ?? ''}|${screen.initialRevset ?? ''}`}
       <BrowseViewer
         repo={screen.repo}
         initialCommit={screen.initialCommit ?? null}
+        initialChange={screen.initialChange ?? null}
         initialPath={screen.initialPath ?? null}
         initialRevset={screen.initialRevset ?? null}
         onstate={onBrowseStateChange}

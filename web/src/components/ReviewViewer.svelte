@@ -34,6 +34,7 @@
   import CommitsPanel from './CommitsPanel.svelte';
   import FileSlot from './FileSlot.svelte';
   import FileTree from './FileTree.svelte';
+  import RevId from './RevId.svelte';
   import ReviewSummary from './ReviewSummary.svelte';
 
   /** State + action callbacks for the controls that App.svelte renders in
@@ -2725,7 +2726,7 @@
       <ul class="divergent-list">
         {#each candidates as c}
           <li>
-            <code class="commit-id">{short(c.commit_id)}</code>
+            <RevId id={c.commit_id} kind="commit" {repo} />
             <span class="when" title={c.author_timestamp}>
               {formatDate(c.author_timestamp)}
             </span>
@@ -2814,6 +2815,7 @@
          panel to the per-commit interdiff. CommitsPanel branches
          internally on whether `compareView` is set. -->
       <CommitsPanel
+        {repo}
         commits={current.commits}
         comments={visibleComments}
         responses={allResponses}
@@ -2867,7 +2869,8 @@
                   ? '−'
                   : '='}
           <span class="crumb">
-            <strong>{badge} {p.change_id.slice(0, 8)}</strong>
+            <strong>{badge}</strong>
+            <RevId id={p.change_id} kind="change" {repo} length={8} />
             <span class="truncate"
               >· {p.to_description ?? p.from_description ?? '(no description)'}</span
             >
@@ -3063,10 +3066,6 @@
     padding: 1px 5px;
     border-radius: 3px;
     font-size: 12px;
-  }
-
-  .revset-error-banner .commit-id {
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   }
 
   .revset-error-banner .divergent-list {

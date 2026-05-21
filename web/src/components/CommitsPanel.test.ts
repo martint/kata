@@ -50,6 +50,7 @@ function renderPanel(
 ) {
   return render(CommitsPanel, {
     props: {
+      repo: 'test-repo',
       commits: [commit()],
       comments: [],
       responses: [] as ResponseView[],

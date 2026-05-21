@@ -15,8 +15,12 @@
   import Bubble from './Bubble.svelte';
   import CommentComposer from './CommentComposer.svelte';
   import CommentThread from './CommentThread.svelte';
+  import RevId from './RevId.svelte';
 
   interface Props {
+    /** Repo slug — threaded into `<RevId>` so the rendered
+     *  commit/change links point at this repo's browser. */
+    repo: string;
     commits: CommitInfo[];
     /** All comments on the review (published + drafts). Used both to
      *  count per-commit on files this commit touched and to render
@@ -74,6 +78,7 @@
     commentsWriteable?: boolean;
   }
   const {
+    repo,
     commits,
     comments,
     responses,
@@ -222,10 +227,6 @@
     reviewWide.sort(cmp);
     return { byChange, reviewWide };
   });
-
-  function short(id: string): string {
-    return id.length > 12 ? id.slice(0, 12) : id;
-  }
 
   function formatDate(iso: string): string {
     const d = new Date(iso);
@@ -421,7 +422,9 @@
                 disabled={!clickable}
                 onclick={() => clickable && onselectcomparecommit?.(p.change_id)}
               >
-                <span class="commit-id-cell">{p.change_id.slice(0, 12)}</span>
+                <span class="commit-id-cell">
+                  <RevId id={p.change_id} kind="change" {repo} inline />
+                </span>
                 <span class="description">{desc}</span>
                 {#if p.diff_counts && !isRebasedOnly}
                   <span class="pair-counts" title="files changed / lines added / lines removed">
@@ -641,8 +644,8 @@
               {/if}
               <button class="row-button" onclick={() => onselect(c.change_id)}>
                 <div class="row1">
-                  <code class="change">{short(c.change_id)}</code>
-                  <code class="commit">{short(c.commit_id)}</code>
+                  <RevId id={c.change_id} kind="change" {repo} inline />
+                  <RevId id={c.commit_id} kind="commit" {repo} inline />
                   <span class="desc">{c.description_first_line || '(no description)'}</span>
                   {#if (c.conflict_paths?.length ?? 0) > 0}
                     <!-- Files at this commit that jj recorded as a
@@ -826,14 +829,10 @@
     gap: 10px;
   }
 
-  .row1 .change,
-  .row1 .commit {
-    color: var(--text-muted);
-    background: var(--bg-elevated);
-    padding: 1px 5px;
-    border-radius: 3px;
-    font-size: 11px;
-  }
+  /* `RevId` (rendered inline here) owns the change-id / commit-id
+   * colours and pill shape. The old `.change` / `.commit` rules
+   * are gone — the row no longer wraps the ids in styled `<code>`
+   * elements. */
 
   .row1 .desc {
     font-weight: 500;
@@ -1036,9 +1035,6 @@
     opacity: 0.55;
   }
   .pair-row .commit-id-cell {
-    font-family: var(--mono, monospace);
-    font-size: 12px;
-    color: var(--muted);
     margin-right: 8px;
   }
   .pair-row .description {

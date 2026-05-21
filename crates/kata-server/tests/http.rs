@@ -1881,6 +1881,52 @@ async fn browse_file_404s_on_missing_path() {
 }
 
 #[tokio::test]
+async fn browse_change_resolves_to_current_commit() {
+    // Pick a row from the default log, take its change_id, then
+    // hit the changes endpoint and verify it returns the same
+    // row (i.e. the change_id resolves to the same commit_id we
+    // started with).
+    let h = Harness::new().await;
+    let (_, body) = h
+        .json("GET", "/api/repos/main/browse/log", None)
+        .await;
+    let row = &body["rows"][0];
+    let change_id = row["commit"]["change_id"].as_str().unwrap().to_owned();
+    let commit_id = row["commit"]["commit_id"].as_str().unwrap().to_owned();
+
+    let (status, body) = h
+        .json(
+            "GET",
+            &format!("/api/repos/main/browse/changes/{change_id}"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["commit"]["commit_id"].as_str(), Some(commit_id.as_str()));
+    assert_eq!(body["commit"]["change_id"].as_str(), Some(change_id.as_str()));
+}
+
+#[tokio::test]
+async fn browse_change_returns_null_for_unknown_id() {
+    let h = Harness::new().await;
+    // A 32-char change-id alphabet (k–z) prefix that won't match
+    // any change in this workspace. `z` repeated does match jj's
+    // root (the root's change_id is conventionally the high end
+    // of the alphabet), so build a value with at least one
+    // middle-of-the-range character so it cannot collide.
+    let bogus = "klmnopqrstuvwxyzklmnopqrstuvwxyz";
+    let (status, body) = h
+        .json(
+            "GET",
+            &format!("/api/repos/main/browse/changes/{bogus}"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.is_null(), "unknown change id resolves to null");
+}
+
+#[tokio::test]
 async fn browse_file_history_returns_commits_that_touched_the_path() {
     // The harness's `a.txt` is touched by both seeded commits
     // (created at "initial", edited at "tweak"). Hitting the

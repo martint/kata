@@ -11,19 +11,26 @@
 -->
 <script lang="ts">
   import { ApiError, api } from '../lib/api';
+  import { renderMarkdown } from '../lib/markdown';
   import type { CommitId, LogPage, LogRow } from '../lib/types';
   import FileViewer from './browse/FileViewer.svelte';
   import GraphLog from './browse/GraphLog.svelte';
+  import RevId from './RevId.svelte';
 
   let {
     repo,
     initialCommit = null,
+    initialChange = null,
     initialPath = null,
     initialRevset = null,
     onstate,
   }: {
     repo: string;
     initialCommit?: CommitId | null;
+    /** Pre-selected change_id from the URL (`?change=…`). The
+     *  browser resolves it to the current commit_id on load
+     *  and then canonicalises the URL to `?commit=…`. */
+    initialChange?: string | null;
     initialPath?: string | null;
     initialRevset?: string | null;
     /** Called whenever the browser's URL-relevant state changes
@@ -48,12 +55,61 @@
    *  page only reloads on Enter, not on every keystroke. */
   let revsetInput: string = $state(initialRevset ?? '');
 
+  /** Anchor of the current selection — the commit shown in the
+   *  detail pane. Set by a plain click on a row, or by resolving
+   *  the URL's `?commit=` / `?change=` parameters at mount. */
   let selected: CommitId | null = $state(initialCommit);
+  /** Extent of a *range* selection. `null` for single-row
+   *  selection; set when the user shift-clicks. The range is the
+   *  visual span between `selected` and `extent` in `page.rows`
+   *  order — newest at top, oldest at bottom. */
+  let extent: CommitId | null = $state(null);
   let detail: LogRow | null = $state(null);
   /** When set, the detail pane shows the file viewer instead of
    *  the commit detail. Clicking a file path in the commit detail
    *  populates this; Close clears it. */
   let viewingPath: string | null = $state(initialPath);
+
+  /** Set of commit-ids in the current range. Single-row selection
+   *  yields a one-element set; range yields the visual span.
+   *  Computed from row indices into `page.rows` so the highlight
+   *  follows the log's topological order (newest first). */
+  const rangeIds = $derived.by(() => {
+    if (!page || !selected) return new Set<string>();
+    if (!extent) return new Set([selected]);
+    const anchorIdx = page.rows.findIndex(
+      (r) => r.commit.commit_id === selected,
+    );
+    const extentIdx = page.rows.findIndex(
+      (r) => r.commit.commit_id === extent,
+    );
+    if (anchorIdx < 0 || extentIdx < 0) return new Set([selected]);
+    const lo = Math.min(anchorIdx, extentIdx);
+    const hi = Math.max(anchorIdx, extentIdx);
+    return new Set(page.rows.slice(lo, hi + 1).map((r) => r.commit.commit_id));
+  });
+  const rangeSize = $derived(rangeIds.size);
+
+  /** When the user has shift-extended a range, the topologically-
+   *  oldest commit in it (the bottom row, highest row index) and
+   *  the newest (the top row, lowest row index) define the revset
+   *  the "Create review from N revisions" button hands off. */
+  const rangeBounds = $derived.by(() => {
+    if (!page || rangeSize < 2 || !selected || !extent) return null;
+    const anchorIdx = page.rows.findIndex(
+      (r) => r.commit.commit_id === selected,
+    );
+    const extentIdx = page.rows.findIndex(
+      (r) => r.commit.commit_id === extent,
+    );
+    if (anchorIdx < 0 || extentIdx < 0) return null;
+    const loIdx = Math.min(anchorIdx, extentIdx);
+    const hiIdx = Math.max(anchorIdx, extentIdx);
+    return {
+      newest: page.rows[loIdx].commit.commit_id,
+      oldest: page.rows[hiIdx].commit.commit_id,
+    };
+  });
 
   async function loadPage() {
     loading = true;
@@ -98,6 +154,22 @@
     void loadDetail(selected);
   });
 
+  // Resolve `?change=<id>` to a concrete commit_id once at mount.
+  // The URL then canonicalises to `?commit=<id>` via the onstate
+  // effect below, so a refresh stays pinned to the same revision
+  // even after the change moves.
+  $effect(() => {
+    if (!initialChange || selected) return;
+    void (async () => {
+      try {
+        const row = await api.browseChange(repo, initialChange);
+        if (row) selected = row.commit.commit_id;
+      } catch (e) {
+        console.warn('browseChange failed', e);
+      }
+    })();
+  });
+
   // Tell the shell about state changes so the URL can update.
   $effect(() => {
     onstate?.({
@@ -107,8 +179,17 @@
     });
   });
 
-  function selectCommit(id: CommitId) {
-    selected = id;
+  function selectCommit(id: CommitId, opts: { extendRange?: boolean } = {}) {
+    if (opts.extendRange && selected) {
+      // Shift-click extends a range from the existing anchor to
+      // this row. Anchor stays put so subsequent shift-clicks
+      // can grow or shrink the range from the same starting
+      // point — same idiom as text-selection.
+      extent = id;
+    } else {
+      selected = id;
+      extent = null;
+    }
     viewingPath = null;
   }
 
@@ -134,11 +215,20 @@
     // while scanning its history below.
   }
 
-  /** Navigate to the new-review form with the revset pre-filled
-   *  to `<commit>-..<commit>` — the canonical "single-commit
-   *  review" shape. The reviewer can adjust before submitting. */
-  function createReviewFromCommit(commitId: string) {
-    const expr = `${commitId}-..${commitId}`;
+  /** Navigate to the new-review form with the revset pre-filled.
+   *  Single-row selection produces `<commit>-..<commit>` (one
+   *  commit); a range produces `<oldest>-..<newest>` covering
+   *  every commit in the visual span. The reviewer can adjust
+   *  before submitting. */
+  function createReviewFromSelection() {
+    let expr: string;
+    if (rangeBounds) {
+      expr = `${rangeBounds.oldest}-..${rangeBounds.newest}`;
+    } else if (selected) {
+      expr = `${selected}-..${selected}`;
+    } else {
+      return;
+    }
     const params = new URLSearchParams({ prefill_revset: expr });
     location.href = `/?${params.toString()}`;
   }
@@ -150,6 +240,7 @@
 
   function clearSelection() {
     selected = null;
+    extent = null;
   }
 
   function shortId(id: string): string {
@@ -200,8 +291,10 @@
       <p class="muted status">No commits in this revset.</p>
     {:else if page}
       <GraphLog
+        {repo}
         rows={page.rows}
         selectedCommitId={selected}
+        {rangeIds}
         onselect={selectCommit}
       />
       {#if page.has_more}
@@ -225,10 +318,26 @@
     {:else if detail}
       {@const c = detail.commit}
       <div class="detail-body">
+        {#if rangeSize > 1 && rangeBounds}
+          <!-- Range header: the user shift-extended a selection.
+               Detail below still shows the anchor's commit so
+               clicking around inside the range still has a
+               meaningful read-out, but the banner up here makes
+               it obvious that "Create review" will use the range
+               and shows the resulting revset. -->
+          <div class="range-banner" role="status">
+            <strong>{rangeSize} revisions selected.</strong>
+            Revset:
+            <code class="range-expr"
+              >{shortId(rangeBounds.oldest)}-..{shortId(rangeBounds.newest)}</code
+            >
+          </div>
+        {/if}
         <header class="detail-header">
           <h3>{c.description_first_line || '(no description)'}</h3>
           <p class="detail-meta">
-            <code class="commit-id">{shortId(c.commit_id)}</code>
+            <RevId id={c.change_id} kind="change" {repo} inline />
+            <RevId id={c.commit_id} kind="commit" {repo} inline />
             · <span class="muted">{c.author_email}</span>
             · <span class="muted">{c.author_timestamp}</span>
           </p>
@@ -245,7 +354,14 @@
         </header>
 
         {#if c.description.includes('\n')}
-          <pre class="description">{trimDescription(c.description)}</pre>
+          {@const body = trimDescription(c.description)}
+          {#if body.length > 0}
+            <!-- Commit descriptions are conventionally markdown
+                 in this codebase (and most projects we work on);
+                 render them as such so links, lists, and code
+                 blocks come through. -->
+            <div class="description markdown">{@html renderMarkdown(body)}</div>
+          {/if}
         {/if}
 
         {#if c.changed_files.length > 0}
@@ -287,9 +403,13 @@
           <button
             type="button"
             class="primary"
-            onclick={() => createReviewFromCommit(c.commit_id)}
-            title="Open the new-review form with this commit's revset pre-filled"
-          >Create review</button>
+            onclick={createReviewFromSelection}
+            title="Open the new-review form with the selected revset pre-filled"
+          >
+            {rangeSize > 1
+              ? `Create review from ${rangeSize} revisions`
+              : 'Create review'}
+          </button>
           <button
             type="button"
             class="close"
@@ -306,9 +426,13 @@
 </div>
 
 <style>
+  /* Two-pane shell pinned to the viewport below the sticky app
+   * header. The grid columns are flexible: detail pane keeps a
+   * sensible default width but adapts on narrow screens via
+   * minmax(). */
   .browse-shell {
     display: grid;
-    grid-template-columns: 1fr 360px;
+    grid-template-columns: minmax(0, 1fr) minmax(320px, 28%);
     gap: 0;
     height: calc(100vh - var(--app-header-h));
     overflow: hidden;
@@ -318,6 +442,10 @@
     display: flex;
     flex-direction: column;
     min-width: 0;
+    /* Critical: a flex-column with overflowing children needs
+     * `min-height: 0` so the children can shrink past their
+     * natural size and trigger the inner scroll. */
+    min-height: 0;
     border-right: 1px solid var(--border);
   }
 
@@ -419,15 +547,37 @@
     font-weight: 600;
   }
 
+  /* Banner shown above the commit detail when the user has
+   * shift-extended a range. Reuses the existing `--link-bg` so
+   * the strip visually picks up the anchor row's highlight. */
+  .range-banner {
+    margin-bottom: 12px;
+    padding: 8px 12px;
+    background: var(--link-bg);
+    border: 1px solid var(--border-muted);
+    border-radius: 4px;
+    font-size: 12px;
+  }
+
+  .range-banner .range-expr {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px;
+    padding: 1px 5px;
+    background: var(--bg);
+    border-radius: 3px;
+  }
+
+  /* Markdown-rendered description body. The container styles
+   * the outer card; the global `.markdown` rules (in app.css)
+   * handle the inner heading / list / code styling so this
+   * pane matches review-summary rendering elsewhere. */
   .description {
     margin: 12px 0;
-    padding: 8px;
+    padding: 8px 12px;
     background: var(--bg);
     border: 1px solid var(--border-muted);
     border-radius: 4px;
     font-size: 12px;
-    white-space: pre-wrap;
-    overflow-x: auto;
   }
 
   .files,
@@ -479,14 +629,6 @@
   .file-link code {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 12px;
-  }
-
-  .commit-id {
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    background: var(--bg);
-    padding: 1px 5px;
-    border-radius: 3px;
-    font-size: 11px;
   }
 
   .detail-actions {

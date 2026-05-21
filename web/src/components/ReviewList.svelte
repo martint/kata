@@ -377,6 +377,24 @@
     min-width: 200px;
   }
 
+  /* "Browse" link tucked into the repo picker so it lives next to
+   * the selection it operates on. Styled as a subtle secondary
+   * link rather than a button so it doesn't compete with the
+   * primary "New review" / list actions below. */
+  .repo-picker .browse-link {
+    margin-left: 4px;
+    font-size: 13px;
+    color: var(--link);
+    text-decoration: none;
+    padding: 4px 8px;
+    border-radius: 4px;
+  }
+
+  .repo-picker .browse-link:hover {
+    background: var(--link-bg);
+    text-decoration: underline;
+  }
+
   /* The home screen is three distinct sections — reviews, new-review
    * form, and branches-without-a-review — separated by clear gaps and
    * (for the create form) a card so the form reads as its own block
@@ -701,6 +719,11 @@
         <option value={r.name}>{r.name}</option>
       {/each}
     </select>
+    <a
+      class="browse-link"
+      href="/r/{encodeURIComponent(repo)}/browse"
+      title="Browse the repository's log + files"
+    >Browse</a>
   </div>
 {/if}
 

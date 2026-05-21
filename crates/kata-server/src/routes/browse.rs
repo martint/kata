@@ -8,7 +8,7 @@
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use kata_core::{CommitId, LogPage, LogRow};
+use kata_core::{ChangeId, CommitId, LogPage, LogRow};
 use serde::Deserialize;
 
 use crate::error::AppResult;
@@ -67,6 +67,14 @@ pub async fn commit(
 ) -> AppResult<Json<Option<LogRow>>> {
     let repo = state.service.resolve_repo(&repo_name)?;
     Ok(Json(state.service.browse_commit(&repo, &commit_id).await?))
+}
+
+pub async fn change(
+    State(state): State<AppState>,
+    Path((repo_name, change_id)): Path<(String, ChangeId)>,
+) -> AppResult<Json<Option<LogRow>>> {
+    let repo = state.service.resolve_repo(&repo_name)?;
+    Ok(Json(state.service.browse_change(&repo, &change_id).await?))
 }
 
 #[derive(Debug, Deserialize)]

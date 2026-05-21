@@ -1453,6 +1453,25 @@ impl ReviewService {
         Ok(page.rows.into_iter().next())
     }
 
+    /// Resolve a `change_id` to the LogRow for its current commit.
+    /// Change-ids are stable across jj rewrites; this is what
+    /// links shaped as `?change=…` use to find "the latest
+    /// revision of this change".
+    ///
+    /// Divergent change-ids resolve to *one* commit (the first
+    /// the revset yields). The divergence banner elsewhere is
+    /// what surfaces the ambiguity — for the browser's purposes a
+    /// single picked commit is fine.
+    pub async fn browse_change(
+        &self,
+        repo: &RepoId,
+        change_id: &ChangeId,
+    ) -> ServiceResult<Option<kata_core::LogRow>> {
+        let revset = RevSet::new(format!("change_id({})", change_id.as_str()));
+        let page = self.browse_log(repo, &revset, 1).await?;
+        Ok(page.rows.into_iter().next())
+    }
+
     /// Read a file's bytes at a specific commit. `None` when the
     /// path doesn't exist there. The bytes are returned raw — the
     /// HTTP layer decides whether to treat them as UTF-8 text or

@@ -52,6 +52,16 @@
    * buttons, active tabs, hovered + buttons). Same in both palettes
    * because the underlying accent backgrounds keep enough contrast. */
   --on-accent: #ffffff;
+
+  /* Revision-id colour pair. Mirrors jj's CLI convention:
+   * change_id renders purple (stable across rewrites — like a
+   * "ticket number"), commit_id renders blue (specific to one
+   * revision). Used by `RevId.svelte` and any inline span
+   * that wants to colour an id consistently. */
+  --change-id-color: #8250df;
+  --change-id-bg: #f3e8ff;
+  --commit-id-color: #0969da;
+  --commit-id-bg: #ddf4ff;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -94,6 +104,10 @@
     --question-text: #a371f7;
     --selection-tint: rgba(120, 180, 255, 0.40);
     --selection-rule: #58a6ff;
+    --change-id-color: #a371f7;
+    --change-id-bg: rgba(163, 113, 247, 0.18);
+    --commit-id-color: #58a6ff;
+    --commit-id-bg: rgba(56, 139, 253, 0.15);
   }
 }
 
@@ -113,6 +127,15 @@ main.wide {
   max-width: none;
   margin: 0;
   padding: 16px 24px;
+}
+
+/* The repository browser is its own layout — two-pane shell
+ * that owns the full viewport below the sticky header. No
+ * `<main>` padding here; the panes butt up against the edges. */
+main.browse-main {
+  max-width: none;
+  margin: 0;
+  padding: 0;
 }
 
 header.app {
@@ -197,24 +220,6 @@ header.app h1 .home-link {
 }
 header.app h1 .home-link:hover {
   color: var(--link);
-}
-
-header.app .browse-link {
-  font-size: 13px;
-  color: var(--text-muted);
-  text-decoration: none;
-  padding: 4px 8px;
-  border-radius: 4px;
-}
-
-header.app .browse-link:hover {
-  background: var(--bg-elevated);
-  color: var(--text);
-}
-
-header.app .browse-link.current {
-  color: var(--link);
-  background: var(--link-bg);
 }
 
 header.app .author {
