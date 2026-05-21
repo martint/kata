@@ -4,6 +4,7 @@ pub mod compare;
 pub mod diff;
 pub mod documents;
 pub mod ids;
+pub mod log_graph;
 
 pub use compare::{
     ChangeStatus, PairDiffCounts, PatchsetCompareView, PatchsetEndpoints, PatchsetPair,
@@ -21,3 +22,4 @@ pub use ids::{
     CommitInfo, LineRange, LineRangeParseError, OpId, RepoId, RepoSummary, ResponseId, ReviewId,
     RevSet, SessionId, Side,
 };
+pub use log_graph::{LogCoord, LogLine, LogPage, LogRow};

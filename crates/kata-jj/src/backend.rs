@@ -118,4 +118,21 @@ pub trait JjBackend: Send + Sync {
     /// compute "since you were here" as a delta from review-side
     /// timestamps. The op-id itself isn't surfaced to the UI.
     async fn current_op_id(&self) -> Result<OpId>;
+
+    /// Walk `revset` in topological order and lay out a column-stem
+    /// graph of the result. `max_rows` caps the page; the returned
+    /// `has_more` is true iff the walk was cut short. Bookmarks and
+    /// the working-copy marker on each row are NOT populated here —
+    /// they're repo-level decoration the service layer adds on the
+    /// way out.
+    async fn browse_log(
+        &self,
+        revset: &RevSet,
+        max_rows: usize,
+    ) -> Result<kata_core::LogPage>;
+
+    /// The workspace's current `@` commit id. Used by the service
+    /// layer to flag the working-copy row in a [`browse_log`]
+    /// result.
+    async fn working_copy_commit_id(&self) -> Result<Option<CommitId>>;
 }

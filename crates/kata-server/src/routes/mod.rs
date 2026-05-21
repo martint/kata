@@ -9,6 +9,7 @@ use crate::state::AppState;
 
 mod annotations;
 mod author;
+mod browse;
 mod comments;
 mod events;
 mod responses;
@@ -66,6 +67,14 @@ fn api_routes() -> Router<AppState> {
         .route("/api/repos/{repo_name}/bookmarks", get(reviews::list_bookmarks))
         .route("/api/repos/{repo_name}/revset/preview", get(reviews::preview_revset))
         .route("/api/repos/{repo_name}/files", get(reviews::read_file))
+        // Repository browser. Reads only — no review created, no
+        // diff baseline; just topo-ordered commits + per-row
+        // decoration (bookmarks, working-copy marker).
+        .route("/api/repos/{repo_name}/browse/log", get(browse::log))
+        .route(
+            "/api/repos/{repo_name}/browse/commits/{commit_id}",
+            get(browse::commit),
+        )
         .route(
             "/api/repos/{repo_name}/reviews",
             get(reviews::list_reviews).post(reviews::create_review),

@@ -379,3 +379,61 @@ async fn list_commits_returns_oldest_first() {
         "expected list_commits to return commits oldest-first; got {descs:?}",
     );
 }
+
+/// `browse_log` produces a [`LogPage`] with one row per commit in
+/// the revset, laid out into column-stem coordinates. We exercise
+/// the simplest possible case — a linear chain — and assert the
+/// graph row count + coordinate basics. The column-stem algorithm
+/// itself has unit coverage in `log_graph::tests` against
+/// synthetic input; this test is the integration probe that the
+/// jj-lib stream feed wires into the algorithm correctly.
+#[tokio::test]
+async fn browse_log_lays_out_a_linear_chain() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "trunk\n");
+    fx.jj(&["describe", "-m", "trunk"]);
+    fx.jj(&["new", "-m", "A"]);
+    fx.jj(&["bookmark", "create", "trunk-mark", "-r", "@-"]);
+    fx.write("a.txt", "trunk\na\n");
+    fx.jj(&["new", "-m", "B"]);
+    fx.write("a.txt", "trunk\na\nb\n");
+    fx.jj(&["new", "-m", "C"]);
+    fx.write("a.txt", "trunk\na\nb\nc\n");
+
+    let cli = fx.cli();
+    let revset = kata_core::RevSet::new("trunk-mark..@");
+    let page = cli.browse_log(&revset, 16).await.unwrap();
+
+    assert_eq!(page.rows.len(), 3, "expected three rows for A, B, C");
+    assert!(!page.has_more);
+    // All three rows sit in column 0 in a linear chain.
+    for row in &page.rows {
+        assert_eq!(row.location.col, 0, "linear chain stays in column 0");
+    }
+    // jj's iter_graph emits commits children-before-parents, so
+    // the topo grouping yields C first, then B, then A.
+    let descs: Vec<&str> = page
+        .rows
+        .iter()
+        .map(|r| r.commit.description_first_line.as_str())
+        .collect();
+    assert_eq!(descs, ["C", "B", "A"], "topo order children-before-parents");
+}
+
+/// `working_copy_commit_id` returns the workspace's `@` commit.
+#[tokio::test]
+async fn working_copy_commit_id_returns_at() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "hello\n");
+    fx.jj(&["describe", "-m", "first"]);
+    fx.jj(&["new", "-m", "second"]);
+
+    let cli = fx.cli();
+    let wc = cli.working_copy_commit_id().await.unwrap();
+    assert!(wc.is_some(), "must report the working-copy commit");
+    // The @ commit's description is "second" (the current change).
+    let revset = kata_core::RevSet::new("@");
+    let at_commits = cli.list_commits(&revset).await.unwrap();
+    assert_eq!(at_commits.len(), 1);
+    assert_eq!(wc.unwrap(), at_commits[0].commit_id);
+}

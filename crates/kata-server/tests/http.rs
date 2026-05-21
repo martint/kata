@@ -1753,3 +1753,79 @@ async fn bearer_token_works_under_trust_forwarded_header_mode() {
     assert_eq!(body["author"], "bob@example.com");
 }
 
+// ---- Repository browser -------------------------------------------------
+
+#[tokio::test]
+async fn browse_log_returns_log_page_with_decorated_rows() {
+    // End-to-end smoke for the browse endpoint: ask for the
+    // default revset (the harness seeds a `feature` bookmark on
+    // a two-commit chain) and verify the JSON shape the SVG
+    // renderer reads against — rows present, each with a
+    // `location` and `lines`, working-copy decoration applied,
+    // bookmarks attached to the right row.
+    let h = Harness::new().await;
+
+    let (status, body) = h
+        .json("GET", "/api/repos/main/browse/log", None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let rows = body["rows"].as_array().expect("rows array");
+    assert!(!rows.is_empty(), "default revset must surface SOME commits");
+    for row in rows {
+        assert!(
+            row["commit"]["commit_id"].is_string(),
+            "each row carries the commit's full id"
+        );
+        let loc = &row["location"];
+        assert!(loc["col"].is_number(), "row.location.col present");
+        assert!(loc["row"].is_number(), "row.location.row present");
+        assert!(row["lines"].is_array(), "row.lines is an array");
+    }
+    // The `feature` bookmark must be visible on whatever row
+    // matches its commit.
+    let with_feature = rows
+        .iter()
+        .filter_map(|r| r["bookmarks"].as_array())
+        .any(|bs| bs.iter().any(|b| b.as_str() == Some("feature")));
+    assert!(with_feature, "feature bookmark must be decorated onto a row");
+}
+
+#[tokio::test]
+async fn browse_commit_returns_a_single_row_or_null() {
+    // Pick whatever commit_id the log endpoint surfaced and
+    // round-trip it through the per-commit endpoint. An unknown
+    // id comes back as null — not a 404 — so the SPA can
+    // distinguish "gone after a rewrite" from a transport error.
+    let h = Harness::new().await;
+    let (_, body) = h
+        .json("GET", "/api/repos/main/browse/log", None)
+        .await;
+    let some_id = body["rows"][0]["commit"]["commit_id"]
+        .as_str()
+        .expect("at least one row")
+        .to_owned();
+
+    let (status, body) = h
+        .json(
+            "GET",
+            &format!("/api/repos/main/browse/commits/{some_id}"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["commit"]["commit_id"].as_str(), Some(some_id.as_str()));
+
+    // A 40-char hex ID that doesn't exist in this repo. (The
+    // all-zero ID is actually jj's root commit and DOES resolve.)
+    let bogus = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+    let (status, body) = h
+        .json(
+            "GET",
+            &format!("/api/repos/main/browse/commits/{bogus}"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.is_null(), "unknown commit id resolves to null");
+}
+

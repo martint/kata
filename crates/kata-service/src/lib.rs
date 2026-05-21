@@ -1389,6 +1389,70 @@ impl ReviewService {
         Ok(())
     }
 
+    // ---- repository browser --------------------------------------------
+
+    /// Walk `revset` in topological order and return the column-
+    /// stem graph + per-row decoration (bookmarks pointing at each
+    /// commit, the `@` marker on the working-copy row). `max_rows`
+    /// caps the page. The default revset used by the UI is
+    /// `bookmarks() | @ | latest(@-.. | ..@, 50)` — named branches
+    /// + working copy + recent neighbourhood — but any expression
+    /// the operator types is honoured.
+    pub async fn browse_log(
+        &self,
+        repo: &RepoId,
+        revset: &RevSet,
+        max_rows: usize,
+    ) -> ServiceResult<kata_core::LogPage> {
+        let jj = self.jj_for(repo)?;
+        let (page_res, bookmarks_res, wc_res) = tokio::join!(
+            jj.browse_log(revset, max_rows),
+            jj.list_bookmarks(),
+            jj.working_copy_commit_id(),
+        );
+        let mut page = page_res?;
+        // Bookmark decoration: jj-lib gives us a list of bookmarks
+        // each with a commit_id. Bucket them per commit so the
+        // hot path is a single hash lookup per row.
+        let bookmarks = bookmarks_res.unwrap_or_default();
+        let mut by_commit: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        for bm in bookmarks {
+            by_commit
+                .entry(bm.commit_id.as_str().to_owned())
+                .or_default()
+                .push(bm.name);
+        }
+        // Working-copy marker: a single id we compare against each
+        // row. `working_copy_commit_id` returning `None` (no `@`
+        // for this workspace) leaves every `is_working_copy` false.
+        let wc = wc_res.ok().flatten();
+        for row in &mut page.rows {
+            if let Some(refs) = by_commit.remove(row.commit.commit_id.as_str()) {
+                row.bookmarks = refs;
+            }
+            if let Some(ref wc_id) = wc
+                && wc_id == &row.commit.commit_id
+            {
+                row.is_working_copy = true;
+            }
+        }
+        Ok(page)
+    }
+
+    /// Detail view for a single commit. Returns one row's worth of
+    /// the same shape `browse_log` emits, looked up by commit_id
+    /// (which the URL carries from a `browse_log` click).
+    pub async fn browse_commit(
+        &self,
+        repo: &RepoId,
+        commit_id: &CommitId,
+    ) -> ServiceResult<Option<kata_core::LogRow>> {
+        let revset = RevSet::new(format!("commit_id({})", commit_id.as_str()));
+        let page = self.browse_log(repo, &revset, 1).await?;
+        Ok(page.rows.into_iter().next())
+    }
+
     // ---- API tokens ----------------------------------------------------
 
     /// Persist a freshly-minted API token. The caller has already

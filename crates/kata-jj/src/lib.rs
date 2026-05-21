@@ -10,6 +10,7 @@ pub mod backend;
 pub mod diff;
 pub mod error;
 pub mod libjj;
+pub mod log_graph;
 
 pub use anchor::{AnchorResolution, FileCache, resolve_anchor};
 pub use backend::{Endpoint, JjBackend, ReviewRange};

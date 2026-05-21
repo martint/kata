@@ -842,6 +842,150 @@ impl JjBackend for JjLib {
         .map_err(|e| Error::Parse(format!("spawn_blocking: {e}")))?
     }
 
+    async fn browse_log(
+        &self,
+        revset: &kata_core::RevSet,
+        max_rows: usize,
+    ) -> Result<kata_core::LogPage> {
+        let loader = self.loader.clone();
+        let workspace_root = self.workspace_root.clone();
+        let workspace_name = self.workspace_name.clone();
+        let expr = revset.as_str().to_owned();
+        tokio::task::spawn_blocking(move || -> Result<kata_core::LogPage> {
+            use futures::StreamExt;
+            use jj_lib::graph::{GraphEdgeType, TopoGroupedGraph};
+            use jj_lib::matchers::EverythingMatcher;
+            use jj_lib::object_id::ObjectId;
+            let repo = futures::executor::block_on(loader.load_at_head())
+                .map_err(|e| Error::Parse(format!("libjj load_at_head: {e}")))?;
+            let ws = Some((workspace_name.as_ref().as_ref(), workspace_root.as_path()));
+            let resolved = evaluate_user_revset(&repo, &expr, ws)?;
+            let Some(rs) = resolved else {
+                return Ok(kata_core::LogPage {
+                    rows: Vec::new(),
+                    has_more: false,
+                });
+            };
+            let root_id = repo.store().root_commit_id().clone();
+            let store = repo.store();
+            // Stream commits in topological order, grouped by branch
+            // so related commits stay contiguous (matches `jj log`'s
+            // visual grouping; without this, branches interleave and
+            // the layout's stem-management produces uglier output).
+            // The basic `stream_graph()` is topo but ungrouped;
+            // `TopoGroupedGraph` is the layer that adds grouping.
+            let topo = TopoGroupedGraph::new(
+                rs.stream_graph(),
+                |id: &jj_lib::backend::CommitId| id,
+            );
+            let mut topo_stream = Box::pin(topo.stream());
+            let mut rows_consumed = 0usize;
+            let mut entries: Vec<crate::log_graph::LogInputEntry> = Vec::new();
+            // Cap the queue at max_rows so we don't drain a giant
+            // revset into memory only to throw most of it away.
+            // `layout` itself stops at `max_rows`; collecting a hair
+            // more lets it report `has_more` correctly.
+            while let Some(item) = futures::executor::block_on(topo_stream.next()) {
+                let (commit_id, edges) = item
+                    .map_err(|e| Error::Parse(format!("libjj iter_graph: {e}")))?;
+                let commit = store.get_commit(&commit_id).map_err(|e| {
+                    Error::Parse(format!("libjj get_commit: {e}"))
+                })?;
+                let description = commit.description().to_string();
+                let first_line = description
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .to_string();
+                let changed_files = if let Some(parent_id) = commit.parent_ids().first() {
+                    let parent = store.get_commit(parent_id).map_err(|e| {
+                        Error::Parse(format!("libjj get_commit (parent): {e}"))
+                    })?;
+                    let matcher = EverythingMatcher;
+                    let mut stream = parent.tree().diff_stream(&commit.tree(), &matcher);
+                    let mut files = Vec::new();
+                    while let Some(entry) =
+                        futures::executor::block_on(futures::StreamExt::next(&mut stream))
+                    {
+                        files.push(entry.path.as_internal_file_string().to_string());
+                    }
+                    files
+                } else {
+                    Vec::new()
+                };
+                let tree = commit.tree();
+                let conflict_paths = if tree.has_conflict() {
+                    let mut paths: Vec<String> = Vec::new();
+                    for (path, _value) in tree.conflicts() {
+                        paths.push(path.as_internal_file_string().to_string());
+                    }
+                    paths
+                } else {
+                    Vec::new()
+                };
+                let info = CommitInfo {
+                    change_id: KataChangeId::new(commit.change_id().reverse_hex()),
+                    commit_id: KataCommitId::new(commit_id.hex()),
+                    author_email: commit.author().email.clone(),
+                    author_timestamp: format_jj_timestamp(&commit.author().timestamp),
+                    description_first_line: first_line,
+                    description,
+                    changed_files,
+                    conflict_paths,
+                };
+                let parents = edges
+                    .into_iter()
+                    .filter_map(|edge| {
+                        // Skip the implicit missing-edge to the
+                        // root commit. jj's graph emits this for
+                        // commits at the root of a revset; the UI
+                        // would render a spurious `~` at the
+                        // bottom otherwise.
+                        let missing = edge.edge_type == GraphEdgeType::Missing;
+                        if missing && edge.target == root_id {
+                            return None;
+                        }
+                        Some(crate::log_graph::EdgeInfo {
+                            target: KataCommitId::new(edge.target.hex()),
+                            missing,
+                        })
+                    })
+                    .collect();
+                entries.push(crate::log_graph::LogInputEntry {
+                    commit: info,
+                    parents,
+                });
+                rows_consumed += 1;
+                // Collect one beyond max_rows so `has_more` is
+                // accurate without dragging the whole revset in.
+                if rows_consumed > max_rows {
+                    break;
+                }
+            }
+            Ok(crate::log_graph::layout(entries, max_rows))
+        })
+        .await
+        .map_err(|e| Error::Parse(format!("spawn_blocking: {e}")))?
+    }
+
+    async fn working_copy_commit_id(&self) -> Result<Option<KataCommitId>> {
+        let loader = self.loader.clone();
+        let workspace_name = self.workspace_name.clone();
+        tokio::task::spawn_blocking(move || -> Result<Option<KataCommitId>> {
+            use jj_lib::object_id::ObjectId;
+            let repo = futures::executor::block_on(loader.load_at_head())
+                .map_err(|e| Error::Parse(format!("libjj load_at_head: {e}")))?;
+            let name: &jj_lib::ref_name::WorkspaceName = workspace_name.as_ref().as_ref();
+            Ok(repo
+                .view()
+                .wc_commit_ids()
+                .get(name)
+                .map(|id| KataCommitId::new(id.hex())))
+        })
+        .await
+        .map_err(|e| Error::Parse(format!("spawn_blocking: {e}")))?
+    }
+
 }
 
 /// Look up a kata `CommitId` (hex string) inside an open repo.
