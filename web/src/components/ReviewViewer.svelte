@@ -3161,7 +3161,10 @@
       display: block;
       position: fixed;
       inset: var(--app-header-h) 0 0 0;
-      background: rgba(0, 0, 0, 0.35);
+      /* Darker than a typical scrim — the file-tree drawer is a
+       * light panel and at 0.35 the dimmed diff behind it stayed
+       * bright enough that the drawer didn't read as modal. */
+      background: rgba(0, 0, 0, 0.55);
       border: none;
       padding: 0;
       cursor: pointer;
