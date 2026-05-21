@@ -11,6 +11,7 @@
 -->
 <script lang="ts">
   import { ApiError, api } from '../lib/api';
+  import { copyText } from '../lib/clipboard';
   import { renderMarkdown } from '../lib/markdown';
   import type { CommitId, LogPage, LogRow } from '../lib/types';
   import FileViewer from './browse/FileViewer.svelte';
@@ -273,6 +274,18 @@
     return id.length > 12 ? id.slice(0, 12) : id;
   }
 
+  /** Brief "copied" feedback for the range-banner revset. Reset on a
+   *  timer so the affordance reads as momentary, not sticky. */
+  let rangeCopied = $state(false);
+  async function copyRangeRevset() {
+    if (!rangeBounds) return;
+    const expr = `${shortId(rangeBounds.oldest)}-..${shortId(rangeBounds.newest)}`;
+    if (await copyText(expr)) {
+      rangeCopied = true;
+      setTimeout(() => (rangeCopied = false), 1500);
+    }
+  }
+
   /** Drop the first line (subject) from the full description; that
    *  line already renders as the H3. Trim trailing whitespace so the
    *  pre block doesn't trail a blank row. */
@@ -314,6 +327,14 @@
           title="Back to the default revset"
         >Clear</button>
       {/if}
+      <a
+        class="revset-help"
+        href="https://jj-vcs.github.io/jj/latest/revsets/"
+        target="_blank"
+        rel="noreferrer"
+        title="jj revset syntax reference"
+        aria-label="jj revset syntax reference"
+      >?</a>
     </form>
 
     {#if loading && !page}
@@ -363,9 +384,17 @@
           <div class="range-banner" role="status">
             <strong>{rangeSize} revisions selected.</strong>
             Revset:
-            <code class="range-expr"
-              >{shortId(rangeBounds.oldest)}-..{shortId(rangeBounds.newest)}</code
+            <button
+              type="button"
+              class="range-expr"
+              title="Copy revset to clipboard"
+              onclick={copyRangeRevset}
             >
+              <code
+                >{shortId(rangeBounds.oldest)}-..{shortId(rangeBounds.newest)}</code
+              >
+              <span class="copy-hint">{rangeCopied ? '✓ copied' : 'copy'}</span>
+            </button>
           </div>
         {/if}
         <header class="detail-header">
@@ -547,6 +576,28 @@
     font-size: 12px;
   }
 
+  /* "?" link to the jj revset reference — the default revset
+   * expression in the input is dense syntax a newcomer won't
+   * recognise. A circular badge so it reads as help, not a value. */
+  .search-bar .revset-help {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border: 1px solid var(--border);
+    border-radius: 50%;
+    color: var(--text-muted);
+    text-decoration: none;
+    font-size: 12px;
+  }
+  .search-bar .revset-help:hover {
+    background: var(--link-bg);
+    color: var(--link);
+    border-color: var(--link);
+  }
+
   .search-bar button {
     padding: 4px 12px;
     font-size: 12px;
@@ -635,12 +686,32 @@
     font-size: 12px;
   }
 
+  /* The revset is a button so it can be copied to the clipboard —
+   * a reviewer typically wants to paste it into the new-review
+   * form or a `jj log`. Styled to still read as an inline code
+   * chip, with a quiet "copy" hint that flips to a checkmark. */
   .range-banner .range-expr {
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 11px;
+    display: inline-flex;
+    align-items: baseline;
+    gap: 6px;
     padding: 1px 5px;
     background: var(--bg);
+    border: 1px solid var(--border-muted);
     border-radius: 3px;
+    cursor: pointer;
+    font: inherit;
+    color: inherit;
+  }
+  .range-banner .range-expr:hover {
+    border-color: var(--border);
+  }
+  .range-banner .range-expr code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px;
+  }
+  .range-banner .copy-hint {
+    font-size: 10px;
+    color: var(--text-muted);
   }
 
   /* Markdown-rendered description body. The container styles
