@@ -242,6 +242,7 @@ newest-first. Each row carries:
 - review number + name,
 - the revset and bookmark,
 - the creator,
+- a relative last-activity time (from the most recent patchset),
 - a quick comment-status summary (e.g. "3 open, 2 resolved"),
 - an *archived* tag if archived.
 

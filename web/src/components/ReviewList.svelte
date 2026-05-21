@@ -194,6 +194,17 @@
     return `${yr}y ago`;
   }
 
+  /** Most-recent-activity timestamp for a review row. Uses the
+   *  latest patchset's `recorded_at` (a new round is the strongest
+   *  "this moved" signal the summary carries); falls back to the
+   *  review's creation time for a review with no patchsets. */
+  function lastActivity(s: ReviewSummary): string {
+    const ps = s.manifest.patchsets;
+    return ps.length > 0
+      ? ps[ps.length - 1].recorded_at
+      : s.manifest.created_at;
+  }
+
   function pickBranch(name: string) {
     selected = name;
     revsetEdited = false; // re-derive revset for the new pick
@@ -869,6 +880,7 @@
             <strong>{s.manifest.name}</strong>
             <span class="meta">{s.manifest.revset}</span>
             <span style="flex: 1"></span>
+            <span class="meta when" title={lastActivity(s)}>{relative(lastActivity(s))}</span>
             <span class="meta">{s.published_comment_count} comments</span>
           </button>
           {#if !selectMode}
@@ -902,6 +914,7 @@
               <span class="meta">{s.manifest.revset}</span>
               <span class="archived-tag">archived</span>
               <span style="flex: 1"></span>
+              <span class="meta when" title={lastActivity(s)}>{relative(lastActivity(s))}</span>
               <span class="meta">{s.published_comment_count} comments</span>
             </button>
             {#if !selectMode}
