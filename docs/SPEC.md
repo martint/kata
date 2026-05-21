@@ -910,8 +910,9 @@ command again into a fresh path for a clean state.
 ## 17a. Repository browser
 
 The browser is a read-only view of the underlying jj workspace —
-not a review. Lives at `/r/<repo>/browse`, with a "Browse" link
-in the app header that's visible whenever a repo is selected.
+not a review. Lives at `/r/<repo>/browse`, reached via a "Browse"
+link on the home screen next to the repo identity (always
+present, even for a single-repo install).
 
 The pane has two columns:
 

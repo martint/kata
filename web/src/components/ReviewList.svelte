@@ -377,6 +377,14 @@
     min-width: 200px;
   }
 
+  /* Plain-text repo label for the single-repo case, in lieu of the
+   * `<select>` dropdown. Matches the picker's visual weight so the
+   * Browse link reads as anchored to "this repo" not floating. */
+  .repo-picker .repo-label {
+    color: var(--text);
+    font-size: 14px;
+  }
+
   /* "Browse" link tucked into the repo picker so it lives next to
    * the selection it operates on. Styled as a subtle secondary
    * link rather than a button so it doesn't compete with the
@@ -707,18 +715,27 @@
 
 {#if repos.length === 0}
   <p class="muted">No repositories configured.</p>
-{:else if repos.length > 1}
+{:else}
+  <!-- Repo bar. The `<select>` only renders when there's a choice to
+       make (>1 repo configured); when there's just the one repo it
+       renders as plain text. The Browse link always renders so the
+       single-repo case (the default install) doesn't lose its only
+       path to the repository browser. -->
   <div class="repo-picker">
-    <label for="repo-select"><strong>Repository</strong></label>
-    <select
-      id="repo-select"
-      value={repo}
-      onchange={(e) => onchangerepo((e.currentTarget as HTMLSelectElement).value)}
-    >
-      {#each repos as r (r.name)}
-        <option value={r.name}>{r.name}</option>
-      {/each}
-    </select>
+    {#if repos.length > 1}
+      <label for="repo-select"><strong>Repository</strong></label>
+      <select
+        id="repo-select"
+        value={repo}
+        onchange={(e) => onchangerepo((e.currentTarget as HTMLSelectElement).value)}
+      >
+        {#each repos as r (r.name)}
+          <option value={r.name}>{r.name}</option>
+        {/each}
+      </select>
+    {:else}
+      <strong class="repo-label">{repo}</strong>
+    {/if}
     <a
       class="browse-link"
       href="/r/{encodeURIComponent(repo)}/browse"
