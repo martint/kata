@@ -11,7 +11,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use kata_core::{
     Annotation, AnnotationId, Author, Bookmark, ChangeId, ChangeStatus, ColumnRange, Comment,
-    CommentId, CommitId, CommitInfo, Diff, Flag, LineRange, OpSummary, PairDiffCounts, Patchset,
+    CommentId, CommitId, CommitInfo, Diff, Flag, LineRange, PairDiffCounts, Patchset,
     PatchsetCompareView, PatchsetEndpoints, PatchsetPair, RepoId, RepoSummary, ResolutionAction,
     Response, ResponseId, ReviewId, ReviewManifest, RevSet, SCHEMA_VERSION, Session, SessionId,
     Side,
@@ -662,16 +662,22 @@ impl ReviewService {
         };
         let live_range = live_res.ok();
 
-        // "Since you were here": diff the current jj op-id against the
-        // op-id we recorded the last time this viewer opened this review.
-        // First visit (`None` from storage) shows no list; we just record
-        // the current op-id so the *next* visit has a baseline. A failure
-        // to read the op-id is treated as "skip the feature for this
-        // open" — it's never load-bearing.
+        // "Since you were here": tracked at two granularities.
+        //
+        // * `unread`, computed below from review-side data — counts
+        //   review-relevant activity (new patchsets, new comments /
+        //   replies / annotations from other authors) since the last
+        //   visit. This is what the banner surfaces.
+        // * The visit baseline itself is recorded against the current
+        //   jj op-id, so the next open has a stable point to diff
+        //   against. Failure to record is best-effort (logged, not
+        //   fatal) — losing the baseline just means the next open
+        //   shows no banner.
+        //
         // Read the previous visit BEFORE recording the new one so we
-        // have a stable baseline for both the op-log "since you were
-        // here" diff (jj operations) and the unread-replies signal on
-        // comments (responses landed after `prev.visited_at`).
+        // have a stable baseline for both the banner and the unread-
+        // replies signal on individual comment threads (responses
+        // landed after `prev.visited_at`).
         let prev_visit = if viewer.as_str().is_empty() {
             None
         } else {
@@ -681,32 +687,20 @@ impl ReviewService {
                 .ok()
                 .flatten()
         };
-        let ops_since = match (&current_op_res, viewer.as_str().is_empty()) {
-            (Ok(current_op), false) => {
-                let list = match prev_visit.as_ref() {
-                    Some(prev) => {
-                        jj.ops_between(&prev.op_id, current_op).await.unwrap_or_default()
-                    }
-                    None => Vec::new(),
-                };
-                if let Err(e) = self
-                    .storage
-                    .record_review_visit(repo, review, viewer, current_op)
-                    .await
-                {
-                    // Recording the baseline is best-effort — losing it
-                    // just means the next open shows an empty
-                    // "since you were here" list instead of failing the
-                    // open. But silently swallowing the error is what
-                    // hid a broken FK in this code path for weeks, so
-                    // log it loudly.
-                    tracing::warn!(error = ?e, "failed to record review visit");
-                }
-                list
-            }
-            _ => Vec::new(),
-        };
-        let last_visit_at = prev_visit.map(|p| p.visited_at);
+        if let (Ok(current_op), false) = (&current_op_res, viewer.as_str().is_empty())
+            && let Err(e) = self
+                .storage
+                .record_review_visit(repo, review, viewer, current_op)
+                .await
+        {
+            // Recording the baseline is best-effort — losing it just
+            // means the next open shows an empty "since you were here"
+            // banner instead of failing the open. But silently
+            // swallowing the error is what hid a broken FK in this
+            // code path for weeks, so log it loudly.
+            tracing::warn!(error = ?e, "failed to record review visit");
+        }
+        let last_visit_at = prev_visit.as_ref().map(|p| p.visited_at);
 
         let latest = manifest.current();
         let is_stale = match &live_range {
@@ -793,6 +787,53 @@ impl ReviewService {
             annotations.push(self.build_annotation_view(repo, &cache, a, &selected).await?);
         }
 
+        // Compute the "since you were here" review-activity counts.
+        // None when there is no prior visit to compare against (a
+        // viewer's first ever open of this review); zero counts when
+        // a baseline exists but no qualifying activity has landed. The
+        // banner's #[serde(skip_serializing_if = "is_empty")] hides
+        // the zero case, so the frontend only renders when something
+        // actually changed.
+        let unread = prev_visit
+            .as_ref()
+            .map(|prev| {
+                let since = prev.visited_at;
+                let mine = viewer;
+                UnreadSummary {
+                    new_patchsets: manifest
+                        .patchsets
+                        .iter()
+                        .filter(|p| p.recorded_at > since)
+                        .count() as u32,
+                    new_comments: comments
+                        .iter()
+                        .filter(|v| {
+                            !v.draft
+                                && &v.comment.author != mine
+                                && v.comment.created_at > since
+                        })
+                        .count() as u32,
+                    new_replies: response_views
+                        .iter()
+                        .filter(|v| {
+                            !v.draft
+                                && &v.response.author != mine
+                                && v.response.created_at > since
+                        })
+                        .count() as u32,
+                    new_annotations: annotations
+                        .iter()
+                        .filter(|v| {
+                            &v.annotation.author != mine && v.annotation.created_at > since
+                        })
+                        .count() as u32,
+                }
+            })
+            // Drop the summary when nothing qualifying happened — the
+            // wire shape's `Option::is_none` skip then hides the
+            // banner field entirely, matching the no-baseline case.
+            .filter(|u| !u.is_empty());
+
         Ok(ReviewView {
             manifest,
             diff,
@@ -807,7 +848,7 @@ impl ReviewService {
             },
             is_stale,
             revset_error,
-            ops_since,
+            unread,
             last_visit_at,
         })
     }
@@ -1704,6 +1745,42 @@ pub struct CommitDiffView {
     pub files: Vec<kata_core::FileChange>,
 }
 
+/// Counts of review-relevant changes that landed between the
+/// viewer's previous open of a review and the current one. All
+/// counts exclude work the viewer authored themselves — the banner
+/// is meant to flag what *other* people did. Zero counts are
+/// allowed (the UI hides the banner in that case); a `None`
+/// [`ReviewView::unread`] means there is no baseline to compare
+/// against (first visit).
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct UnreadSummary {
+    /// Patchsets recorded after the previous visit.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub new_patchsets: u32,
+    /// Comments by other authors created after the previous visit.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub new_comments: u32,
+    /// Responses by other authors created after the previous visit.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub new_replies: u32,
+    /// Annotations by other authors created after the previous visit.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub new_annotations: u32,
+}
+
+fn is_zero_u32(n: &u32) -> bool {
+    *n == 0
+}
+
+impl UnreadSummary {
+    pub fn is_empty(&self) -> bool {
+        self.new_patchsets == 0
+            && self.new_comments == 0
+            && self.new_replies == 0
+            && self.new_annotations == 0
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct ReviewView {
     pub manifest: ReviewManifest,
@@ -1730,13 +1807,14 @@ pub struct ReviewView {
     /// revset resolves cleanly.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub revset_error: Option<RevsetError>,
-    /// Non-snapshot jj operations that landed in the repo between the
-    /// viewer's previous open of this review and the current one,
-    /// oldest first. Empty on the viewer's first ever open (no
-    /// baseline yet) and when nothing relevant happened. The UI shows
-    /// a compact "since you were here" summary when non-empty.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub ops_since: Vec<OpSummary>,
+    /// Counts of review-relevant activity that landed between the
+    /// viewer's previous open and this one — new patchsets, new
+    /// comments / replies, new annotations, all from authors other
+    /// than the viewer. `None` on the viewer's first-ever open (no
+    /// baseline to compare against). The UI surfaces a compact
+    /// "since you were here" banner when any count is non-zero.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unread: Option<UnreadSummary>,
     /// Wall-clock timestamp the viewer last opened this review at, or
     /// `None` on their first ever open. The UI compares it against each
     /// comment's responses to flag threads with new replies since the

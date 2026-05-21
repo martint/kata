@@ -2,7 +2,7 @@ use std::path::Path;
 
 use async_trait::async_trait;
 use kata_core::{
-    Bookmark, ChangeId, CommitId, CommitInfo, ConflictSide, FileChange, OpId, OpSummary, RevSet,
+    Bookmark, ChangeId, CommitId, CommitInfo, ConflictSide, FileChange, OpId, RevSet,
 };
 use serde::{Deserialize, Serialize};
 
@@ -108,19 +108,9 @@ pub trait JjBackend: Send + Sync {
         descendant: &CommitId,
     ) -> Result<bool>;
 
-    /// Current operation id, i.e. the head of `.jj/repo/op_heads`. Used
-    /// as a high-water mark when a reviewer opens a review, so we can
-    /// later show them what happened in the repo since their last visit.
+    /// Current operation id, i.e. the head of `.jj/repo/op_heads`.
+    /// Stored as the per-viewer visit baseline so the next open can
+    /// compute "since you were here" as a delta from review-side
+    /// timestamps. The op-id itself isn't surfaced to the UI.
     async fn current_op_id(&self) -> Result<OpId>;
-
-    /// Operations between two op-ids, oldest first. Non-snapshot entries
-    /// only; classified by [`kata_core::OpKind`]. `prev` is exclusive
-    /// (we already saw it), `current` is inclusive (we want it included
-    /// if it's a real op). Returns an empty list when `prev == current`
-    /// or when the range only contains snapshot entries.
-    async fn ops_between(
-        &self,
-        prev: &OpId,
-        current: &OpId,
-    ) -> Result<Vec<OpSummary>>;
 }

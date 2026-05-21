@@ -2685,26 +2685,22 @@
   </p>
 </section>
 
-{#if current.ops_since && current.ops_since.length > 0}
-  {@const counts = (() => {
-    const out: Record<string, number> = {};
-    for (const op of current.ops_since!) {
-      const k =
-        typeof op.kind === 'string' ? op.kind : (op.kind.other || 'other');
-      out[k] = (out[k] ?? 0) + 1;
-    }
-    return out;
-  })()}
-  {@const parts = Object.entries(counts)
-    .sort(([, a], [, b]) => b - a)
-    .map(([k, n]) => `${n} ${k}${n === 1 ? '' : 's'}`)}
-  <div class="ops-since-banner" role="status">
-    <strong>Since you were here:</strong>
-    {parts.join(', ')}
-    <span class="muted">
-      ({current.ops_since.length} operation{current.ops_since.length === 1 ? '' : 's'} total)
-    </span>
-  </div>
+{#if current.unread}
+  {@const u = current.unread}
+  {@const parts = [
+    { n: u.new_patchsets ?? 0, one: 'new patchset', many: 'new patchsets' },
+    { n: u.new_comments ?? 0, one: 'new comment', many: 'new comments' },
+    { n: u.new_replies ?? 0, one: 'new reply', many: 'new replies' },
+    { n: u.new_annotations ?? 0, one: 'new annotation', many: 'new annotations' },
+  ]
+    .filter((p) => p.n > 0)
+    .map((p) => `${p.n} ${p.n === 1 ? p.one : p.many}`)}
+  {#if parts.length > 0}
+    <div class="ops-since-banner" role="status">
+      <strong>Since you were here:</strong>
+      {parts.join(', ')}
+    </div>
+  {/if}
 {/if}
 
 {#if current.revset_error}
@@ -3029,12 +3025,6 @@
     border-radius: 4px;
     color: var(--text);
     font-size: 13px;
-  }
-
-  .ops-since-banner .muted {
-    color: var(--text-muted);
-    font-size: 12px;
-    margin-left: 4px;
   }
 
   /* Banner shown when the live revset can't be resolved. Sits above

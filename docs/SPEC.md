@@ -542,6 +542,28 @@ The viewer's "last visit" is the wall-clock timestamp of their
 previous open of the review. First-time visitors don't see unread
 markers (there's no past visit to compare against).
 
+### 9.2 "Since you were here" banner
+
+A compact banner above the review summary surfaces review-relevant
+activity that landed between the viewer's previous open and the
+current one. Counts cover:
+
+- *new patchsets* — recorded after the previous visit.
+- *new comments* — published by other authors after the previous
+  visit.
+- *new replies* — created by other authors after the previous
+  visit.
+- *new annotations* — created by other authors after the previous
+  visit.
+
+Self-authored activity is excluded (the banner is about what *other
+people* did). Zero counts are omitted from the comma-separated
+line. On a first-ever visit the banner is hidden — there is no
+baseline to diff against.
+
+Internal jj operations (fetch, push, rebase, …) are not surfaced;
+the banner is scoped to review-side activity only.
+
 ---
 
 ## 10. Multiple patchsets

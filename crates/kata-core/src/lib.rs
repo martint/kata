@@ -18,6 +18,6 @@ pub use documents::{
 };
 pub use ids::{
     AnnotationId, Author, Bookmark, ChangeId, ColumnRange, CommentId, CommitId, CommitInfo,
-    LineRange, LineRangeParseError, OpId, OpKind, OpSummary, RepoId, RepoSummary, ResponseId,
-    ReviewId, RevSet, SessionId, Side,
+    LineRange, LineRangeParseError, OpId, RepoId, RepoSummary, ResponseId, ReviewId, RevSet,
+    SessionId, Side,
 };

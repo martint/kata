@@ -354,35 +354,27 @@ export interface ReviewView {
    *  changes, the commit IDs the reader needs to disambiguate. UI
    *  renders a warning banner. */
   revset_error?: RevsetError;
-  /** Non-snapshot operations from `jj op log` between this viewer's
-   *  previous open of the review and the current one. Empty on first
-   *  open and when nothing changed. UI summarizes as e.g. "Since you
-   *  were here: 3 amends, 1 rebase". */
-  ops_since?: OpSummary[];
+  /** Review-relevant activity that landed between the viewer's
+   *  previous open and the current one. Absent on first ever open
+   *  (no baseline) and when no qualifying activity happened. The
+   *  banner renders as e.g. "Since you were here: 2 new comments,
+   *  1 new patchset". */
+  unread?: UnreadSummary;
   /** Wall-clock timestamp the viewer last opened this review at.
    *  Used to flag comments with responses newer than this as having
    *  unread replies. Absent on the viewer's first ever open. */
   last_visit_at?: string;
 }
 
-export type OpKind =
-  | 'amend'
-  | 'rebase'
-  | 'abandon'
-  | 'describe'
-  | 'new'
-  | 'split'
-  | 'squash'
-  | 'restore'
-  | 'git'
-  | { other: string };
-
-export interface OpSummary {
-  op_id: string;
-  kind: OpKind;
-  /** ISO 8601. */
-  time: string;
-  description: string;
+export interface UnreadSummary {
+  /** Patchsets recorded since the previous visit. */
+  new_patchsets?: number;
+  /** Comments by other authors published since the previous visit. */
+  new_comments?: number;
+  /** Replies by other authors created since the previous visit. */
+  new_replies?: number;
+  /** Annotations by other authors created since the previous visit. */
+  new_annotations?: number;
 }
 
 export interface RevsetError {

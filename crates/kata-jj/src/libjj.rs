@@ -25,7 +25,7 @@ use jj_lib::repo::{ReadonlyRepo, Repo as _, RepoLoader};
 use jj_lib::settings::UserSettings;
 use kata_core::{
     Bookmark, ChangeId as KataChangeId, CommitId as KataCommitId, CommitInfo, FileChange,
-    FileStatus, OpId, OpKind, OpSummary,
+    FileStatus, OpId,
 };
 
 use crate::backend::{Endpoint, JjBackend, ReviewRange};
@@ -839,86 +839,6 @@ impl JjBackend for JjLib {
         .map_err(|e| Error::Parse(format!("spawn_blocking: {e}")))?
     }
 
-    async fn ops_between(
-        &self,
-        prev: &OpId,
-        current: &OpId,
-    ) -> Result<Vec<OpSummary>> {
-        if prev == current {
-            return Ok(Vec::new());
-        }
-        let loader = self.loader.clone();
-        let prev = prev.clone();
-        let current = current.clone();
-        tokio::task::spawn_blocking(move || -> Result<Vec<OpSummary>> {
-            use futures::{StreamExt, TryStreamExt};
-            use jj_lib::op_store::OperationId;
-            let repo = futures::executor::block_on(loader.load_at_head())
-                .map_err(|e| Error::Parse(format!("libjj load_at_head: {e}")))?;
-            let op_store = repo.op_store();
-            let load_op = |id_hex: &str| -> Result<jj_lib::operation::Operation> {
-                let bytes = hex::decode(id_hex).map_err(|e| {
-                    Error::Parse(format!("op-id not hex: {e}"))
-                })?;
-                let id = OperationId::new(bytes);
-                let stored =
-                    futures::executor::block_on(op_store.read_operation(&id))
-                        .map_err(|e| Error::Parse(format!("libjj read_operation: {e}")))?;
-                Ok(jj_lib::operation::Operation::new(
-                    op_store.clone(),
-                    id,
-                    stored,
-                ))
-            };
-            let current_op = load_op(current.as_str())?;
-            let prev_op = load_op(prev.as_str()).ok();
-            // The two `walk_ancestors*` functions return distinct
-            // opaque `impl Stream` types, so we box them through a
-            // common trait object before storing in a binding.
-            let stream: std::pin::Pin<
-                Box<dyn futures::Stream<Item = jj_lib::op_store::OpStoreResult<jj_lib::operation::Operation>>>,
-            > = if let Some(prev_op) = &prev_op {
-                Box::pin(jj_lib::op_walk::walk_ancestors_range(
-                    std::slice::from_ref(&current_op),
-                    std::slice::from_ref(prev_op),
-                ))
-            } else {
-                Box::pin(jj_lib::op_walk::walk_ancestors(std::slice::from_ref(
-                    &current_op,
-                )))
-            };
-            // jj's CLI walk used a 200-op window; match it so we
-            // don't blow up on pathological history. `walk_ancestors_range`
-            // already excludes ancestors of `prev_op`, so this is
-            // just a safety cap on degenerate inputs.
-            const WINDOW: usize = 200;
-            let collected: Vec<jj_lib::operation::Operation> =
-                futures::executor::block_on(
-                    stream.take(WINDOW).try_collect::<Vec<_>>(),
-                )
-                .map_err(|e| Error::Parse(format!("libjj op walk: {e}")))?;
-            // walk_ancestors_range yields newest-first; the trait
-            // returns oldest-first to mirror JjCli.
-            let mut summaries: Vec<OpSummary> = Vec::with_capacity(collected.len());
-            for op in collected.into_iter().rev() {
-                let meta = op.metadata();
-                if meta.is_snapshot {
-                    continue;
-                }
-                let description = meta.description.clone();
-                let kind = classify_op(&description);
-                summaries.push(OpSummary {
-                    op_id: OpId::new(op.id().hex()),
-                    kind,
-                    time: format_jj_timestamp(&meta.time.end),
-                    description,
-                });
-            }
-            Ok(summaries)
-        })
-        .await
-        .map_err(|e| Error::Parse(format!("spawn_blocking: {e}")))?
-    }
 }
 
 /// Look up a kata `CommitId` (hex string) inside an open repo.
@@ -1111,27 +1031,6 @@ fn format_jj_timestamp(ts: &jj_lib::backend::Timestamp) -> String {
     match dt {
         Some(dt) => dt.format("%+").to_string(),
         None => String::new(),
-    }
-}
-
-/// Map a jj op description's first word to a [`OpKind`] bucket.
-/// jj's op descriptions all lead with the command verb (`amend
-/// commit X`, `rebase commit X onto Y`, `git fetch …`) so a single
-/// first-word match handles the common cases. Anything we don't
-/// recognise becomes [`OpKind::Other`] with the verb preserved.
-fn classify_op(description: &str) -> OpKind {
-    let first = description.split_whitespace().next().unwrap_or("");
-    match first {
-        "amend" => OpKind::Amend,
-        "rebase" => OpKind::Rebase,
-        "abandon" => OpKind::Abandon,
-        "describe" => OpKind::Describe,
-        "new" => OpKind::New,
-        "split" => OpKind::Split,
-        "squash" => OpKind::Squash,
-        "restore" => OpKind::Restore,
-        "git" => OpKind::Git,
-        _ => OpKind::Other(first.to_string()),
     }
 }
 

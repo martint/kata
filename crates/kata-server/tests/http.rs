@@ -778,11 +778,11 @@ async fn open_review_in_compare_mode_reports_compared_patchset_diff_metadata() {
 }
 
 #[tokio::test]
-async fn first_open_records_a_visit_baseline_with_no_history() {
+async fn first_open_records_a_visit_baseline_with_no_unread_summary() {
     // On the very first open for a given (review, viewer) pair the
-    // service records the current jj op as the baseline but cannot
-    // produce a "since you were here" list yet — so `last_visit_at`
-    // is null and `ops_since` is empty.
+    // service records the visit timestamp as the baseline but cannot
+    // produce an "unread since you were here" summary yet — so both
+    // `last_visit_at` and `unread` are absent from the JSON.
     let h = Harness::new().await;
     let (_, created) = h
         .json(
@@ -805,18 +805,18 @@ async fn first_open_records_a_visit_baseline_with_no_history() {
     assert_eq!(status, StatusCode::OK);
     // Both fields are `#[serde(skip_serializing_if = ...)]`, so on a
     // truly-empty first open they're missing from the JSON entirely.
-    // `Value::Null` is what indexing a missing key returns, which is
-    // what we expect here.
+    // `Value::Null` is what indexing a missing key returns.
     assert!(view["last_visit_at"].is_null());
-    assert!(view["ops_since"].is_null());
+    assert!(view["unread"].is_null());
 }
 
 #[tokio::test]
-async fn second_open_reports_last_visit_at_and_ops_landed_since() {
-    // Open the review once to set a baseline, perform a jj operation
-    // (a `describe` against the bookmark tip), then open again — the
-    // second open must surface a non-null `last_visit_at` and the
-    // intervening op in `ops_since`.
+async fn second_open_reports_unread_when_another_author_published_a_comment() {
+    // Alice visits the review (baseline). Bob then publishes a
+    // review-wide comment. When Alice visits again, the response
+    // must surface `unread.new_comments == 1` plus a populated
+    // `last_visit_at`. Replies + annotations counts are exercised
+    // by `unread_counts_replies_and_annotations_separately` below.
     let h = Harness::new().await;
     let (_, created) = h
         .json(
@@ -835,35 +835,84 @@ async fn second_open_reports_last_visit_at_and_ops_landed_since() {
         created["number"].as_u64().unwrap()
     );
 
-    // Baseline visit.
+    // Alice's baseline visit. Capture the tip change/commit id so the
+    // draft-comment anchor below resolves; the manifest's
+    // `patchsets[current_patchset]` is the source of truth.
     let (_, first) = h.json("GET", &review_url, None).await;
     assert!(first["last_visit_at"].is_null());
+    assert!(first["unread"].is_null());
+    let manifest = &first["manifest"];
+    let current_n = manifest["current_patchset"].as_u64().unwrap();
+    let current_ps = manifest["patchsets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["n"].as_u64() == Some(current_n))
+        .unwrap();
+    let anchor_change = current_ps["tip_change"].as_str().unwrap().to_owned();
+    let anchor_commit = current_ps["tip_commit"].as_str().unwrap().to_owned();
 
-    // Intervening jj op: rewrite the bookmark's description.
-    run_jj(
-        &h.workspace_path,
-        &["describe", "-r", "feature", "-m", "tweak (edited)"],
-    );
+    // Bob opens a session, drafts a review-wide comment, publishes.
+    let session_req = Request::builder()
+        .method("POST")
+        .uri(format!("{review_url}/sessions"))
+        .header("x-review-author", "bob@example.com")
+        .body(Body::empty())
+        .unwrap();
+    let session_resp = h.router.clone().oneshot(session_req).await.unwrap();
+    let session: Value = serde_json::from_slice(
+        &session_resp.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    let session_id = session["session_id"].as_str().unwrap();
+
+    let cmt_req = Request::builder()
+        .method("POST")
+        .uri(format!("{review_url}/sessions/{session_id}/comments"))
+        .header("x-review-author", "bob@example.com")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&json!({
+                "anchor_change_id": anchor_change,
+                "anchor_commit_id": anchor_commit,
+                "review_wide": true,
+                "body": "looks good",
+                "flag": "suggestion",
+            }))
+            .unwrap(),
+        ))
+        .unwrap();
+    let cmt_resp = h.router.clone().oneshot(cmt_req).await.unwrap();
+    assert!(cmt_resp.status().is_success(), "draft comment failed: {:?}", cmt_resp.status());
+
+    let pub_req = Request::builder()
+        .method("POST")
+        .uri(format!("{review_url}/sessions/{session_id}/publish"))
+        .header("x-review-author", "bob@example.com")
+        .body(Body::empty())
+        .unwrap();
+    let pub_resp = h.router.clone().oneshot(pub_req).await.unwrap();
+    assert!(pub_resp.status().is_success(), "publish failed: {:?}", pub_resp.status());
 
     let (_, second) = h.json("GET", &review_url, None).await;
     assert!(
         second["last_visit_at"].is_string(),
-        "expected last_visit_at to be set on second open, got {:?}",
+        "expected last_visit_at on second open, got {:?}",
         second["last_visit_at"],
     );
-    let ops = second["ops_since"].as_array().unwrap();
-    assert!(
-        !ops.is_empty(),
-        "expected ops_since to contain the intervening describe, got empty",
+    assert_eq!(
+        second["unread"]["new_comments"], 1,
+        "expected one unread comment from bob, got {:?}",
+        second["unread"],
     );
 }
 
 #[tokio::test]
-async fn ops_since_stays_empty_when_nothing_happened_between_visits() {
-    // Two back-to-back opens with no jj activity in between: the
-    // second open should see `last_visit_at` populated (so the UI
-    // knows there was a prior visit) but `ops_since` empty — there
-    // is genuinely nothing to surface.
+async fn unread_field_omitted_when_no_qualifying_activity_landed() {
+    // Two back-to-back opens with no third-party activity in between:
+    // `last_visit_at` is populated (so the UI knows there was a prior
+    // visit) but `unread` is absent — the zero-count summary is
+    // skipped at the serde layer so the banner stays hidden.
     let h = Harness::new().await;
     let (_, created) = h
         .json(
@@ -885,9 +934,86 @@ async fn ops_since_stays_empty_when_nothing_happened_between_visits() {
     let (_, _) = h.json("GET", &review_url, None).await;
     let (_, second) = h.json("GET", &review_url, None).await;
     assert!(second["last_visit_at"].is_string());
-    // `ops_since` is `#[serde(skip_serializing_if = "Vec::is_empty")]`,
-    // so an empty list is omitted entirely — index returns Null.
-    assert!(second["ops_since"].is_null());
+    assert!(
+        second["unread"].is_null(),
+        "expected unread to be omitted, got {:?}",
+        second["unread"],
+    );
+}
+
+#[tokio::test]
+async fn unread_excludes_self_authored_activity() {
+    // Alice's own comments must not appear in her own "since you
+    // were here" — the banner is meant to flag what other people
+    // did, not what she just published.
+    let h = Harness::new().await;
+    let (_, created) = h
+        .json(
+            "POST",
+            "/api/repos/main/reviews",
+            Some(json!({
+                "name": "feature",
+                "revset": "@-..feature",
+                "bookmark": "feature",
+                "created_by": "alice@example.com",
+            })),
+        )
+        .await;
+    let review_url = format!(
+        "/api/repos/main/reviews/{}",
+        created["number"].as_u64().unwrap()
+    );
+
+    // Baseline visit by Alice. Capture the tip-of-bookmark anchor
+    // for the comment endpoint.
+    let (_, first) = h.json("GET", &review_url, None).await;
+    let manifest = &first["manifest"];
+    let current_n = manifest["current_patchset"].as_u64().unwrap();
+    let current_ps = manifest["patchsets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["n"].as_u64() == Some(current_n))
+        .unwrap();
+    let anchor_change = current_ps["tip_change"].as_str().unwrap().to_owned();
+    let anchor_commit = current_ps["tip_commit"].as_str().unwrap().to_owned();
+
+    // Alice (the default author) publishes a review-wide comment.
+    let (_, session) = h
+        .json("POST", &format!("{review_url}/sessions"), None)
+        .await;
+    let session_id = session["session_id"].as_str().unwrap();
+    let (status, _) = h
+        .json(
+            "POST",
+            &format!("{review_url}/sessions/{session_id}/comments"),
+            Some(json!({
+                "anchor_change_id": anchor_change,
+                "anchor_commit_id": anchor_commit,
+                "review_wide": true,
+                "body": "note to self",
+                "flag": "suggestion",
+            })),
+        )
+        .await;
+    assert!(status.is_success(), "draft comment failed: {status:?}");
+    let (status, _) = h
+        .json(
+            "POST",
+            &format!("{review_url}/sessions/{session_id}/publish"),
+            None,
+        )
+        .await;
+    assert!(status.is_success(), "publish failed: {status:?}");
+
+    let (_, second) = h.json("GET", &review_url, None).await;
+    // Self-authored comments are filtered out, so unread stays
+    // entirely empty and the serde skip omits the field.
+    assert!(
+        second["unread"].is_null(),
+        "expected unread to be omitted for self-only activity, got {:?}",
+        second["unread"],
+    );
 }
 
 #[tokio::test]
