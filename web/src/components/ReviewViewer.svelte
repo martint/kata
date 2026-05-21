@@ -1768,6 +1768,12 @@
     return id.length > 12 ? id.slice(0, 12) : id;
   }
 
+  function formatDate(iso: string): string {
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return iso;
+    return d.toLocaleString();
+  }
+
   /** Human label for one entry of the patchset dropdown.
    *
    * Three flavours after the `PSn` prefix:
@@ -2683,19 +2689,29 @@
 {#if current.revset_error}
   {@const err = current.revset_error}
   {@const headline = err.message.split('\n')[0] ?? err.message}
-  {@const ids = err.divergent_commit_ids ?? []}
+  {@const candidates = err.divergent_commits ?? []}
   <div class="revset-error-banner" role="status">
     <p class="headline">
       <strong>Revset can't be resolved:</strong>
       <code>{headline}</code>
     </p>
-    {#if ids.length > 0}
+    {#if candidates.length > 0}
       <p class="resolution">
         Run <code>jj abandon</code> for the version you don't want:
-        {#each ids as id, i}
-          <code class="commit-id">{id.slice(0, 12)}</code>{#if i < ids.length - 1}{', '}{/if}
-        {/each}
       </p>
+      <ul class="divergent-list">
+        {#each candidates as c}
+          <li>
+            <code class="commit-id">{short(c.commit_id)}</code>
+            <span class="when" title={c.author_timestamp}>
+              {formatDate(c.author_timestamp)}
+            </span>
+            {#if c.description_first_line}
+              <span class="desc">— {c.description_first_line}</span>
+            {/if}
+          </li>
+        {/each}
+      </ul>
     {/if}
   </div>
 {/if}
@@ -3054,6 +3070,27 @@
 
   .revset-error-banner .commit-id {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+
+  .revset-error-banner .divergent-list {
+    margin: 4px 0 0;
+    padding-left: 18px;
+    font-size: 12px;
+  }
+
+  .revset-error-banner .divergent-list li {
+    margin: 2px 0;
+  }
+
+  .revset-error-banner .divergent-list .when {
+    margin-left: 6px;
+    color: var(--muted-fg, currentColor);
+    opacity: 0.85;
+  }
+
+  .revset-error-banner .divergent-list .desc {
+    margin-left: 6px;
+    opacity: 0.85;
   }
 
   .review-layout {

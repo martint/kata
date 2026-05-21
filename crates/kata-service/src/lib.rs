@@ -1724,18 +1724,34 @@ pub struct ReviewView {
 /// Structured information about a failure to resolve a review's
 /// revset. The UI uses this to render a warning banner that explains
 /// what went wrong and — for the divergent-change-ID case — lists
-/// the commit IDs the reader has to `jj abandon` to disambiguate.
+/// the candidate commits the reader has to `jj abandon` to
+/// disambiguate.
 #[derive(Clone, Debug, Serialize)]
 pub struct RevsetError {
     /// jj's stderr, with the leading `Error: ` framing stripped.
     /// First line is the headline; the rest is jj's hint output and
     /// renders as supplemental context.
     pub message: String,
-    /// When the failure is a divergent change ID, the commit IDs of
-    /// the conflicting visible commits. Empty for other revset
-    /// errors (or when we couldn't enumerate the siblings).
+    /// When the failure is a divergent change ID, one entry per
+    /// conflicting visible commit. Each carries enough metadata
+    /// (timestamp + description) for the reader to pick which copy
+    /// to abandon. Empty for other revset errors (or when we
+    /// couldn't enumerate the siblings).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub divergent_commit_ids: Vec<CommitId>,
+    pub divergent_commits: Vec<DivergentCommit>,
+}
+
+/// One candidate of a divergent change ID. Shown alongside the
+/// `jj abandon` guidance so the reader can tell the copies apart by
+/// when they were authored and what they describe.
+#[derive(Clone, Debug, Serialize)]
+pub struct DivergentCommit {
+    pub commit_id: CommitId,
+    /// ISO 8601, as reported by jj.
+    pub author_timestamp: String,
+    /// First line of the commit description, useful when timestamps
+    /// alone aren't enough to disambiguate.
+    pub description_first_line: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1875,19 +1891,27 @@ fn jj_error_message(err: &kata_jj::Error) -> String {
 /// exactly which commits to `jj abandon`.
 async fn build_revset_error(jj: &dyn JjBackend, err: &kata_jj::Error) -> RevsetError {
     let raw = jj_error_message(err);
-    let divergent_commit_ids = match extract_divergent_change_id(&raw) {
+    let divergent_commits = match extract_divergent_change_id(&raw) {
         Some(change_id) => {
             let revset = kata_core::RevSet::new(format!("change_id({change_id})"));
             jj.list_commits(&revset)
                 .await
-                .map(|cs| cs.into_iter().map(|c| c.commit_id).collect())
+                .map(|cs| {
+                    cs.into_iter()
+                        .map(|c| DivergentCommit {
+                            commit_id: c.commit_id,
+                            author_timestamp: c.author_timestamp,
+                            description_first_line: c.description_first_line,
+                        })
+                        .collect()
+                })
                 .unwrap_or_default()
         }
         None => Vec::new(),
     };
     RevsetError {
         message: clean_jj_message(&raw),
-        divergent_commit_ids,
+        divergent_commits,
     }
 }
 

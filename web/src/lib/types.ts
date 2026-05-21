@@ -388,10 +388,18 @@ export interface OpSummary {
 export interface RevsetError {
   /** jj's stderr with the `Error: ` framing stripped. */
   message: string;
-  /** Commit IDs of the conflicting visible commits when the failure
-   *  is a divergent change ID. The reader runs `jj abandon` for the
-   *  version they don't want. Absent / empty for other errors. */
-  divergent_commit_ids?: CommitId[];
+  /** Candidates for `jj abandon` when the failure is a divergent
+   *  change ID. Carries enough metadata (timestamp + description)
+   *  for the reader to tell the copies apart. Absent / empty for
+   *  other errors. */
+  divergent_commits?: DivergentCommit[];
+}
+
+export interface DivergentCommit {
+  commit_id: CommitId;
+  /** ISO 8601. */
+  author_timestamp: string;
+  description_first_line: string;
 }
 
 export interface CreateReviewParams {
