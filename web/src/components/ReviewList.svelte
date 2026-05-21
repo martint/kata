@@ -39,6 +39,19 @@
    *  see them and they still appear (dimmed) until flipped back. */
   let showArchived: boolean = $state(false);
 
+  /** When `true`, the list is in batch-selection mode: rows render a
+   *  checkbox, the header is replaced by a batch-action toolbar, and
+   *  row clicks toggle the selection instead of opening the review.
+   *  Exit via the Cancel button, the Escape key, or completing a
+   *  batch action. */
+  let selectMode: boolean = $state(false);
+  /** Selected review IDs in batch mode. Keyed by `review_id` (not
+   *  number) so the set survives reordering after a row is removed. */
+  let selectedIds: Set<string> = $state(new Set());
+  /** True while a batch action is in flight. Disables the toolbar
+   *  buttons to prevent double-fires. */
+  let bulkBusy: boolean = $state(false);
+
   /** Reviews split into "live" and "archived" buckets. The live list
    *  is what we render by default; the archived list only appears
    *  when [[showArchived]] is true. */
@@ -210,6 +223,90 @@
     return !!createdBy && createdBy === s.manifest.created_by;
   }
 
+  function enterSelectMode() {
+    selectMode = true;
+    selectedIds = new Set();
+  }
+
+  function exitSelectMode() {
+    selectMode = false;
+    selectedIds = new Set();
+  }
+
+  /** Toggle membership of one review in the batch selection. Always
+   *  replaces the set so reactivity fires; mutating in place would
+   *  be invisible to Svelte 5's deep tracking on `Set`. */
+  function toggleSelect(id: string) {
+    const next = new Set(selectedIds);
+    if (next.has(id)) {
+      next.delete(id);
+    } else {
+      next.add(id);
+    }
+    selectedIds = next;
+  }
+
+  /** Set of reviews that are both visible and the viewer is allowed
+   *  to manage — i.e. what the toolbar's actions can target. */
+  const manageableVisible = $derived(() => {
+    const live = liveSummaries.filter(canManage);
+    const archived = showArchived ? archivedSummaries.filter(canManage) : [];
+    return [...live, ...archived];
+  });
+
+  /** Visible-and-manageable reviews that the viewer has selected. */
+  const selectedSummaries = $derived(() =>
+    manageableVisible().filter((s) => selectedIds.has(s.manifest.review_id)),
+  );
+
+  async function bulkArchive() {
+    if (bulkBusy) return;
+    bulkBusy = true;
+    try {
+      const targets = selectedSummaries().filter((s) => !s.manifest.archived_at);
+      for (const s of targets) {
+        try {
+          const next = await api.archiveReview(repo, s.manifest.number);
+          s.manifest = next;
+        } catch (e) {
+          alert(`Couldn't archive #${s.manifest.number}: ${(e as Error).message}`);
+        }
+      }
+    } finally {
+      bulkBusy = false;
+      exitSelectMode();
+    }
+  }
+
+  async function bulkDelete() {
+    if (bulkBusy) return;
+    const targets = selectedSummaries();
+    if (targets.length === 0) return;
+    const ok = confirm(
+      `Permanently delete ${targets.length} review${targets.length === 1 ? '' : 's'}?\n\nThis removes all sessions, comments, responses, and annotations. Cannot be undone.`,
+    );
+    if (!ok) return;
+    bulkBusy = true;
+    try {
+      for (const s of targets) {
+        try {
+          await api.deleteReview(repo, s.manifest.number);
+        } catch (e) {
+          alert(`Couldn't delete #${s.manifest.number}: ${(e as Error).message}`);
+        }
+      }
+    } finally {
+      bulkBusy = false;
+      exitSelectMode();
+    }
+  }
+
+  function onKey(e: KeyboardEvent) {
+    if (selectMode && e.key === 'Escape') {
+      exitSelectMode();
+    }
+  }
+
   /** Build the menu items for a single row. Closing the menu is
    *  handled by ActionsMenu itself. */
   function rowMenuItems(s: ReviewSummary) {
@@ -292,13 +389,42 @@
   }
 
   .archived-toggle {
-    margin-left: auto;
     font-size: 13px;
     color: var(--text-muted);
     display: inline-flex;
     align-items: center;
     gap: 6px;
     cursor: pointer;
+  }
+
+  .select-toggle,
+  .select-action {
+    padding: 4px 10px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg);
+    color: inherit;
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+  }
+
+  .select-toggle:hover:not(:disabled),
+  .select-action:hover:not(:disabled) {
+    background: var(--bg-elevated);
+  }
+
+  .select-action:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .select-action.danger {
+    color: var(--error-text);
+  }
+
+  .select-status {
+    font-size: 14px;
   }
 
   /* Create-review form: stack so the summary textarea has real width,
@@ -563,14 +689,49 @@
   </div>
 {/if}
 
+<svelte:window onkeydown={onKey} />
+
 <section class="home-section">
   <div class="review-list-header">
-    <h2>Reviews</h2>
-    {#if archivedSummaries.length > 0}
-      <label class="archived-toggle">
-        <input type="checkbox" bind:checked={showArchived} />
-        Show archived ({archivedSummaries.length})
-      </label>
+    {#if selectMode}
+      <strong class="select-status">
+        {selectedIds.size} selected
+      </strong>
+      <span style="flex: 1"></span>
+      <button
+        type="button"
+        class="select-action"
+        onclick={bulkArchive}
+        disabled={bulkBusy || selectedIds.size === 0}
+      >Archive</button>
+      <button
+        type="button"
+        class="select-action danger"
+        onclick={bulkDelete}
+        disabled={bulkBusy || selectedIds.size === 0}
+      >Delete…</button>
+      <button
+        type="button"
+        class="select-action"
+        onclick={exitSelectMode}
+        disabled={bulkBusy}
+      >Cancel</button>
+    {:else}
+      <h2>Reviews</h2>
+      <span style="flex: 1"></span>
+      {#if archivedSummaries.length > 0}
+        <label class="archived-toggle">
+          <input type="checkbox" bind:checked={showArchived} />
+          Show archived ({archivedSummaries.length})
+        </label>
+      {/if}
+      {#if (summaries ?? []).some(canManage)}
+        <button
+          type="button"
+          class="select-toggle"
+          onclick={enterSelectMode}
+        >Select</button>
+      {/if}
     {/if}
   </div>
   {#if loading && summaries === null}
@@ -580,17 +741,32 @@
   {:else if summaries && liveSummaries.length === 0 && !showArchived}
     <p class="muted">No active reviews. Toggle "Show archived" to see archived ones.</p>
   {:else if summaries}
-    <ul class="review-list" data-tour="review-list">
+    <ul class="review-list" data-tour="review-list" class:select-mode={selectMode}>
       {#each liveSummaries as s (s.manifest.review_id)}
-        <li class="row-shell">
-          <button class="row" onclick={() => onopen(s.manifest.number)}>
+        {@const id = s.manifest.review_id}
+        {@const selectable = canManage(s)}
+        <li class="row-shell" class:disabled={selectMode && !selectable}>
+          {#if selectMode && selectable}
+            <label class="row-check">
+              <input
+                type="checkbox"
+                checked={selectedIds.has(id)}
+                onchange={() => toggleSelect(id)}
+                aria-label="Select review #{s.manifest.number}"
+              />
+            </label>
+          {/if}
+          <button
+            class="row"
+            onclick={() => (selectMode && selectable ? toggleSelect(id) : onopen(s.manifest.number))}
+          >
             <span class="review-number">#{s.manifest.number}</span>
             <strong>{s.manifest.name}</strong>
             <span class="meta">{s.manifest.revset}</span>
             <span style="flex: 1"></span>
             <span class="meta">{s.published_comment_count} comments</span>
           </button>
-          {#if canManage(s)}
+          {#if selectable && !selectMode}
             <span class="row-actions">
               <ActionsMenu items={rowMenuItems(s)} label="Review actions" />
             </span>
@@ -599,8 +775,23 @@
       {/each}
       {#if showArchived}
         {#each archivedSummaries as s (s.manifest.review_id)}
-          <li class="row-shell">
-            <button class="row archived" onclick={() => onopen(s.manifest.number)}>
+          {@const id = s.manifest.review_id}
+          {@const selectable = canManage(s)}
+          <li class="row-shell" class:disabled={selectMode && !selectable}>
+            {#if selectMode && selectable}
+              <label class="row-check">
+                <input
+                  type="checkbox"
+                  checked={selectedIds.has(id)}
+                  onchange={() => toggleSelect(id)}
+                  aria-label="Select review #{s.manifest.number}"
+                />
+              </label>
+            {/if}
+            <button
+              class="row archived"
+              onclick={() => (selectMode && selectable ? toggleSelect(id) : onopen(s.manifest.number))}
+            >
               <span class="review-number">#{s.manifest.number}</span>
               <strong>{s.manifest.name}</strong>
               <span class="meta">{s.manifest.revset}</span>
@@ -608,7 +799,7 @@
               <span style="flex: 1"></span>
               <span class="meta">{s.published_comment_count} comments</span>
             </button>
-            {#if canManage(s)}
+            {#if selectable && !selectMode}
               <span class="row-actions">
                 <ActionsMenu items={rowMenuItems(s)} label="Review actions" />
               </span>

@@ -769,6 +769,34 @@ input[type='text'] {
   transform: translateY(-50%);
 }
 
+/* Selection-mode checkbox. Sits to the left of the row title and is
+ * vertically centred. The label is the click target so the checkbox
+ * stays clickable even if the user taps the gap to its right. */
+.review-list .row-check {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+  /* Keep the box above the row button so the click reaches the
+   * checkbox rather than toggling the row's selection twice. */
+  z-index: 1;
+}
+
+.review-list.select-mode .row-shell > button.row {
+  padding-left: 44px;
+  padding-right: 16px;
+}
+
+/* Non-manageable rows in select mode are dimmed and inert — the
+ * viewer can't archive/delete reviews they didn't create. */
+.review-list.select-mode .row-shell.disabled > button.row {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .review-list button.row:hover {
   background: var(--bg-panel);
 }
