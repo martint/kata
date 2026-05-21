@@ -24,14 +24,59 @@
 
   let open = $state(false);
   let rootEl: HTMLDivElement | undefined = $state();
+  let triggerEl: HTMLButtonElement | undefined = $state();
+  let menuEl: HTMLDivElement | undefined = $state();
+  /** Viewport-coord anchor for the menu, captured on open. The menu
+   *  itself renders with `position: fixed` (anchored to these coords)
+   *  so it escapes the sticky header's `transform`-promoted stacking
+   *  context — otherwise mobile Safari paints the dropdown behind the
+   *  body content that scrolls beneath the header. */
+  let anchorTop = $state(0);
+  let anchorLeft = $state(0);
+
+  function recompute() {
+    if (!triggerEl) return;
+    const trig = triggerEl.getBoundingClientRect();
+    anchorTop = trig.bottom + 4;
+    // Default to right-aligning the menu with the trigger so the
+    // dropdown reads as anchored to the kebab; clamp inside an 8px
+    // margin if that would push the menu off either viewport edge
+    // (a kebab near the left edge of a narrow phone row would
+    // otherwise crop the menu's left half off-screen).
+    const menuWidth = menuEl?.offsetWidth ?? 160;
+    const preferredLeft = trig.right - menuWidth;
+    const minLeft = 8;
+    const maxLeft = window.innerWidth - menuWidth - 8;
+    anchorLeft = Math.max(minLeft, Math.min(maxLeft, preferredLeft));
+  }
 
   function close() {
     open = false;
   }
 
+  function toggle() {
+    if (open) {
+      close();
+      return;
+    }
+    recompute();
+    open = true;
+  }
+
+  /** Re-measure once the dropdown has mounted: the first `recompute`
+   *  inside `toggle` runs before `menuEl` exists so it has to estimate
+   *  the menu width. After mount we can read the real `offsetWidth`
+   *  and adjust if the estimate was off (matters when content is
+   *  wider than the 160px fallback). */
+  $effect(() => {
+    if (open && menuEl) recompute();
+  });
+
   function onWindowClick(e: MouseEvent) {
     if (!open) return;
-    if (rootEl && !rootEl.contains(e.target as Node)) close();
+    const t = e.target as Node;
+    if (rootEl && rootEl.contains(t)) return;
+    close();
   }
 
   function onKey(e: KeyboardEvent) {
@@ -41,13 +86,39 @@
     }
   }
 
+  function onScrollOrResize() {
+    if (open) recompute();
+  }
+
   function run(item: Item) {
     close();
     item.onclick();
   }
+
+  /** Move the dropdown into `document.body` on mount so it escapes
+   *  every `transform` / `filter` / `contain` containing block on
+   *  the way down from the document root. Without this, `position:
+   *  fixed` on the menu is resolved against the nearest transformed
+   *  ancestor — `.review-list .row-actions` uses
+   *  `transform: translateY(-50%)` for vertical centring, which
+   *  re-anchored the menu's coords to the row's local origin and
+   *  pushed the dropdown completely off-screen on desktop. */
+  function portal(node: HTMLElement) {
+    document.body.appendChild(node);
+    return {
+      destroy() {
+        node.parentNode?.removeChild(node);
+      },
+    };
+  }
 </script>
 
-<svelte:window onclick={onWindowClick} onkeydown={onKey} />
+<svelte:window
+  onclick={onWindowClick}
+  onkeydown={onKey}
+  onscroll={onScrollOrResize}
+  onresize={onScrollOrResize}
+/>
 
 <div class="actions-menu" bind:this={rootEl}>
   <button
@@ -56,15 +127,23 @@
     aria-haspopup="menu"
     aria-expanded={open}
     aria-label={label}
+    bind:this={triggerEl}
     onclick={(e) => {
       e.stopPropagation();
-      open = !open;
+      toggle();
     }}
   >
     {trigger}
   </button>
   {#if open}
-    <div class="menu" role="menu">
+    <div
+      class="menu"
+      role="menu"
+      bind:this={menuEl}
+      use:portal
+      style:top="{anchorTop}px"
+      style:left="{anchorLeft}px"
+    >
       {#each items as item (item.label)}
         <button
           type="button"
@@ -110,17 +189,23 @@
     border-color: var(--border);
   }
 
+  /* `position: fixed` (not `absolute`) so the dropdown escapes the
+   * sticky header's transform-promoted stacking context. The header
+   * uses `transform: translateZ(0)` + `isolation: isolate` to prevent
+   * diff text bleeding through on iOS Safari, but those promotions
+   * also clip any in-context absolutely-positioned descendant that
+   * extends past the header's box — the dropdown would render below
+   * the page content scrolling underneath. Anchoring to viewport
+   * coords (computed from the trigger's rect on open) sidesteps the
+   * issue entirely. */
   .menu {
-    position: absolute;
-    right: 0;
-    top: 100%;
+    position: fixed;
     min-width: 140px;
-    margin-top: 4px;
     background: var(--bg);
     border: 1px solid var(--border);
     border-radius: 6px;
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
-    z-index: 50;
+    z-index: 1000;
     display: flex;
     flex-direction: column;
     padding: 4px;

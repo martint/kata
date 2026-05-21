@@ -664,7 +664,8 @@
                       class="comment-count"
                       title="{count} comment{count === 1 ? '' : 's'} on files this commit touched"
                     >
-                      {count} comment{count === 1 ? '' : 's'}
+                      <Bubble size={11} />
+                      {count}
                     </span>
                   {/if}
                 </div>
@@ -853,6 +854,9 @@
     padding: 1px 7px;
     border-radius: 9999px;
     line-height: 1.4;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
   }
 
   /* Same pill shape as `.comment-count` but in the warn palette so

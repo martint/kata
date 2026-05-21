@@ -116,7 +116,8 @@ describe('CommitsPanel', () => {
       lines: { start: 1, end: 1 },
     });
     renderPanel({ commits: [c], comments: [cm] });
-    expect(screen.getByText('1 comment')).toBeTruthy();
+    const badge = screen.getByTitle('1 comment on files this commit touched');
+    expect(badge.textContent?.trim()).toBe('1');
   });
 
   test("doesn't count file-level comments on files this commit didn't touch", () => {
@@ -127,7 +128,7 @@ describe('CommitsPanel', () => {
       lines: { start: 1, end: 1 },
     });
     renderPanel({ commits: [c], comments: [cm] });
-    expect(screen.queryByText('1 comment')).toBeNull();
+    expect(screen.queryByText('1', { selector: '.comment-count' })).toBeNull();
   });
 
   test('renders a commit-level thread inline under the commit row', () => {

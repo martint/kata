@@ -227,6 +227,16 @@ header.app .author {
   font-size: 12px;
 }
 
+/* Wrapper around the draft-nav + Discard + Publish trio. On desktop
+ * it disappears (display: contents) so its children continue to flow
+ * as direct children of the header row, exactly as before. On phones
+ * the wrapper becomes a flex line of its own (`flex-basis: 100%`) so
+ * the action cluster always lands on a dedicated, visible strip — see
+ * the @media (max-width: 640px) override below. */
+header.app .action-cluster {
+  display: contents;
+}
+
 header.app .draft-nav {
   display: flex;
   align-items: center;
@@ -336,6 +346,18 @@ header.app .tree-button {
     height: auto;
     min-height: 44px;
   }
+  /* Same height-clamp removal, repeated with the more-specific
+   * selector that the desktop rule uses. Without this the mobile
+   * `.header-row` override is beaten on specificity grounds and the
+   * row stays pinned to 48px, which then visually clips any wrapped
+   * second line (notably the action-cluster strip — Publish/Discard
+   * paint at y≈70 but row 2 starts at y≈48 with an opaque background
+   * and covers them). */
+  header.app .header-row.primary,
+  header.app .header-row.review {
+    height: auto;
+    min-height: 44px;
+  }
 
   header.app h1 {
     font-size: 15px;
@@ -358,6 +380,29 @@ header.app .tree-button {
 
   header.app button {
     padding: 4px 8px;
+  }
+
+  /* Move the draft-nav + Discard + Publish cluster onto its own
+   * sticky-aligned strip below row 1. With `flex-basis: 100%` the
+   * cluster forces a wrap; `order: 2` ensures it lands at the end of
+   * the wrap chain even if row 1's intrinsic widths nearly fit. The
+   * top border + tinted background turn the strip into a clearly-
+   * delineated zone so the user reads "this is where the publish
+   * lives" instead of "the cluster fell off the right edge".
+   * Publish/Discard previously wrapped behind the search + author
+   * cluster on narrow viewports and disappeared from the visible
+   * fold. */
+  header.app .action-cluster {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 6px;
+    flex-basis: 100%;
+    order: 2;
+    padding: 6px 8px;
+    margin: 0 -8px;
+    border-top: 1px solid var(--border-muted);
+    background: var(--bg-panel);
   }
 
   /* ---- Row 2 pruning on phones --------------------------------- */
@@ -775,18 +820,6 @@ input[type='text'] {
  * row, vertically centred. */
 .review-list .row-shell {
   position: relative;
-}
-
-/* When a row's kebab menu is open, lift the row above its siblings
- * so the dropdown (which drops below the kebab and overlaps the
- * next row's strip) paints on top. The dropdown lives in a
- * `transform`-promoted stacking context inside `.row-actions`, so
- * its `z-index: 50` only beats things inside that context — without
- * this bump the next row's content paints over it (later tree
- * order, both at z=auto). Scoped to the open state via `:has` so
- * normal rows stay at z=auto. */
-.review-list .row-shell:has([aria-expanded='true']) {
-  z-index: 10;
 }
 
 .review-list .row-shell > button.row {

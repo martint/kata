@@ -559,40 +559,49 @@
     {#if toolbar}
       {#if toolbar.drafts}
         {@const drafts = toolbar.drafts}
-        <div class="draft-nav" role="group" aria-label="Draft navigation">
-          {#if drafts.nav}
-            {@const nav = drafts.nav}
-            <button
-              type="button"
-              onclick={nav.prev}
-              title="Previous draft"
-              aria-label="Previous draft"
-            ><Chevron dir="left" /></button>
-            <span class="draft-count" aria-live="polite">
-              {nav.position || '–'}/<strong>{drafts.count}</strong>
-              <span class="lbl">draft{drafts.count === 1 ? '' : 's'}</span>
-            </span>
-            <button
-              type="button"
-              onclick={nav.next}
-              title="Next draft"
-              aria-label="Next draft"
-            ><Chevron dir="right" /></button>
-          {:else}
-            <!-- Sessions with only draft replies (no draft comments)
-                 don't have an independent scroll target to nav
-                 between, but we still show the count + publish so
-                 users aren't stranded. -->
-            <span class="draft-count" aria-live="polite">
-              <strong>{drafts.count}</strong>
-              <span class="lbl">draft{drafts.count === 1 ? '' : 's'}</span>
-            </span>
-          {/if}
+        <!-- Action cluster: draft navigation + Discard + Publish.
+             `display: contents` on desktop so it stays a flat row of
+             flex children; on phones the wrapper becomes a flex line
+             of its own (`flex-basis: 100%`) so the publish/discard
+             pair always lands on a dedicated, visible strip below
+             row 1 instead of wrapping behind the search/auth cluster
+             where the user couldn't find them. -->
+        <div class="action-cluster">
+          <div class="draft-nav" role="group" aria-label="Draft navigation">
+            {#if drafts.nav}
+              {@const nav = drafts.nav}
+              <button
+                type="button"
+                onclick={nav.prev}
+                title="Previous draft"
+                aria-label="Previous draft"
+              ><Chevron dir="left" /></button>
+              <span class="draft-count" aria-live="polite">
+                {nav.position || '–'}/<strong>{drafts.count}</strong>
+                <span class="lbl">draft{drafts.count === 1 ? '' : 's'}</span>
+              </span>
+              <button
+                type="button"
+                onclick={nav.next}
+                title="Next draft"
+                aria-label="Next draft"
+              ><Chevron dir="right" /></button>
+            {:else}
+              <!-- Sessions with only draft replies (no draft comments)
+                   don't have an independent scroll target to nav
+                   between, but we still show the count + publish so
+                   users aren't stranded. -->
+              <span class="draft-count" aria-live="polite">
+                <strong>{drafts.count}</strong>
+                <span class="lbl">draft{drafts.count === 1 ? '' : 's'}</span>
+              </span>
+            {/if}
+          </div>
+          <button onclick={drafts.discard} disabled={drafts.saving}>Discard</button>
+          <button class="primary" onclick={drafts.publish} disabled={drafts.saving}>
+            {drafts.saving ? 'Publishing…' : 'Publish'}
+          </button>
         </div>
-        <button onclick={drafts.discard} disabled={drafts.saving}>Discard</button>
-        <button class="primary" onclick={drafts.publish} disabled={drafts.saving}>
-          {drafts.saving ? 'Publishing…' : 'Publish'}
-        </button>
       {/if}
     {/if}
     {#if whoami}

@@ -229,6 +229,12 @@ Row two appears only on a review and carries review-scoped state:
 Everything in row two is sticky; the user can scroll through the
 diff and still reach any of these controls without scrolling back.
 
+On narrow viewports (≤640px) the draft-navigation cluster +
+**Discard** / **Publish** drop onto a dedicated strip below row 1
+rather than wrapping among the search / author cluster. Without
+the dedicated strip Publish/Discard wrap behind the rest of row 1
+and the user can't find them.
+
 ### 3.2 The review list
 
 Shown at `/`. One row per review on the active workspace, sorted
@@ -438,6 +444,12 @@ A draft is editable until it's published. Clicking **Edit** on a
 draft swaps in a composer pre-filled with the draft's body; the
 original draft hides while the editor is open to avoid a confusing
 "two of the same thread" appearance.
+
+When a file-level composer opens, the viewport scrolls so the
+composer lands just below the sticky chrome. On a long file with a
+stack of existing threads above the diff, the file-level composer
+mounts below the visible fold; without the scroll the user would
+click "comment on this file" and see nothing change.
 
 ---
 

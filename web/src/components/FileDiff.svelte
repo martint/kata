@@ -232,6 +232,26 @@
   let hunksWrapperEl: HTMLDivElement | undefined = $state();
   let composerOverlayEl: HTMLDivElement | undefined = $state();
   let composerTargetEl: HTMLElement | null = null;
+  /** File-level composer container. Bound when the composer renders so
+   *  we can scroll it into view: on a narrow viewport with many
+   *  existing threads it can mount well below the fold, and the user
+   *  has no way to tell their click did anything. */
+  let fileComposerEl: HTMLDivElement | undefined = $state();
+  $effect(() => {
+    if (!fileComposerEl) return;
+    if (composing?.kind !== 'file' || composing.file !== file.path) return;
+    // Land below the sticky app + file headers, with a small gap, so
+    // the composer's first line isn't tucked under the sticky chrome.
+    // CommentComposer focuses its own textarea with `preventScroll`
+    // so we own the scroll positioning here.
+    const appHdr =
+      document.querySelector<HTMLElement>('header.app')?.offsetHeight ?? 0;
+    const fileHdr =
+      sectionEl?.querySelector<HTMLElement>('.file-header')?.offsetHeight ?? 0;
+    const rect = fileComposerEl.getBoundingClientRect();
+    const target = rect.top + window.scrollY - appHdr - fileHdr - 12;
+    window.scrollTo({ top: target, behavior: 'smooth' });
+  });
   /** Vertical position of the line composer overlay relative to
    *  `hunksWrapperEl`. Null while no line composer is open. */
   let composerTop: number | null = $state(null);
@@ -1963,7 +1983,10 @@
   {/if}
 
   {#if showComments && composing && composing.kind === 'file' && composing.file === file.path}
-    <div class="file-composer">
+    <div
+      class="file-composer"
+      bind:this={fileComposerEl}
+    >
       <CommentComposer
         target={composing}
         anchorIds={fileAnchorIds}
