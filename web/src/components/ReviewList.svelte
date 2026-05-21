@@ -41,6 +41,14 @@
   let creating: boolean = $state(false);
   let createError: string | null = $state(null);
 
+  /** Whether the "Start a new review" form is expanded. The form is
+   *  a tall block; on a workspace that already has reviews it pushes
+   *  the list down and dominates the screen, so it collapses behind
+   *  a "+ New review" button by default. It starts open when there's
+   *  nothing else to look at (no reviews yet) or when the browse
+   *  pane handed off a revset to pre-fill. */
+  let formExpanded: boolean = $state(prefillRevset !== undefined);
+
   /** Hide archived reviews from the main list by default — archived
    *  is the "out of the way" state. The user can flip the toggle to
    *  see them and they still appear (dimmed) until flipped back. */
@@ -189,7 +197,15 @@
   function pickBranch(name: string) {
     selected = name;
     revsetEdited = false; // re-derive revset for the new pick
+    // The "branches without a review" rows say "click to fill the
+    // form above" — make sure the form is actually showing.
+    formExpanded = true;
   }
+
+  /** The create-review form shows when explicitly expanded, or
+   *  unconditionally when there are no live reviews yet — a
+   *  first-time user should land straight on it, not on a button. */
+  const showCreateForm = $derived(liveSummaries.length === 0 || formExpanded);
 
   /** Per-row archive toggle. Mutates the manifest in place so the
    *  archived-pill flips without waiting for the SSE round-trip
@@ -413,6 +429,40 @@
 
   .home-section > h3 {
     margin: 0 0 10px;
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+  }
+
+  /* "Hide" control next to the "Start a new review" heading — folds
+   * the form back down once the user is done with it. */
+  .collapse-form {
+    font-size: 12px;
+    padding: 2px 8px;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-muted);
+    cursor: pointer;
+  }
+  .collapse-form:hover {
+    background: var(--bg-panel);
+  }
+
+  /* Collapsed state: a single button in place of the whole form, so
+   * the review list stays the dominant thing on the home screen. */
+  .new-review-btn {
+    font-size: 13px;
+    padding: 8px 14px;
+    background: transparent;
+    border: 1px dashed var(--border);
+    border-radius: 6px;
+    color: var(--link);
+    cursor: pointer;
+  }
+  .new-review-btn:hover {
+    background: var(--link-bg);
+    border-style: solid;
   }
 
   /* Header row of the Reviews section: title on the left, archived
@@ -867,7 +917,23 @@
 </section>
 
 <section class="home-section">
-  <h3>Start a new review</h3>
+  {#if !showCreateForm}
+    <button
+      type="button"
+      class="new-review-btn"
+      onclick={() => (formExpanded = true)}
+    >+ New review</button>
+  {:else}
+  <h3>
+    Start a new review
+    {#if liveSummaries.length > 0}
+      <button
+        type="button"
+        class="collapse-form"
+        onclick={() => (formExpanded = false)}
+      >Hide</button>
+    {/if}
+  </h3>
   {#if bookmarksError}
     <p class="error">Couldn't load bookmarks: {bookmarksError}</p>
     <button type="button" onclick={loadBookmarks}>Retry</button>
@@ -965,6 +1031,7 @@
   {/if}
   {#if createError}
     <p class="error">{createError}</p>
+  {/if}
   {/if}
 </section>
 

@@ -247,9 +247,15 @@ newest-first. Each row carries:
 
 Filters at the top distinguish *yours*, *yours-and-active*, and
 *all*. Typing in the search box narrows by name / bookmark /
-revset / creator simultaneously. A **+ Create review** button
-takes the user through a single-form flow: pick a bookmark, type
-a revset, optionally name the review and seed a summary.
+revset / creator simultaneously.
+
+The create-review flow is a single form: pick a bookmark, type a
+revset, optionally name the review and seed a summary. The form
+is collapsed behind a **+ New review** button once the workspace
+has at least one review (it would otherwise dominate the home
+screen); it opens unconditionally when there are no reviews yet,
+or when the browser's "Create review" handoff pre-fills a
+revset.
 
 ### 3.3 The review viewer
 
