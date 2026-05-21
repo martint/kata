@@ -2,6 +2,7 @@
   import { api } from '../lib/api';
   import { renderMarkdown } from '../lib/markdown';
   import type { Bookmark, RepoSummary, ReviewSummary } from '../lib/types';
+  import ActionsMenu from './ActionsMenu.svelte';
 
   interface Props {
     repos: RepoSummary[];
@@ -168,6 +169,62 @@
   function pickBranch(name: string) {
     selected = name;
     revsetEdited = false; // re-derive revset for the new pick
+  }
+
+  /** Per-row archive toggle. Mutates the manifest in place so the
+   *  archived-pill flips without waiting for the SSE round-trip
+   *  (the broadcast lands ~immediately, but we don't want a stutter
+   *  if the user clicks rapidly). The parent's SSE handler will
+   *  reload anyway and reconcile any drift. */
+  async function toggleArchive(s: ReviewSummary) {
+    const wasArchived = !!s.manifest.archived_at;
+    try {
+      const next = wasArchived
+        ? await api.unarchiveReview(repo, s.manifest.number)
+        : await api.archiveReview(repo, s.manifest.number);
+      s.manifest = next;
+    } catch (e) {
+      alert(`Couldn't ${wasArchived ? 'unarchive' : 'archive'} #${s.manifest.number}: ${(e as Error).message}`);
+    }
+  }
+
+  /** Per-row delete, guarded by a confirm dialog. Server response
+   *  is 204; the SSE `review-deleted` event tells every tab to
+   *  reload, so we don't need to splice the row ourselves. */
+  async function deleteReview(s: ReviewSummary) {
+    const ok = confirm(
+      `Permanently delete review #${s.manifest.number} "${s.manifest.name}"?\n\nThis removes all sessions, comments, responses, and annotations. Cannot be undone.`,
+    );
+    if (!ok) return;
+    try {
+      await api.deleteReview(repo, s.manifest.number);
+    } catch (e) {
+      alert(`Couldn't delete #${s.manifest.number}: ${(e as Error).message}`);
+    }
+  }
+
+  /** True when this viewer is allowed to mutate the review's state.
+   *  Mirrors the server-side check; hides actions the server would
+   *  reject anyway so non-creators don't see a useless menu. */
+  function canManage(s: ReviewSummary): boolean {
+    return !!createdBy && createdBy === s.manifest.created_by;
+  }
+
+  /** Build the menu items for a single row. Closing the menu is
+   *  handled by ActionsMenu itself. */
+  function rowMenuItems(s: ReviewSummary) {
+    const archived = !!s.manifest.archived_at;
+    return [
+      {
+        label: archived ? 'Unarchive' : 'Archive',
+        onclick: () => void toggleArchive(s),
+      },
+      {
+        label: 'Delete…',
+        onclick: () => void deleteReview(s),
+        danger: true,
+      },
+    ];
   }
 
   async function submit(event: Event) {
@@ -525,7 +582,7 @@
   {:else if summaries}
     <ul class="review-list" data-tour="review-list">
       {#each liveSummaries as s (s.manifest.review_id)}
-        <li>
+        <li class="row-shell">
           <button class="row" onclick={() => onopen(s.manifest.number)}>
             <span class="review-number">#{s.manifest.number}</span>
             <strong>{s.manifest.name}</strong>
@@ -533,11 +590,16 @@
             <span style="flex: 1"></span>
             <span class="meta">{s.published_comment_count} comments</span>
           </button>
+          {#if canManage(s)}
+            <span class="row-actions">
+              <ActionsMenu items={rowMenuItems(s)} label="Review actions" />
+            </span>
+          {/if}
         </li>
       {/each}
       {#if showArchived}
         {#each archivedSummaries as s (s.manifest.review_id)}
-          <li>
+          <li class="row-shell">
             <button class="row archived" onclick={() => onopen(s.manifest.number)}>
               <span class="review-number">#{s.manifest.number}</span>
               <strong>{s.manifest.name}</strong>
@@ -546,6 +608,11 @@
               <span style="flex: 1"></span>
               <span class="meta">{s.published_comment_count} comments</span>
             </button>
+            {#if canManage(s)}
+              <span class="row-actions">
+                <ActionsMenu items={rowMenuItems(s)} label="Review actions" />
+              </span>
+            {/if}
           </li>
         {/each}
       {/if}

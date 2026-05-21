@@ -152,6 +152,16 @@
       onOpen: () => void;
       onClose: () => void;
     };
+    /** Lifecycle actions surfaced as a kebab next to the title in
+     *  row-2 of App.svelte's header. `null` for viewers who can't
+     *  manage the review (non-creators) — the menu disappears
+     *  rather than showing disabled items. */
+    actions: {
+      archive: () => Promise<void>;
+      delete: () => Promise<void>;
+      archived: boolean;
+      busy: boolean;
+    } | null;
   }
 
   interface Props {
@@ -1128,6 +1138,14 @@
         name: current.manifest.name,
         archived: !!current.manifest.archived_at,
       },
+      actions: canArchive
+        ? {
+            archive: toggleArchive,
+            delete: deleteReviewNow,
+            archived: !!current.manifest.archived_at,
+            busy: lifecycleBusy,
+          }
+        : null,
       drafts: hasDrafts
         ? {
             count: draftComments + writtenReplies,
@@ -1806,15 +1824,15 @@
   const canArchive = $derived(
     !!viewer && viewer === current.manifest.created_by,
   );
-  /** True while the archive endpoint is in flight. Disables the button
-   *  during the round-trip so a double-click can't fire two requests. */
-  let archiving = $state(false);
+  /** True while an archive / delete request is in flight. Disables
+   *  the menu items so a double-click can't fire two requests. */
+  let lifecycleBusy = $state(false);
   async function toggleArchive() {
-    if (archiving) return;
+    if (lifecycleBusy) return;
     const isArchived = !!current.manifest.archived_at;
     const verb = isArchived ? 'Unarchive' : 'Archive';
     if (!confirm(`${verb} this review?`)) return;
-    archiving = true;
+    lifecycleBusy = true;
     error = null;
     try {
       const updated = isArchived
@@ -1824,7 +1842,26 @@
     } catch (e) {
       error = (e as Error).message;
     } finally {
-      archiving = false;
+      lifecycleBusy = false;
+    }
+  }
+  async function deleteReviewNow() {
+    if (lifecycleBusy) return;
+    const ok = confirm(
+      `Permanently delete review #${current.manifest.number} "${current.manifest.name}"?\n\nThis removes all sessions, comments, responses, and annotations. Cannot be undone.`,
+    );
+    if (!ok) return;
+    lifecycleBusy = true;
+    error = null;
+    try {
+      await api.deleteReview(repo, current.manifest.number);
+      // App.svelte's SSE handler navigates back to the list when it
+      // sees the `review-deleted` event, so nothing local to do here
+      // beyond clearing the busy flag.
+    } catch (e) {
+      error = (e as Error).message;
+    } finally {
+      lifecycleBusy = false;
     }
   }
 
@@ -2618,22 +2655,6 @@
     {#if current.manifest.bookmark}bookmark: <strong>{current.manifest.bookmark}</strong> ·{/if}
     revset: <code>{current.manifest.revset}</code>
     · by <strong>{current.manifest.created_by}</strong>
-    {#if canArchive}
-      <button
-        type="button"
-        class="archive-btn"
-        onclick={toggleArchive}
-        disabled={archiving}
-      >
-        {#if archiving}
-          Saving…
-        {:else if current.manifest.archived_at}
-          Unarchive
-        {:else}
-          Archive
-        {/if}
-      </button>
-    {/if}
   </p>
   <!-- Patchset / compared-to selectors live in the top header
        (App.svelte's row-2 header) so the dropdowns sit alongside the
@@ -2950,26 +2971,6 @@
 <style>
   .header {
     margin-bottom: 16px;
-  }
-
-  .archive-btn {
-    margin-left: 12px;
-    padding: 2px 10px;
-    font-size: 12px;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    color: var(--text-muted);
-    cursor: pointer;
-  }
-
-  .archive-btn:hover {
-    background: var(--bg-panel);
-  }
-
-  .archive-btn:disabled {
-    opacity: 0.6;
-    cursor: default;
   }
 
   /* Small inline button sitting at the end of the patchset row. Padded

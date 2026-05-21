@@ -145,6 +145,13 @@ header.app .header-row {
   align-items: center;
   gap: 16px;
   padding: 0 24px;
+  /* Explicit opaque background on each row in addition to the
+   * one on `header.app` itself. The sticky parent's background
+   * isn't always honoured when descendants compose into their
+   * own GPU layers (Chrome mobile is the common culprit) — the
+   * row appears transparent and diff text shows through. Naming
+   * the colour on the row directly is the most reliable mask. */
+  background: var(--bg-panel);
 }
 
 header.app .header-row.primary {
@@ -737,6 +744,29 @@ input[type='text'] {
   /* Without min-width:0 the children below would push the row past the
    * column width when a bookmark name (or revset) is long. */
   min-width: 0;
+}
+
+/* The li holds the row button plus an optional kebab actions menu.
+ * `position: relative` so the kebab's absolute-positioned dropdown
+ * anchors against the li; the kebab itself sits to the right of the
+ * row, vertically centred. */
+.review-list .row-shell {
+  position: relative;
+}
+
+.review-list .row-shell > button.row {
+  /* Leave room on the right so the row title doesn't sit under the
+   * kebab. The kebab is absolutely positioned (below) and the row is
+   * the full-width clickable target — without this padding the
+   * "comments" count would crowd under the kebab. */
+  padding-right: 48px;
+}
+
+.review-list .row-actions {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
 }
 
 .review-list button.row:hover {

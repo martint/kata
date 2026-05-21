@@ -9,6 +9,7 @@
     ReviewView,
     WhoAmI,
   } from './lib/types';
+  import ActionsMenu from './components/ActionsMenu.svelte';
   import Chevron from './components/Chevron.svelte';
   import ReviewList from './components/ReviewList.svelte';
   import ReviewSearch from './components/ReviewSearch.svelte';
@@ -532,6 +533,25 @@
           <span class="archived-badge" title="Archived — read-only until unarchived">
             Archived
           </span>
+        {/if}
+        {#if toolbar.actions}
+          {@const a = toolbar.actions}
+          <ActionsMenu
+            label="Review actions"
+            items={[
+              {
+                label: a.archived ? 'Unarchive' : 'Archive',
+                onclick: () => void a.archive(),
+                disabled: a.busy,
+              },
+              {
+                label: 'Delete…',
+                onclick: () => void a.delete(),
+                danger: true,
+                disabled: a.busy,
+              },
+            ]}
+          />
         {/if}
       </span>
       {#if toolbar.patchsets}
