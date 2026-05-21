@@ -68,6 +68,17 @@
   let whoami: WhoAmI | null = $state(null);
   let error: string | null = $state(null);
   let loading: boolean = $state(false);
+  /** Bumped every time the browser fires a `popstate` (back / forward).
+   *  Threaded into the ReviewViewer `{#key}` block so an external URL
+   *  rewind forces a fresh mount even when the URL parses to the same
+   *  initial fields the viewer was originally mounted against. Without
+   *  this, ReviewViewer's *internal* state can diverge from its mount-
+   *  time state (e.g. an "Added in PSx" chip switches the patchset
+   *  in-place), and a back to the no-`?ps=` URL would leave the viewer
+   *  stuck on the in-app-navigated patchset because the key didn't
+   *  change. The counter is the smallest fix that doesn't add a stale
+   *  remount on regular in-app navigation. */
+  let popstateGen = $state(0);
   /** Mirrored from ReviewViewer so its review-level controls (publish /
    *  discard, diff-collapse toggle, etc.) can live in the sticky top bar —
    *  always reachable while scrolling, instead of in a banner inside the
@@ -329,8 +340,16 @@
         void loadList(repo);
       }
     });
-    window.addEventListener('popstate', () => {
-      void syncFromUrl();
+    window.addEventListener('popstate', async () => {
+      // Await syncFromUrl so `screen` is rebuilt against the restored
+      // URL before we bump the gen counter. If the new URL produces a
+      // different `screen.initialPatchset` the {#key} block will have
+      // already re-keyed by the time the bump lands — the bump
+      // mainly matters when the URL parses to the SAME initial
+      // fields (and ReviewViewer's in-app navigation is what
+      // diverged in the meantime).
+      await syncFromUrl();
+      popstateGen++;
       updateDemoGate();
     });
     (async () => {
@@ -698,8 +717,19 @@
          leave the viewer showing the previous view's data.
          In-app navigation (dropdowns, pair clicks) doesn't change the
          initial* fields — those are only re-assigned by `showReview` —
-         so no spurious remounts during normal use. -->
-    {#key `${screen.repo}|${screen.view.manifest.number}|${screen.initialPatchset ?? ''}|${screen.initialCompareWith ?? ''}|${screen.initialCommit ?? ''}|${screen.initialScope ?? ''}|${screen.debug}`}
+         so no spurious remounts during normal use.
+
+         `popstateGen` is the extra piece: in-app navigation that
+         pushed a new URL (e.g. an "Added in PSx" chip click) leaves
+         the initial* fields *unchanged* even though ReviewViewer's
+         internal state moved. A subsequent browser back then
+         restored the original URL — which parses to the same
+         initial* values — and the formula above would not change,
+         leaving ReviewViewer stuck on the in-app-navigated state.
+         Bumping `popstateGen` on every popstate forces the key to
+         change, so external URL rewinds always produce a fresh
+         mount even when the parsed state happens to match. -->
+    {#key `${popstateGen}|${screen.repo}|${screen.view.manifest.number}|${screen.initialPatchset ?? ''}|${screen.initialCompareWith ?? ''}|${screen.initialCommit ?? ''}|${screen.initialScope ?? ''}|${screen.debug}`}
       <ReviewViewer
         repo={screen.repo}
         view={screen.view}
