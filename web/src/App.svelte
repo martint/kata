@@ -10,6 +10,7 @@
     WhoAmI,
   } from './lib/types';
   import ActionsMenu from './components/ActionsMenu.svelte';
+  import BrowseViewer from './components/BrowseViewer.svelte';
   import Chevron from './components/Chevron.svelte';
   import ReviewList from './components/ReviewList.svelte';
   import ReviewSearch from './components/ReviewSearch.svelte';
@@ -48,6 +49,16 @@
         initialCommit: string | undefined;
         initialScope: string | undefined;
         debug: boolean;
+      }
+    | {
+        kind: 'browse';
+        repo: string;
+        /** Pre-selected commit from the URL (`?commit=…`). The
+         *  viewer overrides on click. */
+        initialCommit: string | undefined;
+        /** Revset to start the log on (`?revset=…`). Undefined →
+         *  use the server's default. */
+        initialRevset: string | undefined;
       };
 
   // Synchronously decide the initial screen based on the URL, BEFORE the
@@ -58,6 +69,16 @@
     const m = location.pathname.match(/^\/r\/([^/]+)\/(\d+)$/);
     if (m) {
       return { kind: 'loading', label: `#${m[2]}` };
+    }
+    const browse = location.pathname.match(/^\/r\/([^/]+)\/browse$/);
+    if (browse) {
+      const params = new URLSearchParams(location.search);
+      return {
+        kind: 'browse',
+        repo: decodeURIComponent(browse[1]),
+        initialCommit: params.get('commit') ?? undefined,
+        initialRevset: params.get('revset') ?? undefined,
+      };
     }
     return { kind: 'list' };
   }
@@ -241,6 +262,43 @@
     await showReview(repo, number, undefined, undefined, undefined, undefined, false);
   }
 
+  /** Navigate to the repository browser for the current repo.
+   *  Optionally pre-selects a commit and/or revset. Pushes history
+   *  so the browser back button returns to where the user came
+   *  from. */
+  function openBrowse(opts: { commit?: string; revset?: string } = {}) {
+    const params = new URLSearchParams();
+    if (opts.commit) params.set('commit', opts.commit);
+    if (opts.revset) params.set('revset', opts.revset);
+    const qs = params.toString();
+    const path = `/r/${encodeURIComponent(repo)}/browse${qs ? `?${qs}` : ''}`;
+    if (location.pathname + location.search !== path) {
+      history.pushState({}, '', path);
+    }
+    screen = {
+      kind: 'browse',
+      repo,
+      initialCommit: opts.commit,
+      initialRevset: opts.revset,
+    };
+  }
+
+  /** Called by BrowseViewer when its internal selection or revset
+   *  changes. Updates the URL via replaceState so the browser
+   *  history isn't spammed with every commit click (only the
+   *  entry point to /browse gets a real history entry). */
+  function onBrowseStateChange(state: { commit?: string; revset?: string }) {
+    if (screen.kind !== 'browse') return;
+    const params = new URLSearchParams();
+    if (state.commit) params.set('commit', state.commit);
+    if (state.revset) params.set('revset', state.revset);
+    const qs = params.toString();
+    const path = `/r/${encodeURIComponent(screen.repo)}/browse${qs ? `?${qs}` : ''}`;
+    if (location.pathname + location.search !== path) {
+      history.replaceState({}, '', path);
+    }
+  }
+
   /** Called by ReviewViewer when any of its view-state fields change
    *  via in-app navigation (patchset selector, compare-with selector,
    *  pair-list click in compare mode, commits-panel scoping click in
@@ -283,6 +341,25 @@
 
   /** Reflect the current URL into `screen`. Runs on mount and on popstate. */
   async function syncFromUrl() {
+    // `/r/<repo>/browse` routes through the browse pane.
+    const browseMatch = location.pathname.match(/^\/r\/([^/]+)\/browse$/);
+    if (browseMatch) {
+      const browseRepo = decodeURIComponent(browseMatch[1]);
+      if (!repos.some((r) => r.name === browseRepo)) {
+        screen = { kind: 'list' };
+        if (repos[0]) await switchRepo(repos[0].name);
+        return;
+      }
+      repo = browseRepo;
+      const params = new URLSearchParams(location.search);
+      screen = {
+        kind: 'browse',
+        repo: browseRepo,
+        initialCommit: params.get('commit') ?? undefined,
+        initialRevset: params.get('revset') ?? undefined,
+      };
+      return;
+    }
     const parsed = parseUrl();
     if (parsed) {
       // Make sure the named repo is known; fall back to list if not.
@@ -425,6 +502,18 @@
         Kata
       </a>
     </h1>
+    {#if repo}
+      <a
+        href="/r/{encodeURIComponent(repo)}/browse"
+        class="browse-link"
+        class:current={screen.kind === 'browse'}
+        onclick={(e) => {
+          e.preventDefault();
+          openBrowse();
+        }}
+        title="Browse the repository (log + file viewer)"
+      >Browse</a>
+    {/if}
     {#if screen.kind === 'review'}
       <button
         onclick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
@@ -755,6 +844,15 @@
       onchangerepo={switchRepo}
       onopen={openReview}
     />
+  {:else if screen.kind === 'browse'}
+    {#key `${popstateGen}|${screen.repo}|${screen.initialCommit ?? ''}|${screen.initialRevset ?? ''}`}
+      <BrowseViewer
+        repo={screen.repo}
+        initialCommit={screen.initialCommit ?? null}
+        initialRevset={screen.initialRevset ?? null}
+        onstate={onBrowseStateChange}
+      />
+    {/key}
   {:else}
     <!-- Key on the URL-state fields so popstate (which rebuilds
          `screen` via `showReview` with new initial* values) actually

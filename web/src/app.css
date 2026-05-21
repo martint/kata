@@ -199,6 +199,24 @@ header.app h1 .home-link:hover {
   color: var(--link);
 }
 
+header.app .browse-link {
+  font-size: 13px;
+  color: var(--text-muted);
+  text-decoration: none;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+
+header.app .browse-link:hover {
+  background: var(--bg-elevated);
+  color: var(--text);
+}
+
+header.app .browse-link.current {
+  color: var(--link);
+  background: var(--link-bg);
+}
+
 header.app .author {
   color: var(--text-muted);
   font-size: 12px;

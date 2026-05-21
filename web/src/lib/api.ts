@@ -4,11 +4,14 @@ import type {
   Bookmark,
   Comment,
   CommitDiffView,
+  CommitId,
   CreateReviewParams,
   DiffCommitsResult,
   DraftCommentInput,
   DraftResponseInput,
   FileChange,
+  LogPage,
+  LogRow,
   PatchsetCompareView,
   RepoSummary,
   Response as ReviewResponse,
@@ -97,6 +100,27 @@ export const api = {
 
   listBookmarks: (repo: string) =>
     request<Bookmark[]>('GET', `${repoBase(repo)}/bookmarks`),
+
+  /** Walk a revset and return the column-stem log graph for the
+   *  repository browser. `revset` defaults server-side to
+   *  `bookmarks() | @ | latest(@-.. | ..@, 50)` when omitted. */
+  browseLog: (repo: string, revset?: string, maxRows?: number) => {
+    const params = new URLSearchParams();
+    if (revset !== undefined && revset.length > 0) params.set('revset', revset);
+    if (maxRows !== undefined) params.set('max_rows', String(maxRows));
+    const qs = params.toString();
+    return request<LogPage>(
+      'GET',
+      `${repoBase(repo)}/browse/log${qs ? `?${qs}` : ''}`,
+    );
+  },
+  /** Single-row detail by commit_id. `null` when the id doesn't
+   *  resolve in the repo (e.g. after a rewrite). */
+  browseCommit: (repo: string, commit_id: CommitId) =>
+    request<LogRow | null>(
+      'GET',
+      `${repoBase(repo)}/browse/commits/${enc(commit_id)}`,
+    ),
 
   /** Probe a revset against the jj backend to count its commits.
    *  Used by the new-review form to warn before submitting an empty

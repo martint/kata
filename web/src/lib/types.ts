@@ -48,6 +48,50 @@ export interface LineRange {
   end: number;
 }
 
+// ---- Repository browser (graph log) ------------------------------------
+
+export interface LogCoord {
+  col: number;
+  row: number;
+}
+
+/** Edge segment in the log graph. The renderer picks a path shape
+ *  based on the `kind` tag. */
+export type LogLine =
+  | { kind: 'to-node'; source: LogCoord; target: LogCoord }
+  | { kind: 'to-intersection'; source: LogCoord; target: LogCoord }
+  | {
+      kind: 'from-node';
+      source: LogCoord;
+      target: LogCoord;
+      /** Column the rescue curve runs straight down before bending
+       *  into target. Absent → no intermediate vertical. */
+      via?: number;
+    }
+  | { kind: 'to-missing'; source: LogCoord; target: LogCoord };
+
+export interface LogRow {
+  commit: CommitInfo;
+  /** Position of the node's circle. */
+  location: LogCoord;
+  /** Effective graph width at this row, in columns. The SVG renderer
+   *  uses this to indent the text portion so neighbouring rows in a
+   *  graph-connected run line up. */
+  padding: number;
+  lines: LogLine[];
+  /** Bookmarks pointing at this commit's commit_id. */
+  bookmarks?: string[];
+  /** True iff this commit is the workspace's `@`. */
+  is_working_copy?: boolean;
+}
+
+export interface LogPage {
+  rows: LogRow[];
+  /** True when the layout walk hit its row cap before exhausting
+   *  the revset. */
+  has_more: boolean;
+}
+
 export type Side = 'base' | 'tip';
 export type Flag = 'must-do' | 'suggestion' | 'question';
 export type SessionStatus = 'draft' | 'published' | 'discarded';
