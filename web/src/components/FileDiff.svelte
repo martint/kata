@@ -2262,6 +2262,9 @@
             bind:this={composerOverlayEl}
             style:top="{composerTop}px"
             style:left="calc(var({sideBySide && composing.side === 'tip' ? '--measured-gutter-2' : '--measured-gutter'}, {gutterIndentPx}px) + 12px)"
+            style:right={sideBySide && composing.side === 'base'
+              ? `calc(${(1 - sbsSplit) * 100}% + 6px)`
+              : null}
           >
             <CommentComposer
               target={composing}
@@ -2678,7 +2681,10 @@
      * cap doesn't apply — 12 of stripe right margin + 12 of stripe
      * inner padding. Same outer rect as the comment, so submitting
      * the draft doesn't visibly snap the white box smaller or
-     * shift it sideways. */
+     * shift it sideways. In side-by-side mode for base-side
+     * composers `right` is overridden inline to land at the SBS
+     * split point instead of the wrapper edge — without that, the
+     * left column's composer overflows across the tip column. */
     position: absolute;
     right: 24px;
     /* Cap matches `--message-max-w` (720px) minus thread-sticky's
