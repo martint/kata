@@ -414,6 +414,29 @@
       <span class="spinner" aria-label="loading"></span>
     {/if}
     <span style="flex: 1"></span>
+    {#if toolbar?.search}
+      {@const s = toolbar.search}
+      <!-- Search lives in row 1 (the always-on top bar) rather than
+           row 2: row 2 is already crowded with the review identity
+           plus chips + nav + view toggle, and slotting the search
+           strip in there pushes the chip cluster off the line on
+           anything narrower than a wide laptop. Row 1's right side
+           has fewer obligations (just the drafts cluster + signed-
+           in indicator), so the search bar's expanded width fits
+           without wrapping. -->
+      <ReviewSearch
+        open={s.open}
+        query={s.query}
+        total={s.total}
+        position={s.position}
+        loading={s.loading}
+        onqueryInput={s.onQueryInput}
+        onnext={s.onNext}
+        onprev={s.onPrev}
+        onopen={s.onOpen}
+        onclose={s.onClose}
+      />
+    {/if}
     {#if toolbar}
       {#if toolbar.drafts}
         {@const drafts = toolbar.drafts}
@@ -519,21 +542,6 @@
            the nav or hint disappears (no comments, filter not empty),
            only the elements between the title spacer and the chips
            shift — the chips themselves keep their position. -->
-      {#if toolbar.search}
-        {@const s = toolbar.search}
-        <ReviewSearch
-          open={s.open}
-          query={s.query}
-          total={s.total}
-          position={s.position}
-          loading={s.loading}
-          onqueryInput={s.onQueryInput}
-          onnext={s.onNext}
-          onprev={s.onPrev}
-          onopen={s.onOpen}
-          onclose={s.onClose}
-        />
-      {/if}
       {#if toolbar.comments}
         {@const c = toolbar.comments}
         <div
