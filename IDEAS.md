@@ -268,27 +268,25 @@ integrations don't have to round-trip through an interactive flow.
 
 ## TLS / HTTPS
 
-**Status:** native rustls termination via `--tls-cert` / `--tls-key`
-has shipped. ACME auto-issuance is still pending.
+**Status:** all three modes have shipped. Nothing pending in this
+section.
 
 Working paths today:
 
 - **Reverse proxy out front.** Nginx / Caddy / Traefik does TLS +
   OIDC; Kata stays HTTP-only on a loopback socket. Pair with
   `--auth-mode trust-forwarded-header`.
-- **Native rustls in `kata serve`.** `--tls-cert <path>` /
-  `--tls-key <path>` wrap the listener in rustls via
-  `axum-server`. Single-binary path that suits drop-on-a-VM
-  deployments.
-
-**Still pending:**
-
-- **ACME / Let's Encrypt auto-issuance.** `--tls-acme <domain>` +
-  `--tls-acme-cache <dir>` (`+ --tls-acme-staging` for
-  development). Uses TLS-ALPN-01 challenge so no extra port is
-  needed; cert lives on the same 443 listener as the app. Mutually
-  exclusive with `--tls-cert` / `--tls-key`. Keeps the single-
-  binary story coherent for users who can't lean on Caddy upstream.
+- **Native rustls with operator-supplied cert.** `--tls-cert <path>`
+  / `--tls-key <path>` wrap the listener in rustls via
+  `axum-server`. Refresh is the operator's job (cert-bot, external
+  ACME script, etc.) plus a server restart.
+- **Native ACME / Let's Encrypt auto-issuance.** `--tls-acme
+  <domain>` + `--tls-acme-cache <dir>` (`+ --tls-acme-staging` for
+  development, `+ --tls-acme-contact mailto:...` for renewal
+  warnings). Uses TLS-ALPN-01 challenge so no extra port is
+  needed; cert lives on the same listener as the app. The cert
+  hot-swaps in place at renewal time — no restart at the 60-day
+  mark.
 
 ## Repository browser
 

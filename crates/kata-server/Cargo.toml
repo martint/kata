@@ -22,6 +22,7 @@ kata-mcp = { workspace = true }
 kata-service = { workspace = true }
 kata-storage = { workspace = true }
 rust-embed = { workspace = true }
+rustls-acme = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

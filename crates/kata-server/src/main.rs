@@ -159,13 +159,44 @@ struct ServeArgs {
     /// Path to a PEM-encoded TLS certificate chain. Pair with
     /// `--tls-key`. When both are set, the listener terminates TLS
     /// in-process via rustls. Omit both to serve plain HTTP and
-    /// terminate TLS upstream.
-    #[arg(long, env = "KATA_TLS_CERT")]
+    /// terminate TLS upstream. Mutually exclusive with `--tls-acme`.
+    #[arg(long, env = "KATA_TLS_CERT", conflicts_with = "tls_acme")]
     tls_cert: Option<PathBuf>,
 
     /// Path to a PEM-encoded TLS private key matching `--tls-cert`.
-    #[arg(long, env = "KATA_TLS_KEY")]
+    #[arg(long, env = "KATA_TLS_KEY", conflicts_with = "tls_acme")]
     tls_key: Option<PathBuf>,
+
+    /// Domain to auto-issue a TLS certificate for via ACME (Let's
+    /// Encrypt by default). When set, the listener terminates TLS
+    /// using a certificate the server obtained itself; no
+    /// `--tls-cert`/`--tls-key` are needed. The TLS-ALPN-01
+    /// challenge runs on the same `--bind` listener, so no extra
+    /// port is required. The domain must already resolve to this
+    /// server by the time the first request lands.
+    #[arg(long, env = "KATA_TLS_ACME")]
+    tls_acme: Option<String>,
+
+    /// Directory holding the ACME account key and the issued cert
+    /// chain. Required whenever `--tls-acme` is set. Persisted
+    /// across restarts — losing it forces a re-issuance and counts
+    /// against Let's Encrypt's per-week rate limit, so back it up
+    /// like any other server credential.
+    #[arg(long, env = "KATA_TLS_ACME_CACHE", requires = "tls_acme")]
+    tls_acme_cache: Option<PathBuf>,
+
+    /// `mailto:` contact passed to the ACME CA when registering the
+    /// account. Let's Encrypt uses it for expiry warnings. Strongly
+    /// recommended but not required.
+    #[arg(long, env = "KATA_TLS_ACME_CONTACT", requires = "tls_acme")]
+    tls_acme_contact: Option<String>,
+
+    /// Use Let's Encrypt's *staging* endpoint instead of production.
+    /// Staging issues untrusted certificates (browsers will refuse
+    /// without an override) but has no weekly rate limit, so it's
+    /// the right pick while you're testing the deployment.
+    #[arg(long, env = "KATA_TLS_ACME_STAGING", requires = "tls_acme")]
+    tls_acme_staging: bool,
 
     /// Override the embedded Svelte bundle with one served from disk
     /// (e.g. `web/dist` during local UI work). Omit to use the bundle
@@ -273,6 +304,10 @@ async fn run_demo(
         auth_trust_upstream: Vec::new(),
         tls_cert: None,
         tls_key: None,
+        tls_acme: None,
+        tls_acme_cache: None,
+        tls_acme_contact: None,
+        tls_acme_staging: false,
     };
     serve(data.clone(), seeded.db_path, serve_args).await
 }
@@ -548,17 +583,36 @@ async fn serve(
         trusted_header: args.auth_trusted_header.clone(),
         upstream_allowlist: args.auth_trust_upstream.clone(),
     };
-    let tls = match (args.tls_cert.as_ref(), args.tls_key.as_ref()) {
-        (Some(cert), Some(key)) => Some(TlsConfig {
+    // Three TLS shapes, mutually exclusive: PEM file pair, ACME
+    // auto-issuance, or plain HTTP (terminate TLS upstream). clap's
+    // `conflicts_with` catches the pem-vs-acme combination at parse
+    // time; we re-check the pem-pair invariant by hand because a
+    // half-set pair (only --tls-cert or only --tls-key) is a
+    // configuration mistake clap can't express directly.
+    let tls = match (args.tls_cert.as_ref(), args.tls_key.as_ref(), args.tls_acme.as_ref()) {
+        (Some(cert), Some(key), None) => Some(TlsConfig::Pem {
             cert_path: cert.clone(),
             key_path: key.clone(),
         }),
-        (Some(_), None) | (None, Some(_)) => {
+        (Some(_), None, None) | (None, Some(_), None) => {
             return Err(
                 "--tls-cert and --tls-key must be set together (or both omitted)".into(),
             );
         }
-        (None, None) => None,
+        (None, None, Some(domain)) => {
+            let cache_dir = args
+                .tls_acme_cache
+                .clone()
+                .ok_or("--tls-acme-cache is required when --tls-acme is set")?;
+            Some(TlsConfig::Acme {
+                domain: domain.clone(),
+                cache_dir,
+                contact: args.tls_acme_contact.clone(),
+                staging: args.tls_acme_staging,
+            })
+        }
+        (None, None, None) => None,
+        _ => unreachable!("clap's conflicts_with rejects pem+acme combinations"),
     };
     if let Err(e) = validate_bind_safety(args.bind, &auth) {
         return Err(e.to_string().into());
@@ -708,27 +762,38 @@ async fn serve(
         );
     }
     let serve = async move {
-        if let Some(tls) = &cfg.tls {
-            let tls_cfg = axum_server::tls_rustls::RustlsConfig::from_pem_file(
-                &tls.cert_path,
-                &tls.key_path,
-            )
-            .await
-            .map_err(|e| {
-                format!(
-                    "loading TLS cert/key from {:?} / {:?}: {e}",
-                    tls.cert_path, tls.key_path,
+        match &cfg.tls {
+            Some(TlsConfig::Pem { cert_path, key_path }) => {
+                let tls_cfg = axum_server::tls_rustls::RustlsConfig::from_pem_file(
+                    cert_path, key_path,
                 )
-            })?;
-            axum_server::bind_rustls(cfg.bind_addr, tls_cfg)
+                .await
+                .map_err(|e| {
+                    format!(
+                        "loading TLS cert/key from {:?} / {:?}: {e}",
+                        cert_path, key_path,
+                    )
+                })?;
+                axum_server::bind_rustls(cfg.bind_addr, tls_cfg)
+                    .serve(make_service)
+                    .await
+                    .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })
+            }
+            Some(TlsConfig::Acme { domain, cache_dir, contact, staging }) => {
+                serve_acme(
+                    cfg.bind_addr,
+                    domain.clone(),
+                    cache_dir.clone(),
+                    contact.clone(),
+                    *staging,
+                    make_service,
+                )
+                .await
+            }
+            None => axum_server::bind(cfg.bind_addr)
                 .serve(make_service)
                 .await
-                .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })
-        } else {
-            axum_server::bind(cfg.bind_addr)
-                .serve(make_service)
-                .await
-                .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })
+                .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) }),
         }
     };
     tokio::select! {
@@ -738,6 +803,72 @@ async fn serve(
         }
     }
     Ok(())
+}
+
+/// Run the application behind an ACME-issued certificate. Spawns a
+/// background task that polls the ACME state stream so renewals
+/// happen ahead of expiry; the acceptor itself hot-swaps the cert
+/// as it gets renewed, so no restart is needed at the 60-day mark.
+async fn serve_acme(
+    bind_addr: SocketAddr,
+    domain: String,
+    cache_dir: PathBuf,
+    contact: Option<String>,
+    staging: bool,
+    make_service: axum::extract::connect_info::IntoMakeServiceWithConnectInfo<
+        axum::Router,
+        SocketAddr,
+    >,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use futures::StreamExt;
+    use rustls_acme::AcmeConfig;
+    use rustls_acme::caches::DirCache;
+
+    std::fs::create_dir_all(&cache_dir).map_err(|e| {
+        format!("creating ACME cache directory {:?}: {e}", cache_dir)
+    })?;
+
+    let mut state = {
+        let mut cfg = AcmeConfig::new([domain.clone()])
+            .cache(DirCache::new(cache_dir.clone()));
+        if let Some(c) = contact.clone() {
+            // rustls-acme expects each contact pre-formatted as a URI
+            // (e.g. `mailto:admin@example.com`). We accept the bare
+            // email too, and add the `mailto:` for the operator if
+            // it's missing.
+            let normalised = if c.contains(':') { c } else { format!("mailto:{c}") };
+            cfg = cfg.contact([normalised]);
+        }
+        cfg.directory_lets_encrypt(!staging).state()
+    };
+    let acceptor = state.axum_acceptor(state.default_rustls_config());
+
+    // Drain the ACME state stream so renewals proceed. Without
+    // someone polling `state.next()`, the background driver never
+    // ticks and the cert never refreshes. Logged at info-level for
+    // visibility; failures don't abort the server (we still have a
+    // valid cert until it expires).
+    let dir_label = if staging { "staging" } else { "production" };
+    tracing::info!(
+        domain = %domain,
+        cache = %cache_dir.display(),
+        directory = dir_label,
+        "ACME enabled",
+    );
+    tokio::spawn(async move {
+        while let Some(event) = state.next().await {
+            match event {
+                Ok(ok) => tracing::info!(?ok, "ACME state event"),
+                Err(e) => tracing::error!(error = %e, "ACME error"),
+            }
+        }
+    });
+
+    axum_server::bind(bind_addr)
+        .acceptor(acceptor)
+        .serve(make_service)
+        .await
+        .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })
 }
 
 /// State bundle the upstream-guard middleware needs. Kept separate

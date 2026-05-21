@@ -962,10 +962,16 @@ auth (e.g. a proxy doing its own token dance) still works.
 `kata token revoke <token_id>` retires one — the row stays for
 audit, but the auth path rejects it.
 
-Kata can also terminate TLS itself (`--tls-cert` + `--tls-key`,
-in-process via rustls), but the default operations recipe in the
-README is the proxy-trusted shape — it solves auth, TLS, and
-request observability in one place.
+Kata can also terminate TLS itself — either with an operator-
+supplied cert (`--tls-cert` + `--tls-key`, in-process via rustls)
+or by speaking ACME directly (`--tls-acme <domain>` +
+`--tls-acme-cache <dir>`, optionally `--tls-acme-staging` /
+`--tls-acme-contact`). The ACME path uses the TLS-ALPN-01
+challenge on the same listener as the app, so no extra port is
+needed; the cert hot-swaps in place at renewal time. The two
+modes are mutually exclusive. The default operations recipe in
+the README remains the proxy-trusted shape — it solves auth, TLS,
+and request observability in one place.
 
 These are properties of the deployment, not the product surface.
 A reviewer never sees them from the UI; the only effect is that

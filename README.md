@@ -101,16 +101,39 @@ network can claim any identity. To host Kata for a team:
    processes can connect).
 
 If you prefer a single-binary deployment without a fronting proxy,
-Kata can terminate TLS itself:
+Kata can terminate TLS itself. Two options — pick whichever fits
+your operations model.
+
+**Operator-supplied cert** (renewal lives outside Kata):
 
 ```sh
 kata serve --tls-cert /etc/kata/cert.pem --tls-key /etc/kata/key.pem ...
 ```
 
 Refreshing the cert is the operator's job (cert-bot, ACME script,
-etc.); Kata reloads it on restart. For most production deployments
-the fronting-proxy recipe is the right call — it solves auth, TLS,
-and request observability in one place.
+etc.) plus a server restart.
+
+**ACME / Let's Encrypt** (Kata talks ACME itself):
+
+```sh
+kata serve \
+  --tls-acme review.example.com \
+  --tls-acme-cache /var/lib/kata/acme \
+  --tls-acme-contact mailto:ops@example.com \
+  --bind 0.0.0.0:443 ...
+```
+
+The TLS-ALPN-01 challenge runs on the same `--bind` listener — no
+extra port. The cache directory holds the ACME account key and
+issued cert across restarts (back it up; losing it forces re-
+issuance against Let's Encrypt's weekly rate limit). Add
+`--tls-acme-staging` while you're testing — staging issues
+untrusted certs but has no rate limit. Mutually exclusive with
+`--tls-cert` / `--tls-key`.
+
+For most production deployments the fronting-proxy recipe is still
+the right call — it solves auth, TLS, and request observability in
+one place.
 
 ### API tokens for agents
 

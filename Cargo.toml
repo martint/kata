@@ -19,6 +19,7 @@ license = "Apache-2.0"
 async-trait = "0.1"
 axum = { version = "0.8", features = ["macros", "json", "tokio"] }
 axum-server = { version = "0.7", features = ["tls-rustls"] }
+rustls-acme = { version = "0.14", features = ["axum"] }
 ipnet = "2.10"
 futures = "0.3"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
