@@ -153,14 +153,19 @@
       onClose: () => void;
     };
     /** Lifecycle actions surfaced as a kebab next to the title in
-     *  row-2 of App.svelte's header. `null` for viewers who can't
-     *  manage the review (non-creators) — the menu disappears
-     *  rather than showing disabled items. */
+     *  row-2 of App.svelte's header. Always non-null once whoami
+     *  resolves — non-creators see the menu with items disabled and
+     *  a "(creator only)" suffix, so the gate is visible rather
+     *  than mysterious. `null` only when `viewer` is empty (whoami
+     *  hasn't landed yet); the kebab stays out of the way until we
+     *  know who's looking. */
     actions: {
       archive: () => Promise<void>;
       delete: () => Promise<void>;
       archived: boolean;
       busy: boolean;
+      /** True when this viewer is the review's creator. */
+      manageable: boolean;
     } | null;
   }
 
@@ -1138,12 +1143,13 @@
         name: current.manifest.name,
         archived: !!current.manifest.archived_at,
       },
-      actions: canArchive
+      actions: viewer
         ? {
             archive: toggleArchive,
             delete: deleteReviewNow,
             archived: !!current.manifest.archived_at,
             busy: lifecycleBusy,
+            manageable: canArchive,
           }
         : null,
       drafts: hasDrafts

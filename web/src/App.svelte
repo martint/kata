@@ -536,19 +536,20 @@
         {/if}
         {#if toolbar.actions}
           {@const a = toolbar.actions}
+          {@const suffix = a.manageable ? '' : ' (creator only)'}
           <ActionsMenu
             label="Review actions"
             items={[
               {
-                label: a.archived ? 'Unarchive' : 'Archive',
+                label: `${a.archived ? 'Unarchive' : 'Archive'}${suffix}`,
                 onclick: () => void a.archive(),
-                disabled: a.busy,
+                disabled: a.busy || !a.manageable,
               },
               {
-                label: 'Delete…',
+                label: `Delete…${suffix}`,
                 onclick: () => void a.delete(),
                 danger: true,
-                disabled: a.busy,
+                disabled: a.busy || !a.manageable,
               },
             ]}
           />

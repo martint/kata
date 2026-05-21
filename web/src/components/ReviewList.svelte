@@ -308,18 +308,26 @@
   }
 
   /** Build the menu items for a single row. Closing the menu is
-   *  handled by ActionsMenu itself. */
+   *  handled by ActionsMenu itself. Non-creators see the same menu
+   *  with both items disabled and a "(creator only)" suffix — the
+   *  server enforces creator-only on both endpoints, and hiding the
+   *  menu entirely leaves non-creators wondering why some rows have
+   *  it and others don't. */
   function rowMenuItems(s: ReviewSummary) {
     const archived = !!s.manifest.archived_at;
+    const manageable = canManage(s);
+    const suffix = manageable ? '' : ' (creator only)';
     return [
       {
-        label: archived ? 'Unarchive' : 'Archive',
+        label: `${archived ? 'Unarchive' : 'Archive'}${suffix}`,
         onclick: () => void toggleArchive(s),
+        disabled: !manageable,
       },
       {
-        label: 'Delete…',
+        label: `Delete…${suffix}`,
         onclick: () => void deleteReview(s),
         danger: true,
+        disabled: !manageable,
       },
     ];
   }
@@ -766,7 +774,7 @@
             <span style="flex: 1"></span>
             <span class="meta">{s.published_comment_count} comments</span>
           </button>
-          {#if selectable && !selectMode}
+          {#if !selectMode}
             <span class="row-actions">
               <ActionsMenu items={rowMenuItems(s)} label="Review actions" />
             </span>
@@ -799,7 +807,7 @@
               <span style="flex: 1"></span>
               <span class="meta">{s.published_comment_count} comments</span>
             </button>
-            {#if selectable && !selectMode}
+            {#if !selectMode}
               <span class="row-actions">
                 <ActionsMenu items={rowMenuItems(s)} label="Review actions" />
               </span>

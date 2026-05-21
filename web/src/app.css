@@ -754,6 +754,18 @@ input[type='text'] {
   position: relative;
 }
 
+/* When a row's kebab menu is open, lift the row above its siblings
+ * so the dropdown (which drops below the kebab and overlaps the
+ * next row's strip) paints on top. The dropdown lives in a
+ * `transform`-promoted stacking context inside `.row-actions`, so
+ * its `z-index: 50` only beats things inside that context — without
+ * this bump the next row's content paints over it (later tree
+ * order, both at z=auto). Scoped to the open state via `:has` so
+ * normal rows stay at z=auto. */
+.review-list .row-shell:has([aria-expanded='true']) {
+  z-index: 10;
+}
+
 .review-list .row-shell > button.row {
   /* Leave room on the right so the row title doesn't sit under the
    * kebab. The kebab is absolutely positioned (below) and the row is
