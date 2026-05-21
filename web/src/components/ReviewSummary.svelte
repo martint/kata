@@ -106,7 +106,7 @@
     </footer>
   </section>
 {:else if summary}
-  <section class="summary">
+  <section class="summary" class:has-edit={editable}>
     <div class="body markdown">{@html renderMarkdown(summary)}</div>
     {#if editable}
       <button
@@ -140,6 +140,15 @@
   .summary.editing,
   .summary.empty {
     background: var(--bg);
+  }
+
+  /* Reserve a gutter for the absolutely-positioned Edit button so
+   * the summary's first line doesn't run underneath it. Without
+   * this the button overlaps the text on a narrow viewport (the
+   * summary is usually only a line or two, so the body's right
+   * edge is exactly where the button sits). */
+  .summary.has-edit .body {
+    padding-right: 52px;
   }
 
   .summary header {

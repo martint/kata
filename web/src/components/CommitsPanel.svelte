@@ -645,7 +645,15 @@
               <button class="row-button" onclick={() => onselect(c.change_id)}>
                 <div class="row1">
                   <RevId id={c.change_id} kind="change" {repo} inline />
-                  <RevId id={c.commit_id} kind="commit" {repo} inline />
+                  <!-- The commit_id is hidden on phones: change_id +
+                       commit_id together crowd the description down to
+                       a few characters on a 375-wide row, and the
+                       change_id is the more useful of the two (stable
+                       across rewrites). It comes back at desktop
+                       widths where there's room. -->
+                  <span class="commit-id-cell">
+                    <RevId id={c.commit_id} kind="commit" {repo} inline />
+                  </span>
                   <span class="desc">{c.description_first_line || '(no description)'}</span>
                   {#if (c.conflict_paths?.length ?? 0) > 0}
                     <!-- Files at this commit that jj recorded as a
@@ -834,6 +842,17 @@
    * colours and pill shape. The old `.change` / `.commit` rules
    * are gone — the row no longer wraps the ids in styled `<code>`
    * elements. */
+
+  .commit-id-cell {
+    display: inline-flex;
+  }
+
+  /* Drop the commit_id pill on phones — see the markup comment. */
+  @media (max-width: 640px) {
+    .commit-id-cell {
+      display: none;
+    }
+  }
 
   .row1 .desc {
     font-weight: 500;

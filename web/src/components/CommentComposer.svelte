@@ -157,8 +157,11 @@
     align-items: center;
     /* Flags on the left, Write/Preview tabs pushed to the right —
      * one toolbar row instead of two, so the user's eye doesn't
-     * have to traverse the whole composer to find the controls. */
+     * have to traverse the whole composer to find the controls.
+     * `flex-wrap` lets the tabs drop below the flag row on a
+     * narrow viewport instead of squeezing the flags. */
     gap: 8px;
+    flex-wrap: wrap;
     font-size: 12px;
   }
 
@@ -191,7 +194,8 @@
 
   .flags {
     display: flex;
-    gap: 12px;
+    flex-wrap: wrap;
+    gap: 6px 12px;
     font-size: 12px;
   }
 
@@ -200,6 +204,10 @@
     align-items: center;
     gap: 4px;
     cursor: pointer;
+    /* Keep each label on one line — without this "Must do" breaks
+     * between the two words on a cramped phone composer. The whole
+     * label wraps as a unit instead, thanks to `.flags` wrapping. */
+    white-space: nowrap;
   }
 
   textarea {
