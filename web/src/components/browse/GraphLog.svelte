@@ -191,16 +191,21 @@
     background: var(--bg-elevated);
   }
 
-  /* Anchor row of a selection. Always also `.in-range`. */
+  /* Anchor row of a selection — the row whose detail shows in the
+   * right pane. Always also `.in-range`. The inset left bar in the
+   * accent colour is what separates it from the plain range tint:
+   * the background difference alone (full vs. 35% `--link-bg`) is
+   * too subtle to read at a glance across a range of rows. */
   .row.selected {
     background: var(--link-bg);
+    box-shadow: inset 3px 0 0 var(--link);
   }
 
-  /* Non-anchor rows in a shift-extended range. Lighter tint so
-   * the anchor remains visually distinct as the row whose
-   * details are shown in the right pane. */
+  /* Non-anchor rows in a shift-extended range. A faint tint — the
+   * eye should land on the anchor's accent bar, not compete with a
+   * second strong fill. */
   .row.in-range {
-    background: color-mix(in srgb, var(--link-bg) 60%, transparent);
+    background: color-mix(in srgb, var(--link-bg) 35%, transparent);
   }
 
   .subject {
