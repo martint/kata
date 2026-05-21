@@ -1829,3 +1829,54 @@ async fn browse_commit_returns_a_single_row_or_null() {
     assert!(body.is_null(), "unknown commit id resolves to null");
 }
 
+#[tokio::test]
+async fn browse_file_returns_utf8_content_at_a_commit() {
+    // The harness seeds a two-commit chain editing `a.txt`. Read
+    // the file at the tip commit and verify the JSON shape +
+    // contents.
+    let h = Harness::new().await;
+    let (_, body) = h
+        .json("GET", "/api/repos/main/browse/log", None)
+        .await;
+    let tip_id = body["rows"][0]["commit"]["commit_id"]
+        .as_str()
+        .expect("at least one row")
+        .to_owned();
+
+    let (status, body) = h
+        .json(
+            "GET",
+            &format!("/api/repos/main/browse/file?commit={tip_id}&path=a.txt"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["binary"], false);
+    assert!(body["size"].as_u64().unwrap() > 0);
+    assert!(
+        body["content"].as_str().unwrap().contains("TWO"),
+        "tip-of-feature a.txt should contain the upper-case TWO seeded by the harness",
+    );
+}
+
+#[tokio::test]
+async fn browse_file_404s_on_missing_path() {
+    let h = Harness::new().await;
+    let (_, body) = h
+        .json("GET", "/api/repos/main/browse/log", None)
+        .await;
+    let tip_id = body["rows"][0]["commit"]["commit_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let (status, _) = h
+        .json(
+            "GET",
+            &format!("/api/repos/main/browse/file?commit={tip_id}&path=does-not-exist.txt"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+

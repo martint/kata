@@ -56,6 +56,10 @@
         /** Pre-selected commit from the URL (`?commit=…`). The
          *  viewer overrides on click. */
         initialCommit: string | undefined;
+        /** Pre-opened file path (`?path=…`). When set, the
+         *  detail pane shows the file viewer instead of the
+         *  commit detail. */
+        initialPath: string | undefined;
         /** Revset to start the log on (`?revset=…`). Undefined →
          *  use the server's default. */
         initialRevset: string | undefined;
@@ -77,6 +81,7 @@
         kind: 'browse',
         repo: decodeURIComponent(browse[1]),
         initialCommit: params.get('commit') ?? undefined,
+        initialPath: params.get('path') ?? undefined,
         initialRevset: params.get('revset') ?? undefined,
       };
     }
@@ -266,36 +271,45 @@
    *  Optionally pre-selects a commit and/or revset. Pushes history
    *  so the browser back button returns to where the user came
    *  from. */
-  function openBrowse(opts: { commit?: string; revset?: string } = {}) {
+  function openBrowse(
+    opts: { commit?: string; path?: string; revset?: string } = {},
+  ) {
     const params = new URLSearchParams();
     if (opts.commit) params.set('commit', opts.commit);
+    if (opts.path) params.set('path', opts.path);
     if (opts.revset) params.set('revset', opts.revset);
     const qs = params.toString();
-    const path = `/r/${encodeURIComponent(repo)}/browse${qs ? `?${qs}` : ''}`;
-    if (location.pathname + location.search !== path) {
-      history.pushState({}, '', path);
+    const target = `/r/${encodeURIComponent(repo)}/browse${qs ? `?${qs}` : ''}`;
+    if (location.pathname + location.search !== target) {
+      history.pushState({}, '', target);
     }
     screen = {
       kind: 'browse',
       repo,
       initialCommit: opts.commit,
+      initialPath: opts.path,
       initialRevset: opts.revset,
     };
   }
 
-  /** Called by BrowseViewer when its internal selection or revset
-   *  changes. Updates the URL via replaceState so the browser
-   *  history isn't spammed with every commit click (only the
-   *  entry point to /browse gets a real history entry). */
-  function onBrowseStateChange(state: { commit?: string; revset?: string }) {
+  /** Called by BrowseViewer when its internal selection, file, or
+   *  revset changes. Updates the URL via replaceState so the
+   *  browser history isn't spammed with every commit click (only
+   *  the entry point to /browse gets a real history entry). */
+  function onBrowseStateChange(state: {
+    commit?: string;
+    path?: string;
+    revset?: string;
+  }) {
     if (screen.kind !== 'browse') return;
     const params = new URLSearchParams();
     if (state.commit) params.set('commit', state.commit);
+    if (state.path) params.set('path', state.path);
     if (state.revset) params.set('revset', state.revset);
     const qs = params.toString();
-    const path = `/r/${encodeURIComponent(screen.repo)}/browse${qs ? `?${qs}` : ''}`;
-    if (location.pathname + location.search !== path) {
-      history.replaceState({}, '', path);
+    const target = `/r/${encodeURIComponent(screen.repo)}/browse${qs ? `?${qs}` : ''}`;
+    if (location.pathname + location.search !== target) {
+      history.replaceState({}, '', target);
     }
   }
 
@@ -356,6 +370,7 @@
         kind: 'browse',
         repo: browseRepo,
         initialCommit: params.get('commit') ?? undefined,
+        initialPath: params.get('path') ?? undefined,
         initialRevset: params.get('revset') ?? undefined,
       };
       return;
@@ -845,10 +860,11 @@
       onopen={openReview}
     />
   {:else if screen.kind === 'browse'}
-    {#key `${popstateGen}|${screen.repo}|${screen.initialCommit ?? ''}|${screen.initialRevset ?? ''}`}
+    {#key `${popstateGen}|${screen.repo}|${screen.initialCommit ?? ''}|${screen.initialPath ?? ''}|${screen.initialRevset ?? ''}`}
       <BrowseViewer
         repo={screen.repo}
         initialCommit={screen.initialCommit ?? null}
+        initialPath={screen.initialPath ?? null}
         initialRevset={screen.initialRevset ?? null}
         onstate={onBrowseStateChange}
       />

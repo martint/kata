@@ -12,21 +12,29 @@
 <script lang="ts">
   import { ApiError, api } from '../lib/api';
   import type { CommitId, LogPage, LogRow } from '../lib/types';
+  import FileViewer from './browse/FileViewer.svelte';
   import GraphLog from './browse/GraphLog.svelte';
 
   let {
     repo,
     initialCommit = null,
+    initialPath = null,
     initialRevset = null,
     onstate,
   }: {
     repo: string;
     initialCommit?: CommitId | null;
+    initialPath?: string | null;
     initialRevset?: string | null;
     /** Called whenever the browser's URL-relevant state changes
-     *  (selected commit or revset). The shell threads this into
-     *  history.pushState so the back button works. */
-    onstate?: (state: { commit?: string; revset?: string }) => void;
+     *  (selected commit, file path, or revset). The shell threads
+     *  this into history.replaceState so the URL stays in sync
+     *  without spamming history with every click. */
+    onstate?: (state: {
+      commit?: string;
+      path?: string;
+      revset?: string;
+    }) => void;
   } = $props();
 
   let page: LogPage | null = $state(null);
@@ -42,6 +50,10 @@
 
   let selected: CommitId | null = $state(initialCommit);
   let detail: LogRow | null = $state(null);
+  /** When set, the detail pane shows the file viewer instead of
+   *  the commit detail. Clicking a file path in the commit detail
+   *  populates this; Close clears it. */
+  let viewingPath: string | null = $state(initialPath);
 
   async function loadPage() {
     loading = true;
@@ -90,12 +102,22 @@
   $effect(() => {
     onstate?.({
       commit: selected ?? undefined,
+      path: viewingPath ?? undefined,
       revset: revset.trim() || undefined,
     });
   });
 
   function selectCommit(id: CommitId) {
     selected = id;
+    viewingPath = null;
+  }
+
+  function openFile(path: string) {
+    viewingPath = path;
+  }
+
+  function closeFile() {
+    viewingPath = null;
   }
 
   function submitRevset(e: Event) {
@@ -168,61 +190,83 @@
     {/if}
   </div>
 
-  <aside class="detail-pane">
-    {#if detail}
+  <aside class="detail-pane" class:viewing-file={viewingPath != null}>
+    {#if viewingPath != null && selected}
+      <FileViewer
+        {repo}
+        commit={selected}
+        path={viewingPath}
+        onclose={closeFile}
+      />
+    {:else if detail}
       {@const c = detail.commit}
-      <header class="detail-header">
-        <h3>{c.description_first_line || '(no description)'}</h3>
-        <p class="detail-meta">
-          <code class="commit-id">{shortId(c.commit_id)}</code>
-          · <span class="muted">{c.author_email}</span>
-          · <span class="muted">{c.author_timestamp}</span>
-        </p>
-        {#if (detail.bookmarks ?? []).length > 0}
-          <p class="refs">
-            {#each detail.bookmarks ?? [] as bm (bm)}
-              <span class="ref">{bm}</span>
-            {/each}
-            {#if detail.is_working_copy}<span class="ref wc">@</span>{/if}
+      <div class="detail-body">
+        <header class="detail-header">
+          <h3>{c.description_first_line || '(no description)'}</h3>
+          <p class="detail-meta">
+            <code class="commit-id">{shortId(c.commit_id)}</code>
+            · <span class="muted">{c.author_email}</span>
+            · <span class="muted">{c.author_timestamp}</span>
           </p>
-        {:else if detail.is_working_copy}
-          <p class="refs"><span class="ref wc">@</span></p>
+          {#if (detail.bookmarks ?? []).length > 0}
+            <p class="refs">
+              {#each detail.bookmarks ?? [] as bm (bm)}
+                <span class="ref">{bm}</span>
+              {/each}
+              {#if detail.is_working_copy}<span class="ref wc">@</span>{/if}
+            </p>
+          {:else if detail.is_working_copy}
+            <p class="refs"><span class="ref wc">@</span></p>
+          {/if}
+        </header>
+
+        {#if c.description.includes('\n')}
+          <pre class="description">{trimDescription(c.description)}</pre>
         {/if}
-      </header>
 
-      {#if c.description.includes('\n')}
-        <pre class="description">{trimDescription(c.description)}</pre>
-      {/if}
+        {#if c.changed_files.length > 0}
+          <section class="files">
+            <h4>{c.changed_files.length} file{c.changed_files.length === 1 ? '' : 's'} changed</h4>
+            <ul>
+              {#each c.changed_files as path (path)}
+                <li>
+                  <button
+                    type="button"
+                    class="file-link"
+                    onclick={() => openFile(path)}
+                    title="View this file at {shortId(c.commit_id)}"
+                  ><code>{path}</code></button>
+                </li>
+              {/each}
+            </ul>
+          </section>
+        {/if}
 
-      {#if c.changed_files.length > 0}
-        <section class="files">
-          <h4>{c.changed_files.length} file{c.changed_files.length === 1 ? '' : 's'} changed</h4>
-          <ul>
-            {#each c.changed_files as path (path)}
-              <li><code>{path}</code></li>
-            {/each}
-          </ul>
-        </section>
-      {/if}
+        {#if (c.conflict_paths ?? []).length > 0}
+          <section class="conflicts">
+            <h4>Conflicts</h4>
+            <ul>
+              {#each c.conflict_paths ?? [] as path (path)}
+                <li>
+                  <button
+                    type="button"
+                    class="file-link conflict"
+                    onclick={() => openFile(path)}
+                  ><code>{path}</code></button>
+                </li>
+              {/each}
+            </ul>
+          </section>
+        {/if}
 
-      {#if (c.conflict_paths ?? []).length > 0}
-        <section class="conflicts">
-          <h4>Conflicts</h4>
-          <ul>
-            {#each c.conflict_paths ?? [] as path (path)}
-              <li><code>{path}</code></li>
-            {/each}
-          </ul>
-        </section>
-      {/if}
-
-      <footer class="detail-actions">
-        <button
-          type="button"
-          class="close"
-          onclick={clearSelection}
-        >Close</button>
-      </footer>
+        <footer class="detail-actions">
+          <button
+            type="button"
+            class="close"
+            onclick={clearSelection}
+          >Close</button>
+        </footer>
+      </div>
     {:else}
       <p class="muted detail-empty">
         Pick a commit from the log to see its detail.
@@ -287,8 +331,22 @@
 
   .detail-pane {
     overflow-y: auto;
-    padding: 16px;
     background: var(--bg-panel);
+  }
+
+  /* When showing a file the pane drops its padding so the file
+   * viewer's own header sits flush against the divider. */
+  .detail-pane:not(.viewing-file) .detail-body {
+    padding: 16px;
+  }
+
+  /* The file viewer manages its own scroll, so the outer pane
+   * shouldn't scroll too. */
+  .detail-pane.viewing-file {
+    overflow: hidden;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
   }
 
   .detail-empty {
@@ -368,8 +426,29 @@
     font-size: 12px;
   }
 
-  .conflicts li {
+  .file-link {
+    background: transparent;
+    border: none;
+    padding: 0;
+    margin: 0;
+    cursor: pointer;
+    color: var(--link);
+    font: inherit;
+    font-size: 12px;
+    text-align: left;
+  }
+
+  .file-link:hover {
+    text-decoration: underline;
+  }
+
+  .file-link.conflict {
     color: var(--warn-text);
+  }
+
+  .file-link code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
   }
 
   .commit-id {

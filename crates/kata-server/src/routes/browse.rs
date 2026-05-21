@@ -68,3 +68,58 @@ pub async fn commit(
     let repo = state.service.resolve_repo(&repo_name)?;
     Ok(Json(state.service.browse_commit(&repo, &commit_id).await?))
 }
+
+#[derive(Debug, Deserialize)]
+pub struct FileQuery {
+    pub commit: CommitId,
+    pub path: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct FileContent {
+    /// True when the bytes don't decode as UTF-8 — the UI shows a
+    /// placeholder instead of trying to render gibberish. Binary
+    /// files come back with `content: ""` and `size` populated so
+    /// the viewer can still tell the operator "1.2 MB, binary".
+    pub binary: bool,
+    pub content: String,
+    /// Size in bytes regardless of binary-ness. Lets the UI label
+    /// the file even when we don't render the content.
+    pub size: usize,
+}
+
+/// `GET /api/repos/{repo}/browse/file?commit=…&path=…` — return
+/// the file's contents at a specific commit. The UI renders this
+/// with the same Shiki-driven highlighting pipeline used by the
+/// diff viewer. Returns 404 when the file doesn't exist at the
+/// given (commit, path).
+pub async fn file(
+    State(state): State<AppState>,
+    Path(repo_name): Path<String>,
+    Query(q): Query<FileQuery>,
+) -> AppResult<Json<FileContent>> {
+    let repo = state.service.resolve_repo(&repo_name)?;
+    let bytes = state
+        .service
+        .browse_file_bytes(&repo, &q.commit, &q.path)
+        .await?
+        .ok_or_else(|| {
+            crate::error::AppError::from(kata_service::ServiceError::NotFound(format!(
+                "file {} not found at commit {}",
+                q.path, q.commit
+            )))
+        })?;
+    let size = bytes.len();
+    Ok(Json(match String::from_utf8(bytes) {
+        Ok(content) => FileContent {
+            binary: false,
+            content,
+            size,
+        },
+        Err(_) => FileContent {
+            binary: true,
+            content: String::new(),
+            size,
+        },
+    }))
+}

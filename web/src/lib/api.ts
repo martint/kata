@@ -121,6 +121,17 @@ export const api = {
       'GET',
       `${repoBase(repo)}/browse/commits/${enc(commit_id)}`,
     ),
+  /** File contents at a (commit, path). `binary: true` means the
+   *  bytes didn't decode as UTF-8 and `content` is empty — the
+   *  viewer renders a placeholder in that case. 404 when the
+   *  file doesn't exist at that commit. */
+  browseFile: (repo: string, commit: CommitId, path: string) => {
+    const params = new URLSearchParams({ commit, path });
+    return request<{ binary: boolean; content: string; size: number }>(
+      'GET',
+      `${repoBase(repo)}/browse/file?${params.toString()}`,
+    );
+  },
 
   /** Probe a revset against the jj backend to count its commits.
    *  Used by the new-review form to warn before submitting an empty

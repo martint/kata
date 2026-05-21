@@ -1453,6 +1453,19 @@ impl ReviewService {
         Ok(page.rows.into_iter().next())
     }
 
+    /// Read a file's bytes at a specific commit. `None` when the
+    /// path doesn't exist there. The bytes are returned raw — the
+    /// HTTP layer decides whether to treat them as UTF-8 text or
+    /// flag them as binary.
+    pub async fn browse_file_bytes(
+        &self,
+        repo: &RepoId,
+        commit: &CommitId,
+        path: &str,
+    ) -> ServiceResult<Option<Vec<u8>>> {
+        Ok(self.jj_for(repo)?.read_file(commit, path).await?)
+    }
+
     // ---- API tokens ----------------------------------------------------
 
     /// Persist a freshly-minted API token. The caller has already
