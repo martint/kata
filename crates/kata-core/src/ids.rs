@@ -54,6 +54,7 @@ string_newtype!(ResponseId);
 string_newtype!(AnnotationId);
 string_newtype!(Author);
 string_newtype!(OpId);
+string_newtype!(ApiTokenId);
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]

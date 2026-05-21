@@ -942,6 +942,26 @@ Kata supports two ways the server learns who's calling:
   Authelia / Pomerium / Caddy in front, terminate TLS there, and
   forward the verified email."
 
+In addition, **API tokens** authenticate on top of either mode.
+`kata token create --author <email> --name <label>` mints a long-
+lived bearer credential bound to an author identity; the plaintext
+is shown once and only its SHA-256 hash is persisted. A client
+presents the token in either spot:
+
+- `Authorization: Bearer <token>` on HTTP.
+- `?token=<token>` on the URL — primarily for MCP clients that
+  can't set request headers.
+
+A valid token wins over the mode-specific lookup, so MCP agents
+and CI integrations don't have to round-trip through the
+configured identity source. A token that *looks* like a Kata
+token (the `kata_pat_` prefix) but doesn't authenticate is a
+401; foreign Bearer values fall through so unrelated upstream
+auth (e.g. a proxy doing its own token dance) still works.
+`kata token list` shows all issued tokens (active and revoked);
+`kata token revoke <token_id>` retires one — the row stays for
+audit, but the auth path rejects it.
+
 Kata can also terminate TLS itself (`--tls-cert` + `--tls-key`,
 in-process via rustls), but the default operations recipe in the
 README is the proxy-trusted shape — it solves auth, TLS, and

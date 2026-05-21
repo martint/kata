@@ -237,76 +237,58 @@ enough. Lands when someone actually hits the case.
 
 ## Authenticated identity
 
-Today the HTTP layer trusts an `X-Review-Author` header (falling back
-to the server's `--author` flag). That's fine for a single-tenant
-local box; it's a soft hole on anything shared, because any caller
-can claim to be anyone. The MCP transport has the same shape via
-`?author=` on the streamable-HTTP endpoint.
+**Status:** *trust-forwarded-header* mode and *per-agent API tokens*
+have shipped. Built-in OIDC client is still pending.
 
-Options:
+`kata serve` supports two identity sources today:
 
-- **OIDC behind a fronting proxy.** Run `oauth2-proxy` / Authelia /
-  Pomerium in front, have it set a trusted header (e.g.
-  `X-Forwarded-Email`) once the user is authenticated, and have
-  Kata derive the actor from *that* header rather than the
-  client-supplied one. The proxy carries the OIDC dance, session
-  cookies, refresh, group claims, etc. Kata stays small.
-  - Variation: accept `X-Forwarded-Email` only when the request
-    comes from a configured set of upstream IPs / a unix socket,
-    so a misconfigured deployment can't have the header spoofed.
-- **Built-in OIDC client.** Adds an `--oidc-issuer` flag and an
-  `/auth/callback` route; Kata mints session cookies itself. Heavier
-  surface area but keeps the deployment to a single binary, which
-  matters for the "drop on a laptop / VM" workflow the demo command
-  targets.
-- **Per-agent API tokens.** Agents (MCP clients) don't have humans
-  at a keyboard; a long-lived token bound to a specific author
-  identity is a better fit than OIDC. The author claim and the
-  token issuer would be tied together (the token *is* the actor),
-  so an agent can't claim to be someone else by editing a header.
+- **`--auth-mode trust-client`** (default) — `X-Review-Author` on
+  HTTP, `?as=` on MCP. Safe on localhost, unsafe shared.
+- **`--auth-mode trust-forwarded-header`** — reads an upstream-set
+  header (default `X-Forwarded-Email`), gated by `--auth-trust-
+  upstream <cidr>` so the header is only honoured from configured
+  ingress points. The proxy (oauth2-proxy / Authelia / Pomerium /
+  Caddy) carries the OIDC dance.
 
-Storage / data model implications are small — `Author` is already
-the canonical identity throughout `kata-core`. The work is
-plumbing on the HTTP and MCP transports plus a configuration
-story for *which* mode (proxy vs. built-in vs. tokens) is active
-on a given deployment.
+Plus **API tokens** — `kata token create/list/revoke` mints long-
+lived bearer credentials bound to an author. Presented as
+`Authorization: Bearer <token>` (HTTP) or `?token=` (MCP). Token
+auth wins over the mode-specific lookup so MCP agents and CI
+integrations don't have to round-trip through an interactive flow.
 
-Lands the first time someone wants to host Kata for a team rather
-than a single user.
+**Still pending:**
+
+- **Built-in OIDC client.** `--oidc-issuer`, `--oidc-client-id`,
+  `--oidc-client-secret`, `--oidc-redirect-uri`, `/auth/callback`.
+  Stateless encrypted session cookies (no session table). Keeps
+  the deployment to a single binary — relevant for the drop-on-a-
+  VM workflow where adding `oauth2-proxy` is friction. The
+  trust-forwarded-header mode already covers the proxy case, so
+  this is purely about single-binary ergonomics.
 
 ## TLS / HTTPS
 
-`kata serve` only speaks plain HTTP. Same caveat as above: fine
-for `localhost`, wrong for anything else. Browsers also nag
-about features (clipboard, service workers, secure cookies) that
-degrade or refuse to run on plain HTTP.
+**Status:** native rustls termination via `--tls-cert` / `--tls-key`
+has shipped. ACME auto-issuance is still pending.
 
-Two reasonable paths:
+Working paths today:
 
-- **Terminate at a reverse proxy.** Nginx / Caddy / Traefik in
-  front; Kata stays HTTP-only on a loopback socket. The proxy
-  handles certs (often via ACME) and forwarding. This is the
-  recommended production pattern *today*, but it's nowhere in the
-  docs — the README and demo flow both leave the reader at plain
-  HTTP. The cheap fix is a short "Deploying behind a proxy"
-  section with a working Caddy / Nginx snippet, plus a note that
-  the `X-Forwarded-*` headers Kata trusts (see the auth entry
-  above) only apply behind such a proxy.
-- **Native TLS in `kata serve`.** `--tls-cert <path>` /
-  `--tls-key <path>` flags, rustls under the hood. Optional
-  ACME / Let's Encrypt mode (`--tls-acme <domain>`) for the
-  drop-on-a-VM workflow where adding a reverse proxy is friction.
-  Keeps the single-binary story coherent and matches the demo
-  command's "no setup" pitch.
+- **Reverse proxy out front.** Nginx / Caddy / Traefik does TLS +
+  OIDC; Kata stays HTTP-only on a loopback socket. Pair with
+  `--auth-mode trust-forwarded-header`.
+- **Native rustls in `kata serve`.** `--tls-cert <path>` /
+  `--tls-key <path>` wrap the listener in rustls via
+  `axum-server`. Single-binary path that suits drop-on-a-VM
+  deployments.
 
-Either way: once HTTPS is the path of least resistance, the
-existing `bind: 127.0.0.1:7878` default needs a conditional
-companion (`bind: 0.0.0.0:443` when TLS is configured) so users
-don't accidentally serve a wide-open HTTPS listener on the loopback.
+**Still pending:**
 
-Pairs naturally with the auth work — both are "this is no longer
-just a localhost dev tool" plumbing — and probably wants to land
-in the same change so the deployment guide can cover both.
+- **ACME / Let's Encrypt auto-issuance.** `--tls-acme <domain>` +
+  `--tls-acme-cache <dir>` (`+ --tls-acme-staging` for
+  development). Uses TLS-ALPN-01 challenge so no extra port is
+  needed; cert lives on the same 443 listener as the app. Mutually
+  exclusive with `--tls-cert` / `--tls-key`. Keeps the single-
+  binary story coherent for users who can't lean on Caddy upstream.
 
 ## Repository browser
 

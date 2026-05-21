@@ -20,6 +20,10 @@ struct Harness {
     _workspace: TempDir,
     workspace_path: std::path::PathBuf,
     router: Router,
+    /// Exposed so tests that need to mint API tokens, inspect
+    /// storage, or call service methods directly can reach in
+    /// without going through HTTP.
+    service: Arc<ReviewService>,
 }
 
 impl Harness {
@@ -71,7 +75,7 @@ impl Harness {
             .unwrap();
         let service = Arc::new(builder.build());
         let state = AppState {
-            service,
+            service: service.clone(),
             default_author: Author::new("alice@example.com"),
             auth,
             bind_addr: "127.0.0.1:0".parse().unwrap(),
@@ -82,6 +86,7 @@ impl Harness {
             workspace_path: workspace.path().to_path_buf(),
             _workspace: workspace,
             router,
+            service,
         }
     }
 
@@ -1558,5 +1563,187 @@ async fn trust_forwarded_header_rejects_empty_header() {
         .unwrap();
     let resp = h.router.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+// ---- API token authentication ------------------------------------------
+
+async fn mint_and_store(
+    h: &Harness,
+    author: &str,
+    name: &str,
+) -> (String, kata_core::ApiToken) {
+    let minted = kata_server::tokens::mint(Author::new(author), name.into());
+    let stored = h
+        .service
+        .store_api_token(minted.token.clone())
+        .await
+        .unwrap();
+    (minted.plaintext, stored)
+}
+
+#[tokio::test]
+async fn bearer_token_authenticates_as_bound_author() {
+    // A valid Bearer wins over the trust-client default identity.
+    // We mint a token bound to bob and verify `/api/whoami` reports
+    // bob, not the harness default (alice).
+    let h = Harness::new().await;
+    let (plaintext, _) = mint_and_store(&h, "bob@example.com", "ci").await;
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/whoami")
+        .header("Authorization", format!("Bearer {plaintext}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = h.router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(
+        &resp.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    assert_eq!(body["author"], "bob@example.com");
+}
+
+#[tokio::test]
+async fn bearer_token_takes_precedence_over_x_review_author() {
+    // If both a token AND `X-Review-Author` are present, the token
+    // wins. This matters because a compromised browser can set the
+    // legacy header; an attacker who *only* knows the header can't
+    // override a properly-issued token.
+    let h = Harness::new().await;
+    let (plaintext, _) = mint_and_store(&h, "bob@example.com", "ci").await;
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/whoami")
+        .header("Authorization", format!("Bearer {plaintext}"))
+        .header("X-Review-Author", "eve@example.com")
+        .body(Body::empty())
+        .unwrap();
+    let resp = h.router.clone().oneshot(req).await.unwrap();
+    let body: Value = serde_json::from_slice(
+        &resp.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    assert_eq!(body["author"], "bob@example.com");
+}
+
+#[tokio::test]
+async fn invalid_token_returns_401_does_not_fall_through() {
+    // A Bearer value that *looks* like a Kata token but doesn't
+    // authenticate fails closed. Falling through silently to the
+    // trust-client default would mask the misconfiguration — a
+    // client intending to use a token deserves to know it isn't
+    // being honoured.
+    let h = Harness::new().await;
+    let bogus = format!("kata_pat_{}", "a".repeat(64));
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/whoami")
+        .header("Authorization", format!("Bearer {bogus}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = h.router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn revoked_token_returns_401() {
+    let h = Harness::new().await;
+    let (plaintext, stored) = mint_and_store(&h, "bob@example.com", "ci").await;
+    h.service.revoke_api_token(&stored.token_id).await.unwrap();
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/whoami")
+        .header("Authorization", format!("Bearer {plaintext}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = h.router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn non_kata_bearer_value_falls_through_to_auth_mode() {
+    // A Bearer that doesn't look like a Kata token may be intended
+    // for an upstream layer (a proxy doing OIDC, say). Don't 401 on
+    // it — fall through so the configured auth mode gets a chance.
+    let h = Harness::new().await;
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/whoami")
+        .header("Authorization", "Bearer some-other-systems-token")
+        .header("X-Review-Author", "bob@example.com")
+        .body(Body::empty())
+        .unwrap();
+    let resp = h.router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(
+        &resp.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    assert_eq!(body["author"], "bob@example.com");
+}
+
+#[tokio::test]
+async fn query_token_authenticates_like_bearer() {
+    // For MCP clients that can only set query params, `?token=`
+    // works the same as a Bearer header.
+    let h = Harness::new().await;
+    let (plaintext, _) = mint_and_store(&h, "bob@example.com", "ci").await;
+
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!("/api/whoami?token={plaintext}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = h.router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(
+        &resp.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    assert_eq!(body["author"], "bob@example.com");
+}
+
+#[tokio::test]
+async fn bearer_token_works_under_trust_forwarded_header_mode() {
+    // In `trust-forwarded-header` mode a request without the
+    // trusted header is normally a 401. A valid Bearer should
+    // authenticate without the header — that's the whole point of
+    // tokens (machines that can't go through the OIDC dance).
+    let h = Harness::with_auth(kata_server::auth::AuthConfig {
+        mode: kata_server::auth::AuthMode::TrustForwardedHeader,
+        trusted_header: "X-Forwarded-Email".into(),
+        upstream_allowlist: Vec::new(),
+    })
+    .await;
+    let (plaintext, _) = mint_and_store(&h, "bob@example.com", "ci").await;
+
+    // Sanity: without the header AND without a token, this is 401.
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/whoami")
+        .body(Body::empty())
+        .unwrap();
+    let resp = h.router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    // With the token, it authenticates as the bound author.
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/whoami")
+        .header("Authorization", format!("Bearer {plaintext}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = h.router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(
+        &resp.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    assert_eq!(body["author"], "bob@example.com");
 }
 

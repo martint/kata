@@ -112,6 +112,28 @@ etc.); Kata reloads it on restart. For most production deployments
 the fronting-proxy recipe is the right call — it solves auth, TLS,
 and request observability in one place.
 
+### API tokens for agents
+
+MCP agents and CI integrations can't go through an interactive
+auth flow. Mint a long-lived bearer credential bound to an
+author identity:
+
+```sh
+kata token create --author ci-agent@example.com --name "github-actions"
+# Plaintext is printed once. Save it; only the SHA-256 hash is stored.
+```
+
+The agent then presents the token in either spot:
+
+- `Authorization: Bearer <token>` on HTTP.
+- `?token=<token>` on the URL — primarily for MCP clients that
+  can only set query parameters.
+
+A valid token authenticates as its bound author regardless of
+`--auth-mode`, so tokens work alongside both trust-client and
+trust-forwarded-header. Manage with `kata token list` and
+`kata token revoke <token_id>`.
+
 ## How it works
 
 A **review** pins a revset, a base commit, and a tip commit — that's

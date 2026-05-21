@@ -13,11 +13,11 @@ pub use diff::{
     RegularHunk,
 };
 pub use documents::{
-    Annotation, Comment, Flag, Patchset, RepoManifest, ResolutionAction, Response, ReviewManifest,
-    SCHEMA_VERSION, Session, SessionStatus,
+    Annotation, ApiToken, Comment, Flag, Patchset, RepoManifest, ResolutionAction, Response,
+    ReviewManifest, SCHEMA_VERSION, Session, SessionStatus,
 };
 pub use ids::{
-    AnnotationId, Author, Bookmark, ChangeId, ColumnRange, CommentId, CommitId, CommitInfo,
-    LineRange, LineRangeParseError, OpId, RepoId, RepoSummary, ResponseId, ReviewId, RevSet,
-    SessionId, Side,
+    AnnotationId, ApiTokenId, Author, Bookmark, ChangeId, ColumnRange, CommentId, CommitId,
+    CommitInfo, LineRange, LineRangeParseError, OpId, RepoId, RepoSummary, ResponseId, ReviewId,
+    RevSet, SessionId, Side,
 };

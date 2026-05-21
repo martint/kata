@@ -12,6 +12,7 @@ pub mod error;
 pub mod routes;
 pub mod service;
 pub mod state;
+pub mod tokens;
 
 pub use auth::{AuthConfig, AuthMode};
 pub use config::ServerConfig;

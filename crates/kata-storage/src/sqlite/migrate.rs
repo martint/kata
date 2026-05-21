@@ -74,6 +74,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "comment_columns",
         sql: include_str!("../../migrations/V009__comment_columns.sql"),
     },
+    Migration {
+        version: 10,
+        name: "api_tokens",
+        sql: include_str!("../../migrations/V010__api_tokens.sql"),
+    },
 ];
 
 /// Bring `conn` up to the latest schema. Idempotent: re-running on an

@@ -20,9 +20,9 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use chrono::Utc;
 use kata_core::{
-    Annotation, AnnotationId, Author, ChangeId, ColumnRange, Comment, CommentId, CommitId,
-    LineRange, OpId, RepoId, RepoManifest, Response, ResponseId, ReviewId, ReviewManifest, RevSet,
-    SCHEMA_VERSION, Session, SessionId, SessionStatus,
+    Annotation, AnnotationId, ApiToken, ApiTokenId, Author, ChangeId, ColumnRange, Comment,
+    CommentId, CommitId, LineRange, OpId, RepoId, RepoManifest, Response, ResponseId, ReviewId,
+    ReviewManifest, RevSet, SCHEMA_VERSION, Session, SessionId, SessionStatus,
 };
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 
@@ -1197,9 +1197,114 @@ impl Storage for SqliteStorage {
         })
         .await
     }
+
+    async fn create_api_token(&self, token: &ApiToken) -> Result<()> {
+        let token = token.clone();
+        self.with_conn(move |conn| {
+            conn.execute(
+                "INSERT INTO api_tokens
+                   (token_id, author, name, token_hash, prefix,
+                    created_at, last_used_at, revoked_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    token.token_id.as_str(),
+                    token.author.as_str(),
+                    token.name,
+                    token.token_hash,
+                    token.prefix,
+                    token.created_at.to_rfc3339(),
+                    token.last_used_at.map(|t| t.to_rfc3339()),
+                    token.revoked_at.map(|t| t.to_rfc3339()),
+                ],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn lookup_api_token_by_hash(&self, hash: &str) -> Result<Option<ApiToken>> {
+        let hash = hash.to_owned();
+        self.with_conn(move |conn| {
+            conn.query_row(
+                "SELECT token_id, author, name, token_hash, prefix,
+                        created_at, last_used_at, revoked_at
+                   FROM api_tokens
+                  WHERE token_hash = ?1",
+                params![hash],
+                row_to_api_token,
+            )
+            .optional()
+            .map_err(Into::into)
+        })
+        .await
+    }
+
+    async fn list_api_tokens(&self) -> Result<Vec<ApiToken>> {
+        self.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT token_id, author, name, token_hash, prefix,
+                        created_at, last_used_at, revoked_at
+                   FROM api_tokens
+                  ORDER BY created_at DESC",
+            )?;
+            let rows = stmt.query_map([], row_to_api_token)?;
+            let mut out = Vec::new();
+            for r in rows {
+                out.push(r?);
+            }
+            Ok(out)
+        })
+        .await
+    }
+
+    async fn revoke_api_token(&self, token_id: &ApiTokenId) -> Result<()> {
+        let id = token_id.as_str().to_owned();
+        let now = chrono::Utc::now().to_rfc3339();
+        self.with_conn(move |conn| {
+            let affected = conn.execute(
+                "UPDATE api_tokens SET revoked_at = ?2 WHERE token_id = ?1",
+                params![id, now],
+            )?;
+            if affected == 0 {
+                return Err(Error::NotFound {
+                    what: format!("api token {id}"),
+                });
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    async fn touch_api_token(&self, token_id: &ApiTokenId) -> Result<()> {
+        let id = token_id.as_str().to_owned();
+        let now = chrono::Utc::now().to_rfc3339();
+        self.with_conn(move |conn| {
+            conn.execute(
+                "UPDATE api_tokens SET last_used_at = ?2 WHERE token_id = ?1",
+                params![id, now],
+            )?;
+            Ok(())
+        })
+        .await
+    }
 }
 
 // ---- shared row extractors ---------------------------------------------
+
+fn row_to_api_token(row: &Row<'_>) -> rusqlite::Result<ApiToken> {
+    // Columns: token_id, author, name, token_hash, prefix,
+    //          created_at, last_used_at, revoked_at.
+    Ok(ApiToken {
+        token_id: ApiTokenId::new(row.get::<_, String>(0)?),
+        author: Author::new(row.get::<_, String>(1)?),
+        name: row.get(2)?,
+        token_hash: row.get(3)?,
+        prefix: row.get(4)?,
+        created_at: row.get(5)?,
+        last_used_at: row.get(6)?,
+        revoked_at: row.get(7)?,
+    })
+}
 
 fn review_manifest_from_row(row: &Row<'_>) -> rusqlite::Result<ReviewManifest> {
     // Columns are: review_id, number, name, schema_version, revset,
@@ -1405,7 +1510,7 @@ mod round_trip_tests {
 
     use super::*;
     use chrono::{NaiveDateTime, TimeZone};
-    use kata_core::{Flag, Patchset, Side};
+    use kata_core::{ApiToken, ApiTokenId, Flag, Patchset, Side};
     use std::sync::atomic::{AtomicU64, Ordering};
     use uuid::{NoContext, Timestamp, Uuid};
 
@@ -1746,6 +1851,105 @@ mod round_trip_tests {
             .unwrap();
         assert_eq!(drafts.comments.len(), 1);
         assert_eq!(drafts.comments[0].columns, None);
+    }
+
+    fn make_token(prefix: &str, author: &str, name: &str) -> ApiToken {
+        ApiToken {
+            token_id: ApiTokenId::new(fresh_id(prefix)),
+            author: Author::new(author),
+            name: name.to_owned(),
+            token_hash: fresh_id("hash"),
+            prefix: "kata_pat_abc".into(),
+            created_at: ts("2026-01-01T00:00:00Z"),
+            last_used_at: None,
+            revoked_at: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn create_lookup_round_trip_for_api_tokens() {
+        let store = SqliteStorage::open_in_memory().await.unwrap();
+        let token = make_token("tok", "alice@example.com", "ci-agent");
+        store.create_api_token(&token).await.unwrap();
+
+        let found = store
+            .lookup_api_token_by_hash(&token.token_hash)
+            .await
+            .unwrap()
+            .expect("token must be findable by its hash");
+        assert_eq!(found, token);
+
+        let miss = store
+            .lookup_api_token_by_hash("not-a-real-hash")
+            .await
+            .unwrap();
+        assert!(miss.is_none());
+    }
+
+    #[tokio::test]
+    async fn list_api_tokens_returns_newest_first() {
+        let store = SqliteStorage::open_in_memory().await.unwrap();
+        let mut older = make_token("tok", "alice@example.com", "old");
+        older.created_at = ts("2026-01-01T00:00:00Z");
+        let mut newer = make_token("tok", "alice@example.com", "new");
+        newer.created_at = ts("2026-02-01T00:00:00Z");
+        store.create_api_token(&older).await.unwrap();
+        store.create_api_token(&newer).await.unwrap();
+
+        let list = store.list_api_tokens().await.unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].name, "new", "newest must be first");
+        assert_eq!(list[1].name, "old");
+    }
+
+    #[tokio::test]
+    async fn revoke_sets_timestamp_and_keeps_the_row() {
+        let store = SqliteStorage::open_in_memory().await.unwrap();
+        let token = make_token("tok", "alice@example.com", "ci-agent");
+        store.create_api_token(&token).await.unwrap();
+
+        store.revoke_api_token(&token.token_id).await.unwrap();
+        // Row stays; revoked_at populated. The auth path is the
+        // place that interprets `revoked_at` as "reject" — storage
+        // just records the timestamp.
+        let found = store
+            .lookup_api_token_by_hash(&token.token_hash)
+            .await
+            .unwrap()
+            .expect("row must still exist after revoke");
+        assert!(
+            found.revoked_at.is_some(),
+            "revoked_at must be populated after revoke",
+        );
+    }
+
+    #[tokio::test]
+    async fn revoking_unknown_token_errors() {
+        let store = SqliteStorage::open_in_memory().await.unwrap();
+        let err = store
+            .revoke_api_token(&ApiTokenId::new("not-a-real-id"))
+            .await
+            .expect_err("revoking a non-existent token must error");
+        assert!(matches!(err, Error::NotFound { .. }));
+    }
+
+    #[tokio::test]
+    async fn touch_updates_last_used_at() {
+        let store = SqliteStorage::open_in_memory().await.unwrap();
+        let token = make_token("tok", "alice@example.com", "ci-agent");
+        store.create_api_token(&token).await.unwrap();
+        assert!(token.last_used_at.is_none());
+
+        store.touch_api_token(&token.token_id).await.unwrap();
+        let found = store
+            .lookup_api_token_by_hash(&token.token_hash)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            found.last_used_at.is_some(),
+            "touch must populate last_used_at",
+        );
     }
 }
 

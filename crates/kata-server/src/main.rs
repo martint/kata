@@ -60,6 +60,40 @@ enum Command {
     /// shells out to `jj` (the only `kata` subcommand that needs
     /// the binary at all — `serve` itself does not).
     Demo(DemoArgs),
+    /// Manage per-author API tokens — long-lived bearer credentials
+    /// for MCP agents and CI integrations that can't authenticate
+    /// interactively. Tokens substitute for whatever per-request
+    /// identity `--auth-mode` would otherwise determine.
+    Token {
+        #[command(subcommand)]
+        action: TokenAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum TokenAction {
+    /// Mint a new token. The plaintext is printed once to stdout —
+    /// save it, it's never shown again. Only the SHA-256 hash lands
+    /// in the database.
+    Create {
+        /// Author identity the token authenticates as. The token's
+        /// holder will appear as this author on every write.
+        #[arg(long)]
+        author: String,
+        /// Free-form label for the token, e.g. `"ci-agent"` or
+        /// `"laptop-mcp"`. Shown in `kata token list` so the
+        /// operator can identify which token is which.
+        #[arg(long)]
+        name: String,
+    },
+    /// List all tokens (active and revoked), newest first.
+    List,
+    /// Revoke a token by its public id. The row is kept so the id
+    /// can still be looked up in audit logs.
+    Revoke {
+        /// `token_id` as printed by `kata token list`.
+        token_id: String,
+    },
 }
 
 #[derive(Debug, Parser)]
@@ -269,6 +303,73 @@ fn confirm_proceed(db_path: &Path) -> std::io::Result<bool> {
     ))
 }
 
+/// Drive a `kata token` subcommand. All three operations open the
+/// SQLite database directly via `ReviewService` (no jj backend, no
+/// HTTP listener) — token management is pure storage work.
+async fn run_token(
+    db_path: PathBuf,
+    action: TokenAction,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let storage = SqliteStorage::open(&db_path).await?;
+    let service = ReviewService::builder(Arc::new(storage)).build();
+    match action {
+        TokenAction::Create { author, name } => {
+            let minted = kata_server::tokens::mint(Author::new(author), name);
+            let stored = service.store_api_token(minted.token.clone()).await?;
+            // Print the plaintext FIRST so a partial failure between
+            // here and storage (impossible — we just persisted) can
+            // never leak a usable token without telling the operator.
+            // The audit metadata follows on stderr so plain
+            // `kata token create | clip` captures only the secret.
+            println!("{}", minted.plaintext);
+            eprintln!();
+            eprintln!("Save this token — it won't be shown again.");
+            eprintln!();
+            eprintln!("  token_id : {}", stored.token_id);
+            eprintln!("  author   : {}", stored.author);
+            eprintln!("  name     : {}", stored.name);
+            eprintln!("  prefix   : {}", stored.prefix);
+            eprintln!("  created  : {}", stored.created_at);
+        }
+        TokenAction::List => {
+            let rows = service.list_api_tokens().await?;
+            if rows.is_empty() {
+                println!("No API tokens issued.");
+                return Ok(());
+            }
+            println!(
+                "{:<38}  {:<28}  {:<16}  {:<18}  {:<25}  {}",
+                "token_id", "author", "name", "prefix", "created_at", "status",
+            );
+            for t in rows {
+                let status = match &t.revoked_at {
+                    Some(rev) => format!("revoked {}", rev),
+                    None => match &t.last_used_at {
+                        Some(used) => format!("active (last used {})", used),
+                        None => "active (unused)".to_string(),
+                    },
+                };
+                println!(
+                    "{:<38}  {:<28}  {:<16}  {:<18}  {:<25}  {}",
+                    t.token_id.as_str(),
+                    t.author.as_str(),
+                    t.name,
+                    t.prefix,
+                    t.created_at,
+                    status,
+                );
+            }
+        }
+        TokenAction::Revoke { token_id } => {
+            service
+                .revoke_api_token(&kata_core::ApiTokenId::new(token_id.clone()))
+                .await?;
+            eprintln!("revoked token {token_id}");
+        }
+    }
+    Ok(())
+}
+
 /// State the `/mcp` handler reads each request. The auth config is
 /// alongside the dispatcher because the actor lookup is mode-aware:
 /// in `trust-client` mode the historical `?as=` query param wins
@@ -279,6 +380,10 @@ fn confirm_proceed(db_path: &Path) -> std::io::Result<bool> {
 struct McpState {
     dispatcher: kata_mcp::McpDispatcher,
     auth: AuthConfig,
+    /// Service handle for API-token lookups. The HTTP path's
+    /// `ViewerAuthor` extractor reads from `AppState.service`; MCP
+    /// has its own state struct, so a separate Arc rides along here.
+    service: Arc<kata_service::ReviewService>,
 }
 
 async fn mcp_handler(
@@ -287,6 +392,49 @@ async fn mcp_handler(
     req: axum::extract::Request,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
+    // API token wins over the mode-specific identity, same as on
+    // HTTP. Token presence in `Authorization: Bearer` or `?token=`
+    // short-circuits the rest of the lookup. A presented-but-bad
+    // token is a 401 — falling through silently would mask the
+    // misconfiguration.
+    let bearer = req
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer ").or_else(|| s.strip_prefix("bearer ")))
+        .map(|s| s.trim().to_owned());
+    let query_token = params.get("token").map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
+    let presented = bearer.or(query_token);
+    if let Some(plaintext) = presented {
+        if kata_server::tokens::looks_like_token(&plaintext) {
+            let hash = kata_server::tokens::hash(&plaintext);
+            match state.service.authenticate_api_token(&hash).await {
+                Ok(Some(t)) => {
+                    return state
+                        .dispatcher
+                        .for_author(t.author.as_str())
+                        .handle(req)
+                        .await
+                        .map(axum::body::Body::new);
+                }
+                Ok(None) => {
+                    return (
+                        axum::http::StatusCode::UNAUTHORIZED,
+                        "api token unknown or revoked\n",
+                    )
+                        .into_response();
+                }
+                Err(e) => {
+                    tracing::error!(error = ?e, "api token lookup failed");
+                    return (
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        "token lookup failed\n",
+                    )
+                        .into_response();
+                }
+            }
+        }
+    }
     let author = match state.auth.mode {
         AuthMode::TrustClient => params
             .get(kata_mcp::AUTHOR_QUERY_PARAM)
@@ -347,6 +495,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Command::Serve(args) => serve(data, db_path, args).await,
         Command::Demo(demo_args) => run_demo(data, demo_args).await,
+        Command::Token { action } => run_token(db_path, action).await,
         Command::Export { dir } => {
             // Open the existing DB read-only conceptually — we don't
             // touch it, but the SqliteStorage abstraction always opens
@@ -488,6 +637,7 @@ async fn serve(
     let mcp_state = McpState {
         dispatcher,
         auth: cfg.auth.clone(),
+        service: service.clone(),
     };
     let mut mcp_router = axum::Router::new()
         .route("/", axum::routing::any(mcp_handler))

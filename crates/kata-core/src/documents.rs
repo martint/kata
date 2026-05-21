@@ -6,8 +6,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{
-    AnnotationId, Author, ChangeId, ColumnRange, CommentId, CommitId, LineRange, RepoId,
-    ResponseId, ReviewId, RevSet, SessionId, Side,
+    AnnotationId, ApiTokenId, Author, ChangeId, ColumnRange, CommentId, CommitId, LineRange,
+    RepoId, ResponseId, ReviewId, RevSet, SessionId, Side,
 };
 
 pub const SCHEMA_VERSION: u32 = 1;
@@ -285,5 +285,46 @@ pub struct RepoManifest {
     /// The canonical filesystem path of `.jj/repo` that this id hashes from.
     /// Informational; the directory name is the source of truth.
     pub canonical_path: String,
+}
+
+/// Server-side credential bound to an author identity. Long-lived
+/// bearer tokens primarily for MCP agents and CI integrations that
+/// can't authenticate interactively. Tokens carry no permissions
+/// beyond their `author` claim — they substitute for the per-request
+/// identity that `--auth-mode` would otherwise determine.
+///
+/// The plaintext token is shown to the user exactly once at creation
+/// and is never stored — only the SHA-256 hash sits in the database.
+/// `prefix` is the leading ~12 characters of the plaintext (`kata_pat_
+/// AaBb`), enough for a human to recognise their tokens in
+/// `kata token list` without enabling a guessing attack.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ApiToken {
+    pub token_id: ApiTokenId,
+    pub author: Author,
+    /// Free-form label set at creation time, e.g. `"ci-agent"`. No
+    /// uniqueness constraint — `kata token list` shows the full
+    /// `(name, prefix, created_at)` tuple so collisions are
+    /// distinguishable.
+    pub name: String,
+    /// SHA-256 of the plaintext token, hex-encoded. Lookups happen
+    /// by hashing the presented Bearer / `?token=` value and matching
+    /// against this column.
+    pub token_hash: String,
+    /// Human-friendly prefix of the plaintext (e.g. `kata_pat_AaBbCc`).
+    /// Shown in listings so the operator can identify "which token
+    /// they're holding" without exposing the full secret.
+    pub prefix: String,
+    pub created_at: DateTime<Utc>,
+    /// Updated lazily on every successful authentication. `None`
+    /// means the token has never been used since creation (or since
+    /// the last `kata token list` cycled, depending on read freshness).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_used_at: Option<DateTime<Utc>>,
+    /// Set once revoked; the row is kept so audit lookups by
+    /// `token_id` still resolve. Auth rejects any token whose
+    /// `revoked_at` is non-null.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revoked_at: Option<DateTime<Utc>>,
 }
 

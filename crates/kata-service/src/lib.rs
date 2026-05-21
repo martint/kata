@@ -10,11 +10,11 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use kata_core::{
-    Annotation, AnnotationId, Author, Bookmark, ChangeId, ChangeStatus, ColumnRange, Comment,
-    CommentId, CommitId, CommitInfo, Diff, Flag, LineRange, PairDiffCounts, Patchset,
-    PatchsetCompareView, PatchsetEndpoints, PatchsetPair, RepoId, RepoSummary, ResolutionAction,
-    Response, ResponseId, ReviewId, ReviewManifest, RevSet, SCHEMA_VERSION, Session, SessionId,
-    Side,
+    Annotation, AnnotationId, ApiToken, ApiTokenId, Author, Bookmark, ChangeId, ChangeStatus,
+    ColumnRange, Comment, CommentId, CommitId, CommitInfo, Diff, Flag, LineRange, PairDiffCounts,
+    Patchset, PatchsetCompareView, PatchsetEndpoints, PatchsetPair, RepoId, RepoSummary,
+    ResolutionAction, Response, ResponseId, ReviewId, ReviewManifest, RevSet, SCHEMA_VERSION,
+    Session, SessionId, Side,
 };
 use kata_jj::{
     AnchorResolution, FileCache, JjBackend, build_diff, build_diff_metadata,
@@ -1386,6 +1386,47 @@ impl ReviewService {
             repo: repo_name,
             review_id: review.clone(),
         });
+        Ok(())
+    }
+
+    // ---- API tokens ----------------------------------------------------
+
+    /// Persist a freshly-minted API token. The caller has already
+    /// generated the plaintext, hashed it, and assembled the
+    /// metadata struct — this just hands it to storage. Returning
+    /// the stored shape so the CLI can echo back the public id /
+    /// created-at it actually landed.
+    pub async fn store_api_token(&self, token: ApiToken) -> ServiceResult<ApiToken> {
+        self.storage.create_api_token(&token).await?;
+        Ok(token)
+    }
+
+    /// Look up a token by its SHA-256 hash (hex). Returns `None` if
+    /// no row matches OR if the row is revoked — auth treats both as
+    /// "rejected" so the caller doesn't have to distinguish the
+    /// shapes. On success the token's `last_used_at` is touched as
+    /// a fire-and-forget side effect.
+    pub async fn authenticate_api_token(&self, hash: &str) -> ServiceResult<Option<ApiToken>> {
+        let row = self.storage.lookup_api_token_by_hash(hash).await?;
+        let Some(token) = row else { return Ok(None) };
+        if token.revoked_at.is_some() {
+            return Ok(None);
+        }
+        // Touch `last_used_at` for the audit trail. A failure to
+        // record this must NOT reject the request — the auth
+        // succeeded, we just couldn't write the breadcrumb.
+        if let Err(e) = self.storage.touch_api_token(&token.token_id).await {
+            tracing::warn!(error = ?e, token_id = %token.token_id, "failed to touch api token");
+        }
+        Ok(Some(token))
+    }
+
+    pub async fn list_api_tokens(&self) -> ServiceResult<Vec<ApiToken>> {
+        Ok(self.storage.list_api_tokens().await?)
+    }
+
+    pub async fn revoke_api_token(&self, token_id: &ApiTokenId) -> ServiceResult<()> {
+        self.storage.revoke_api_token(token_id).await?;
         Ok(())
     }
 

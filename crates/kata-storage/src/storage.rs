@@ -4,8 +4,8 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use kata_core::{
-    Annotation, AnnotationId, Author, Comment, CommentId, OpId, RepoId, RepoManifest, Response,
-    ResponseId, ReviewId, ReviewManifest, Session, SessionId,
+    Annotation, AnnotationId, ApiToken, ApiTokenId, Author, Comment, CommentId, OpId, RepoId,
+    RepoManifest, Response, ResponseId, ReviewId, ReviewManifest, Session, SessionId,
 };
 
 use crate::error::Result;
@@ -208,4 +208,33 @@ pub trait Storage: Send + Sync {
         author: &Author,
         op_id: &OpId,
     ) -> Result<()>;
+
+    // ---- API tokens -----------------------------------------------------
+
+    /// Persist a freshly-minted token. The caller has already hashed
+    /// the plaintext; only the hash + metadata ride into storage.
+    async fn create_api_token(&self, token: &ApiToken) -> Result<()>;
+
+    /// Look up a token by its `token_hash`. Returns `None` when no
+    /// row matches — used as the "authenticate this bearer string"
+    /// hot path, so it must be a single indexed lookup. The caller
+    /// decides whether a revoked match counts as authenticated
+    /// (currently: no).
+    async fn lookup_api_token_by_hash(&self, hash: &str) -> Result<Option<ApiToken>>;
+
+    /// All tokens in the installation, newest-first. `revoked` rows
+    /// are included — `kata token list` distinguishes them in its
+    /// output. Empty list when no tokens have ever been issued.
+    async fn list_api_tokens(&self) -> Result<Vec<ApiToken>>;
+
+    /// Soft-delete a token by id. Sets `revoked_at = now`; the row
+    /// stays so `token_id` references in audit logs still resolve.
+    /// Idempotent — revoking an already-revoked token is not an
+    /// error (the timestamp is updated to the new revocation time).
+    async fn revoke_api_token(&self, token_id: &ApiTokenId) -> Result<()>;
+
+    /// Update `last_used_at` on a successful authentication. Fire-
+    /// and-forget from the caller's perspective; a failure here
+    /// must not reject the request that just authenticated.
+    async fn touch_api_token(&self, token_id: &ApiTokenId) -> Result<()>;
 }

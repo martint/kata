@@ -2186,6 +2186,7 @@ dependencies = [
  "chrono",
  "clap",
  "futures",
+ "hex",
  "http-body-util",
  "ipnet",
  "kata-core",
@@ -2198,6 +2199,7 @@ dependencies = [
  "rust-embed",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "thiserror",
  "tokio",
@@ -2206,6 +2208,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
