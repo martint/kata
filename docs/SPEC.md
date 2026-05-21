@@ -914,6 +914,10 @@ not a review. Lives at `/r/<repo>/browse`, reached via a "Browse"
 link on the home screen next to the repo identity (always
 present, even for a single-repo install).
 
+A topbar above the panes carries a "← Reviews" link back to the
+review list (the browse view has no other review chrome) and a
+"Browsing &lt;repo&gt;" label.
+
 The pane has two columns:
 
 - **Log graph** (left). A column-stem-laid-out commit graph
@@ -929,7 +933,10 @@ The pane has two columns:
 - **Detail** (right). When the reader picks a commit, the
   detail pane shows description, author, timestamp, refs
   pointing at it, the changed-files list, and any conflict
-  paths. Each file path is clickable.
+  paths. Each file path is clickable. On first load — when the
+  URL pins no commit — the selection defaults to the
+  working-copy commit (`@`) so the pane opens on something
+  useful rather than an empty placeholder.
 
 Clicking a file path opens the **file viewer** in the right
 pane. The file viewer renders contents at the selected commit

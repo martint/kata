@@ -170,6 +170,18 @@
     })();
   });
 
+  // Default the selection to the working-copy commit (`@`) once the
+  // first page lands. Without this the detail pane opens on an empty
+  // "pick a commit" placeholder; `@` is the most useful starting
+  // point and matches what a `jj`-literate user expects "browse" to
+  // open on. Skipped when the URL already pins a commit or carries a
+  // `?change=` still being resolved above.
+  $effect(() => {
+    if (selected || initialChange || !page) return;
+    const wc = page.rows.find((r) => r.is_working_copy);
+    if (wc) selected = wc.commit.commit_id;
+  });
+
   // Tell the shell about state changes so the URL can update.
   $effect(() => {
     onstate?.({
@@ -199,6 +211,20 @@
 
   function closeFile() {
     viewingPath = null;
+  }
+
+  /** Leave the browser for the review list. The browse view is its
+   *  own screen with no review chrome, so the only way back is the
+   *  Kata wordmark — too easy to miss. Intercept the click and drive
+   *  the SPA router (pushState + popstate) so we don't trigger a
+   *  full document reload. */
+  function goReviews(e: MouseEvent) {
+    // Honour modifier-clicks (open in new tab, etc.) — let the
+    // browser handle those as a normal link.
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    e.preventDefault();
+    history.pushState({}, '', '/');
+    dispatchEvent(new PopStateEvent('popstate'));
   }
 
   /** Switch the log to show only commits that touched `path`.
@@ -257,7 +283,16 @@
   }
 </script>
 
-<div class="browse-shell">
+<div class="browse-root">
+  <!-- Topbar: the browse view has no review chrome, so this strip
+       carries the only labelled way back to the review list plus
+       the name of the repo being browsed. -->
+  <div class="browse-topbar">
+    <a class="back-link" href="/" onclick={goReviews}>← Reviews</a>
+    <span class="topbar-sep" aria-hidden="true">·</span>
+    <span class="topbar-repo">Browsing <strong>{repo}</strong></span>
+  </div>
+  <div class="browse-shell">
   <div class="log-pane">
     <form class="search-bar" onsubmit={submitRevset}>
       <input
@@ -423,18 +458,59 @@
       </p>
     {/if}
   </aside>
+  </div>
 </div>
 
 <style>
-  /* Two-pane shell pinned to the viewport below the sticky app
-   * header. The grid columns are flexible: detail pane keeps a
-   * sensible default width but adapts on narrow screens via
-   * minmax(). */
+  /* Outer column: topbar strip on top, two-pane shell filling the
+   * rest. Owns the viewport height below the sticky app header so
+   * the shell's inner scroll regions stay bounded. */
+  .browse-root {
+    display: flex;
+    flex-direction: column;
+    height: calc(100vh - var(--app-header-h));
+  }
+
+  .browse-topbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 0 0 auto;
+    padding: 6px 12px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-panel);
+    font-size: 13px;
+  }
+
+  .browse-topbar .back-link {
+    color: var(--link);
+    text-decoration: none;
+    padding: 2px 6px;
+    border-radius: 4px;
+  }
+  .browse-topbar .back-link:hover {
+    background: var(--link-bg);
+    text-decoration: underline;
+  }
+  .browse-topbar .topbar-sep {
+    color: var(--text-faint);
+  }
+  .browse-topbar .topbar-repo {
+    color: var(--text-muted);
+  }
+
+  /* Two-pane shell. The grid columns are flexible: detail pane
+   * keeps a sensible default width but adapts on narrow screens
+   * via minmax(). */
   .browse-shell {
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(320px, 28%);
     gap: 0;
-    height: calc(100vh - var(--app-header-h));
+    /* Fills the space the topbar leaves; `min-height: 0` keeps the
+     * grid from growing past the flex parent so the panes' inner
+     * scroll regions stay bounded. */
+    flex: 1;
+    min-height: 0;
     overflow: hidden;
   }
 
