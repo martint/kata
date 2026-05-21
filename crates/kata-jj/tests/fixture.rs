@@ -336,3 +336,46 @@ async fn merge_commit_with_conflict_emits_conflict_hunk_and_path() {
         assert!(!side.label.is_empty(), "side label should not be empty");
     }
 }
+
+/// `list_commits` must return its result oldest-first. The trait
+/// documents this and the UI's commits panel relies on it — a
+/// regression to jj's native newest-first iteration order is what
+/// the user surfaced as "the commits list is backwards now".
+#[tokio::test]
+async fn list_commits_returns_oldest_first() {
+    let fx = Fixture::new();
+    // Build a four-step chain: trunk → A → B → C (each edits the
+    // same file so every commit has a distinct, recognisable
+    // description). Use `jj describe` + `jj new` so the change-ids
+    // are stable and we can match by description.
+    // Each `jj new` opens a fresh change so its description sticks;
+    // doing `describe` before `new` would rewrite the still-empty
+    // working copy. Bookmark `trunk` AFTER the trunk commit is sealed
+    // (i.e. a child change exists) so the bookmark pins it.
+    fx.write("a.txt", "trunk\n");
+    fx.jj(&["describe", "-m", "trunk"]);
+    fx.jj(&["new", "-m", "A"]);
+    fx.jj(&["bookmark", "create", "trunk-mark", "-r", "@-"]);
+    fx.write("a.txt", "trunk\na\n");
+
+    fx.jj(&["new", "-m", "B"]);
+    fx.write("a.txt", "trunk\na\nb\n");
+
+    fx.jj(&["new", "-m", "C"]);
+    fx.write("a.txt", "trunk\na\nb\nc\n");
+
+    // The revset covers everything reachable from C but not from
+    // trunk-mark — A, B, C in chronological order.
+    let cli = fx.cli();
+    let revset = kata_core::RevSet::new("trunk-mark..@");
+    let commits = cli.list_commits(&revset).await.unwrap();
+    let descs: Vec<&str> = commits
+        .iter()
+        .map(|c| c.description_first_line.as_str())
+        .collect();
+    assert_eq!(
+        descs,
+        ["A", "B", "C"],
+        "expected list_commits to return commits oldest-first; got {descs:?}",
+    );
+}

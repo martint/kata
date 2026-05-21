@@ -95,8 +95,13 @@ pub trait JjBackend: Send + Sync {
     /// earliest commit in the set).
     async fn resolve_range(&self, revset: &RevSet) -> Result<ReviewRange>;
 
-    /// Metadata for every commit in `revset`, in jj's default log order
-    /// (newest first).
+    /// Metadata for every commit in `revset`, oldest first. The UI's
+    /// commits panel reads top-to-bottom and the user expects
+    /// chronological order; implementations whose underlying iterator
+    /// is newest-first must reverse before returning. (The "patchset
+    /// 1 → patchset N" thinking maps cleanly onto "first commit →
+    /// last commit"; reversing here means no consumer has to remember
+    /// to flip on their own.)
     async fn list_commits(&self, revset: &RevSet) -> Result<Vec<CommitInfo>>;
 
     /// Whether `ancestor` is reachable from `descendant` walking parent

@@ -734,11 +734,13 @@ impl JjBackend for JjLib {
             let Some(rs) = evaluate_user_revset(&repo, &revset_str, ws)? else {
                 return Ok(Vec::new());
             };
-            // jj's default order is newest-first; our trait contract
-            // matches that. `--reversed` (oldest-first) is JjCli's
-            // override for the commits panel; the service flips at
-            // its own layer, so we honour the trait's documented
-            // order here.
+            // jj-lib's `commit_change_ids()` iterator yields
+            // newest-first. The trait contract is oldest-first (see
+            // `JjBackend::list_commits`), so we collect newest-first
+            // and reverse before returning. Reversing once at the
+            // backend boundary lets every consumer (commits panel,
+            // patchset compare's pair list, …) read the result in
+            // natural order with no per-consumer dance.
             let mut out: Vec<CommitInfo> = Vec::new();
             let store = repo.store();
             for item in rs.commit_change_ids() {
@@ -798,6 +800,7 @@ impl JjBackend for JjLib {
                     conflict_paths,
                 });
             }
+            out.reverse();
             Ok(out)
         })
         .await
