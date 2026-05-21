@@ -198,6 +198,49 @@ struct ServeArgs {
     #[arg(long, env = "KATA_TLS_ACME_STAGING", requires = "tls_acme")]
     tls_acme_staging: bool,
 
+    /// OIDC issuer URL. When set with the OIDC client flags below
+    /// and `--auth-mode oidc`, Kata speaks the OIDC authorization-
+    /// code flow itself: a `/auth/login` route 302s to the issuer,
+    /// `/auth/callback` validates the ID token, and a signed
+    /// session cookie carries the email claim onto subsequent
+    /// requests. Required when `--auth-mode oidc` is selected.
+    #[arg(long, env = "KATA_OIDC_ISSUER")]
+    oidc_issuer: Option<String>,
+
+    /// OIDC client ID registered with the issuer.
+    #[arg(long, env = "KATA_OIDC_CLIENT_ID", requires = "oidc_issuer")]
+    oidc_client_id: Option<String>,
+
+    /// OIDC client secret. Read from env in production to keep it
+    /// out of process listings.
+    #[arg(long, env = "KATA_OIDC_CLIENT_SECRET", requires = "oidc_issuer")]
+    oidc_client_secret: Option<String>,
+
+    /// Absolute redirect URI for the callback route. Must match what
+    /// the IdP has registered for this client and match the
+    /// scheme+host+port the SPA browses to (e.g.
+    /// `https://kata.example.com/auth/callback`).
+    #[arg(long, env = "KATA_OIDC_REDIRECT_URI", requires = "oidc_issuer")]
+    oidc_redirect_uri: Option<String>,
+
+    /// Secret bytes (as a UTF-8 string) used to sign session
+    /// cookies. Rotating this invalidates every outstanding
+    /// session. Generate via e.g. `openssl rand -base64 32`.
+    #[arg(long, env = "KATA_OIDC_SESSION_SECRET", requires = "oidc_issuer")]
+    oidc_session_secret: Option<String>,
+
+    /// Session lifetime in seconds. The cookie's `Max-Age` matches
+    /// and the embedded `exp` is enforced server-side, so a client
+    /// can't extend its own session by lying about Max-Age.
+    /// Defaults to 24 hours.
+    #[arg(
+        long,
+        env = "KATA_OIDC_SESSION_SECONDS",
+        default_value = "86400",
+        requires = "oidc_issuer"
+    )]
+    oidc_session_seconds: i64,
+
     /// Override the embedded Svelte bundle with one served from disk
     /// (e.g. `web/dist` during local UI work). Omit to use the bundle
     /// compiled into the binary.
@@ -308,6 +351,12 @@ async fn run_demo(
         tls_acme_cache: None,
         tls_acme_contact: None,
         tls_acme_staging: false,
+        oidc_issuer: None,
+        oidc_client_id: None,
+        oidc_client_secret: None,
+        oidc_redirect_uri: None,
+        oidc_session_secret: None,
+        oidc_session_seconds: 86400,
     };
     serve(data.clone(), seeded.db_path, serve_args).await
 }
@@ -494,6 +543,21 @@ async fn mcp_handler(
                 }
             }
         }
+        AuthMode::Oidc => {
+            // The OIDC session cookie is set by the browser-side
+            // login flow and isn't meaningful for MCP agents.
+            // Agents authenticate via the API-token path checked
+            // above; falling through here means no token was
+            // presented (or it was bad), and the right answer is
+            // 401 — never the default author, since OIDC mode
+            // implies "no client-trusted identities".
+            return (
+                axum::http::StatusCode::UNAUTHORIZED,
+                "MCP under --auth-mode oidc requires an API token \
+                 (Authorization: Bearer or ?token=); see `kata token create`\n",
+            )
+                .into_response();
+        }
     };
     state
         .dispatcher
@@ -578,10 +642,66 @@ async fn serve(
     // before any I/O. We want a misconfigured deployment to die at
     // startup with a clear message, not silently begin serving in a
     // shape the operator didn't intend.
+    //
+    // OIDC mode requires the full four-tuple of OIDC flags (issuer,
+    // client id/secret, redirect URI, session secret). Anything less
+    // is a startup failure rather than a runtime 500 on the first
+    // login attempt.
+    let oidc_cfg = if args.auth_mode == AuthMode::Oidc {
+        let issuer = args
+            .oidc_issuer
+            .clone()
+            .ok_or("--auth-mode oidc requires --oidc-issuer")?;
+        let client_id = args
+            .oidc_client_id
+            .clone()
+            .ok_or("--auth-mode oidc requires --oidc-client-id")?;
+        let client_secret = args
+            .oidc_client_secret
+            .clone()
+            .ok_or("--auth-mode oidc requires --oidc-client-secret")?;
+        let redirect_uri = args
+            .oidc_redirect_uri
+            .clone()
+            .ok_or("--auth-mode oidc requires --oidc-redirect-uri")?;
+        let session_secret = args
+            .oidc_session_secret
+            .clone()
+            .ok_or("--auth-mode oidc requires --oidc-session-secret")?;
+        if session_secret.len() < 16 {
+            return Err(
+                "--oidc-session-secret should be at least 16 bytes; \
+                 generate via `openssl rand -base64 32`"
+                    .into(),
+            );
+        }
+        Some(kata_server::auth::OidcConfig {
+            issuer,
+            client_id,
+            client_secret,
+            redirect_uri,
+            session_secret: session_secret.into_bytes(),
+            session_seconds: args.oidc_session_seconds,
+        })
+    } else {
+        if args.oidc_issuer.is_some()
+            || args.oidc_client_id.is_some()
+            || args.oidc_client_secret.is_some()
+            || args.oidc_redirect_uri.is_some()
+            || args.oidc_session_secret.is_some()
+        {
+            tracing::warn!(
+                "OIDC flags are set but --auth-mode is {:?}; the OIDC settings are ignored",
+                args.auth_mode,
+            );
+        }
+        None
+    };
     let auth = AuthConfig {
         mode: args.auth_mode,
         trusted_header: args.auth_trusted_header.clone(),
         upstream_allowlist: args.auth_trust_upstream.clone(),
+        oidc: oidc_cfg,
     };
     // Three TLS shapes, mutually exclusive: PEM file pair, ACME
     // auto-issuance, or plain HTTP (terminate TLS upstream). clap's
@@ -659,11 +779,24 @@ async fn serve(
     } else {
         tracing::info!("branch watcher disabled (--branch-poll-secs=0)");
     }
+    // OIDC discovery + client build. Runs async because the
+    // discovery document is fetched over HTTP from the IdP; a
+    // failure here is fatal (we can't serve `/auth/login` without
+    // a working client and we'd 500 every request in OIDC mode
+    // anyway). Skipped entirely in non-OIDC modes.
+    let oidc_runtime = match cfg.auth.oidc.clone() {
+        Some(oidc_cfg) => {
+            tracing::info!(issuer = %oidc_cfg.issuer, "discovering OIDC provider");
+            Some(kata_server::oidc::build_runtime(oidc_cfg).await?)
+        }
+        None => None,
+    };
     let state = AppState {
         service: service.clone(),
         default_author: cfg.author.clone(),
         auth: cfg.auth.clone(),
         bind_addr: cfg.bind_addr,
+        oidc: oidc_runtime,
     };
 
     let mut app = match &args.web_dir {

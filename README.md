@@ -135,6 +135,37 @@ For most production deployments the fronting-proxy recipe is still
 the right call — it solves auth, TLS, and request observability in
 one place.
 
+### Built-in OIDC (single-binary)
+
+If running `oauth2-proxy` (or similar) upstream is more friction
+than you want — for example a one-VM deployment — Kata can speak
+OIDC itself:
+
+```sh
+kata serve \
+  --workspace main=/path/to/repo \
+  --data /var/lib/kata \
+  --author "system@example.com" \
+  --bind 0.0.0.0:443 \
+  --tls-acme review.example.com \
+  --tls-acme-cache /var/lib/kata/acme \
+  --auth-mode oidc \
+  --oidc-issuer https://accounts.google.com \
+  --oidc-client-id "$OIDC_CLIENT_ID" \
+  --oidc-client-secret "$OIDC_CLIENT_SECRET" \
+  --oidc-redirect-uri https://review.example.com/auth/callback \
+  --oidc-session-secret "$OIDC_SESSION_SECRET"
+```
+
+Generate the session secret with `openssl rand -base64 32` and
+keep it stable across restarts (rotating it invalidates every
+session). On first visit the SPA bounces through `/auth/login` →
+the IdP → `/auth/callback`, the email claim becomes the author
+identity, and a 24-hour HMAC-signed cookie carries it on every
+subsequent request. MCP agents in OIDC mode still authenticate
+via API tokens — see below — since session cookies are browser-
+only.
+
 ### API tokens for agents
 
 MCP agents and CI integrations can't go through an interactive
@@ -153,8 +184,9 @@ The agent then presents the token in either spot:
   can only set query parameters.
 
 A valid token authenticates as its bound author regardless of
-`--auth-mode`, so tokens work alongside both trust-client and
-trust-forwarded-header. Manage with `kata token list` and
+`--auth-mode`, so tokens work in all three modes (in OIDC mode
+they're the only way to authenticate non-browser clients, since
+session cookies don't apply). Manage with `kata token list` and
 `kata token revoke <token_id>`.
 
 ## How it works

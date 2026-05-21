@@ -7,8 +7,10 @@
 
 pub mod auth;
 pub mod config;
+pub mod cookies;
 pub mod embedded;
 pub mod error;
+pub mod oidc;
 pub mod routes;
 pub mod service;
 pub mod state;

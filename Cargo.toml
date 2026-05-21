@@ -19,6 +19,10 @@ license = "Apache-2.0"
 async-trait = "0.1"
 axum = { version = "0.8", features = ["macros", "json", "tokio"] }
 axum-server = { version = "0.7", features = ["tls-rustls"] }
+base64 = "0.22"
+hmac = "0.12"
+openidconnect = { version = "4", default-features = false, features = ["reqwest", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 rustls-acme = { version = "0.14", features = ["axum"] }
 ipnet = "2.10"
 futures = "0.3"

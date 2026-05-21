@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api } from './lib/api';
+  import { ApiError, api } from './lib/api';
   import { installDiffCopyHandler } from './lib/diffCopy';
   import { subscribe as subscribeEvents } from './lib/events';
   import type {
@@ -374,6 +374,16 @@
         whoami = await api.whoami();
         repos = await api.listRepos();
       } catch (e) {
+        // Server-side OIDC mode (or any auth mode whose missing
+        // credentials produce a 401) lands here. Bounce the user
+        // through the IdP rather than parking them on a generic
+        // error: with no cookie, every subsequent API call would
+        // 401 anyway, and the SPA has nothing useful to show.
+        if (e instanceof ApiError && e.status === 401) {
+          const next = encodeURIComponent(location.pathname + location.search);
+          location.assign(`/auth/login?next=${next}`);
+          return;
+        }
         error = (e as Error).message;
       }
       await syncFromUrl();

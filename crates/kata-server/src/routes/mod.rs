@@ -18,23 +18,44 @@ mod sessions;
 pub use author::ViewerAuthor;
 
 pub fn router(state: AppState) -> Router {
-    api_routes().with_state(state).layer(TraceLayer::new_for_http())
+    attach_oidc_routes(api_routes(), &state)
+        .with_state(state)
+        .layer(TraceLayer::new_for_http())
 }
 
 pub fn router_with_assets(state: AppState, web_dir: &Path) -> Router {
     let index = web_dir.join("index.html");
     let serve_dir = ServeDir::new(web_dir).not_found_service(ServeFile::new(index));
-    api_routes()
+    attach_oidc_routes(api_routes(), &state)
         .fallback_service(get_service(serve_dir))
         .with_state(state)
         .layer(TraceLayer::new_for_http())
 }
 
 pub fn router_with_embedded_assets(state: AppState) -> Router {
-    api_routes()
+    attach_oidc_routes(api_routes(), &state)
         .fallback(axum::routing::get(crate::embedded::handler))
         .with_state(state)
         .layer(TraceLayer::new_for_http())
+}
+
+/// `/auth/login`, `/auth/callback`, and `/auth/logout` ride alongside
+/// the API routes only when OIDC mode is active. Mounting them in
+/// other modes would be dead code (no `OidcRuntime` to dispatch
+/// against) AND a footgun (`/auth/login` returning 500 on a misclick
+/// when an operator didn't intend OIDC). The OIDC routes live in
+/// their own sub-router so they can hold `OidcRuntime` as their
+/// state without entangling `AppState`.
+fn attach_oidc_routes(api: Router<AppState>, state: &AppState) -> Router<AppState> {
+    let Some(rt) = state.oidc.clone() else {
+        return api;
+    };
+    let oidc = Router::new()
+        .route("/auth/login", get(crate::oidc::login))
+        .route("/auth/callback", get(crate::oidc::callback))
+        .route("/auth/logout", get(crate::oidc::logout))
+        .with_state(rt);
+    api.merge(oidc)
 }
 
 fn api_routes() -> Router<AppState> {

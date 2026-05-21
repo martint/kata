@@ -37,6 +37,14 @@ pub enum AuthMode {
     /// because in this mode the absence of a header means the proxy
     /// failed to authenticate.
     TrustForwardedHeader,
+    /// Kata speaks OIDC itself. Browser requests without a session
+    /// cookie are 401-ed (the SPA redirects to `/auth/login`, which
+    /// starts the OIDC authorization-code flow); the callback
+    /// validates the ID token and mints a signed session cookie.
+    /// The cookie's `email` claim becomes the author identity on
+    /// every subsequent request. Single-binary OIDC for deployments
+    /// where adding `oauth2-proxy` upstream is friction.
+    Oidc,
 }
 
 /// Configuration that the auth path consults on every request.
@@ -55,6 +63,35 @@ pub struct AuthConfig {
     /// don't consult this list (the only thing that can connect to
     /// loopback is the same host).
     pub upstream_allowlist: Vec<IpNet>,
+    /// OIDC settings. Required when [`AuthMode::Oidc`] is selected;
+    /// ignored in the other modes. Held inside an `Option` so the
+    /// other modes don't have to invent stub values.
+    pub oidc: Option<OidcConfig>,
+}
+
+/// CLI/env-supplied OIDC settings + the secret that backs the
+/// session-cookie signature. The discovery + client construction
+/// itself happens at server startup (asynchronously) and lands in
+/// [`OidcRuntime`]; this struct carries only the config the operator
+/// typed.
+#[derive(Clone, Debug)]
+pub struct OidcConfig {
+    /// Issuer URL — Kata fetches `<issuer>/.well-known/openid-
+    /// configuration` to learn the rest of the endpoints.
+    pub issuer: String,
+    pub client_id: String,
+    pub client_secret: String,
+    /// `https://kata.example.com/auth/callback` — must be registered
+    /// with the IdP as an allowed redirect URI for this client.
+    pub redirect_uri: String,
+    /// Bytes that sign the session cookie. Operators supply this as
+    /// a string; the bytes are derived via UTF-8 encoding.
+    /// Rotating this invalidates every outstanding session.
+    pub session_secret: Vec<u8>,
+    /// Session lifetime in seconds. `Max-Age` on the cookie equals
+    /// this; the embedded `exp` matches so the server rejects expired
+    /// cookies even if a client lies about `Max-Age`.
+    pub session_seconds: i64,
 }
 
 impl AuthConfig {
@@ -148,6 +185,7 @@ mod tests {
                 .iter()
                 .map(|s| parse_upstream_cidr(s).unwrap())
                 .collect(),
+            oidc: None,
         }
     }
 

@@ -3,6 +3,7 @@ use axum::http::request::Parts;
 use kata_core::Author;
 
 use crate::auth::AuthMode;
+use crate::cookies::{SESSION_COOKIE, verify as verify_cookie};
 use crate::error::AppError;
 use crate::state::AppState;
 use crate::tokens;
@@ -67,8 +68,44 @@ impl FromRequestParts<AppState> for ViewerAuthor {
                 }
                 Ok(ViewerAuthor(Author::new(trimmed.to_owned())))
             }
+            AuthMode::Oidc => {
+                let rt = state.oidc.as_ref().ok_or_else(|| {
+                    AppError::from(kata_service::ServiceError::Internal(
+                        "auth-mode=oidc but no OIDC runtime is configured".into(),
+                    ))
+                })?;
+                let cookie_value = extract_cookie(parts, SESSION_COOKIE).ok_or_else(|| {
+                    AppError::from(kata_service::ServiceError::Unauthorized(
+                        "no session cookie — log in at /auth/login".into(),
+                    ))
+                })?;
+                let payload = verify_cookie(
+                    &rt.config.session_secret,
+                    &cookie_value,
+                    chrono::Utc::now(),
+                )
+                .map_err(|e| {
+                    AppError::from(kata_service::ServiceError::Unauthorized(format!(
+                        "invalid session cookie: {e} — log in at /auth/login",
+                    )))
+                })?;
+                Ok(ViewerAuthor(Author::new(payload.author)))
+            }
         }
     }
+}
+
+fn extract_cookie(parts: &Parts, name: &str) -> Option<String> {
+    let header = parts.headers.get(axum::http::header::COOKIE)?;
+    let s = header.to_str().ok()?;
+    for pair in s.split(';') {
+        let pair = pair.trim();
+        let (k, v) = pair.split_once('=')?;
+        if k == name {
+            return Some(v.to_owned());
+        }
+    }
+    None
 }
 
 /// Inspect the request for a Kata-issued API token in either

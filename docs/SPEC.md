@@ -923,7 +923,7 @@ an **author** — a free-form identity string that the system attaches
 to the artefact at write time. The product never invents an author;
 something on the request has to identify the caller.
 
-Kata supports two ways the server learns who's calling:
+Kata supports three ways the server learns who's calling:
 
 - **Client-trusted mode** (`--auth-mode trust-client`, the default).
   The client supplies its own identity — `X-Review-Author` on HTTP,
@@ -941,8 +941,20 @@ Kata supports two ways the server learns who's calling:
   to the default. The deployment story is "put oauth2-proxy /
   Authelia / Pomerium / Caddy in front, terminate TLS there, and
   forward the verified email."
+- **Built-in OIDC** (`--auth-mode oidc`). Kata speaks the
+  authorization-code flow itself. The SPA detects a 401 on
+  `/api/whoami` and 302s the user to `/auth/login`, which
+  302s to the configured IdP. On callback Kata validates the
+  ID token (signature, audience, nonce) and mints an HMAC-signed
+  session cookie carrying the `email` claim; the cookie is
+  HttpOnly, SameSite=Lax, and lifetimed via `--oidc-session-
+  seconds`. Subsequent requests authenticate from the cookie;
+  rotating `--oidc-session-secret` invalidates every outstanding
+  session. MCP agents do not get cookies — they MUST present an
+  API token (see below).
 
-In addition, **API tokens** authenticate on top of either mode.
+In addition, **API tokens** authenticate on top of any of the
+three modes above.
 `kata token create --author <email> --name <label>` mints a long-
 lived bearer credential bound to an author identity; the plaintext
 is shown once and only its SHA-256 hash is persisted. A client

@@ -237,10 +237,10 @@ enough. Lands when someone actually hits the case.
 
 ## Authenticated identity
 
-**Status:** *trust-forwarded-header* mode and *per-agent API tokens*
-have shipped. Built-in OIDC client is still pending.
+**Status:** all three modes plus per-agent tokens have shipped.
+Nothing pending in this section.
 
-`kata serve` supports two identity sources today:
+`kata serve` supports three identity sources:
 
 - **`--auth-mode trust-client`** (default) — `X-Review-Author` on
   HTTP, `?as=` on MCP. Safe on localhost, unsafe shared.
@@ -249,22 +249,20 @@ have shipped. Built-in OIDC client is still pending.
   upstream <cidr>` so the header is only honoured from configured
   ingress points. The proxy (oauth2-proxy / Authelia / Pomerium /
   Caddy) carries the OIDC dance.
+- **`--auth-mode oidc`** — Kata speaks the OIDC authorization-
+  code flow itself. `/auth/login` 302s to the issuer;
+  `/auth/callback` validates the ID token and mints a
+  HMAC-signed session cookie carrying the email claim. Suits the
+  drop-on-a-VM single-binary workflow where adding `oauth2-proxy`
+  upstream is friction.
 
 Plus **API tokens** — `kata token create/list/revoke` mints long-
 lived bearer credentials bound to an author. Presented as
 `Authorization: Bearer <token>` (HTTP) or `?token=` (MCP). Token
 auth wins over the mode-specific lookup so MCP agents and CI
 integrations don't have to round-trip through an interactive flow.
-
-**Still pending:**
-
-- **Built-in OIDC client.** `--oidc-issuer`, `--oidc-client-id`,
-  `--oidc-client-secret`, `--oidc-redirect-uri`, `/auth/callback`.
-  Stateless encrypted session cookies (no session table). Keeps
-  the deployment to a single binary — relevant for the drop-on-a-
-  VM workflow where adding `oauth2-proxy` is friction. The
-  trust-forwarded-header mode already covers the proxy case, so
-  this is purely about single-binary ergonomics.
+In OIDC mode the session cookie is browser-only; agents MUST
+present a token.
 
 ## TLS / HTTPS
 

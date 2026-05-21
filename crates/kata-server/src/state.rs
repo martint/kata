@@ -4,6 +4,7 @@ use std::sync::Arc;
 use kata_core::Author;
 
 use crate::auth::AuthConfig;
+use crate::oidc::OidcRuntime;
 use crate::service::ReviewService;
 
 #[derive(Clone)]
@@ -19,4 +20,7 @@ pub struct AppState {
     /// auth middleware can short-circuit the upstream-IP check on
     /// loopback binds.
     pub bind_addr: SocketAddr,
+    /// OIDC client + in-flight login state. `None` unless the server
+    /// runs in [`crate::auth::AuthMode::Oidc`].
+    pub oidc: Option<OidcRuntime>,
 }

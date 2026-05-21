@@ -32,6 +32,7 @@ impl Harness {
             mode: kata_server::auth::AuthMode::TrustClient,
             trusted_header: "X-Forwarded-Email".into(),
             upstream_allowlist: Vec::new(),
+            oidc: None,
         })
         .await
     }
@@ -79,6 +80,7 @@ impl Harness {
             default_author: Author::new("alice@example.com"),
             auth,
             bind_addr: "127.0.0.1:0".parse().unwrap(),
+            oidc: None,
         };
         let router = router(state);
         Self {
@@ -1512,6 +1514,7 @@ async fn trust_forwarded_header_reads_configured_header() {
         mode: kata_server::auth::AuthMode::TrustForwardedHeader,
         trusted_header: "X-Forwarded-Email".into(),
         upstream_allowlist: Vec::new(),
+        oidc: None,
     })
     .await;
     let req = Request::builder()
@@ -1539,6 +1542,7 @@ async fn trust_forwarded_header_rejects_missing_header() {
         mode: kata_server::auth::AuthMode::TrustForwardedHeader,
         trusted_header: "X-Forwarded-Email".into(),
         upstream_allowlist: Vec::new(),
+        oidc: None,
     })
     .await;
     let (status, _) = h.json("GET", "/api/whoami", None).await;
@@ -1553,6 +1557,7 @@ async fn trust_forwarded_header_rejects_empty_header() {
         mode: kata_server::auth::AuthMode::TrustForwardedHeader,
         trusted_header: "X-Forwarded-Email".into(),
         upstream_allowlist: Vec::new(),
+        oidc: None,
     })
     .await;
     let req = Request::builder()
@@ -1718,6 +1723,7 @@ async fn bearer_token_works_under_trust_forwarded_header_mode() {
         mode: kata_server::auth::AuthMode::TrustForwardedHeader,
         trusted_header: "X-Forwarded-Email".into(),
         upstream_allowlist: Vec::new(),
+        oidc: None,
     })
     .await;
     let (plaintext, _) = mint_and_store(&h, "bob@example.com", "ci").await;
