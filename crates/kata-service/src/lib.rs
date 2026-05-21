@@ -497,8 +497,8 @@ impl ReviewService {
             .list_commits(&revset)
             .await
             .map_err(|e| match e {
-                kata_jj::Error::JjFailed { stderr, .. } => {
-                    ServiceError::BadRequest(clean_jj_stderr(&stderr))
+                kata_jj::Error::JjFailed { .. } | kata_jj::Error::Parse(_) => {
+                    ServiceError::BadRequest(clean_jj_message(&jj_error_message(&e)))
                 }
                 other => ServiceError::Jj(other),
             })?;
@@ -1817,25 +1817,56 @@ fn validate_annotation_anchor(input: &AnnotationInput) -> ServiceResult<()> {
     Ok(())
 }
 
-/// Strip jj's stderr framing so the message reads like user-facing
-/// guidance instead of a CLI dump. jj always prefixes its first line
-/// with `Error: `; the rest (Caused by, hints) is left intact since
-/// those carry useful context for parse failures.
-fn clean_jj_stderr(stderr: &str) -> String {
-    let trimmed = stderr.trim();
-    trimmed.strip_prefix("Error: ").unwrap_or(trimmed).to_string()
+/// Strip the noisy prefix from a jj error string so the user-facing
+/// message reads as guidance instead of an implementation dump. Two
+/// shapes get trimmed:
+///   - CLI stderr: `Error: <message>` (legacy `JjFailed` path).
+///   - libjj wrapper: `libjj <operation> "<expr>": <inner>` (the
+///     `Error::Parse` path the in-process backend produces). The
+///     wrapper context is useful for backend logs but reads as noise
+///     once the message reaches the UI.
+fn clean_jj_message(message: &str) -> String {
+    let trimmed = message.trim();
+    if let Some(rest) = trimmed.strip_prefix("Error: ") {
+        return rest.to_string();
+    }
+    // libjj prefix looks like `libjj <verb> [more]: <inner>`. The
+    // `<inner>` is what the user actually wants to read; strip
+    // everything up to the first `: ` when the message opens with
+    // `libjj `.
+    if trimmed.starts_with("libjj ")
+        && let Some((_, rest)) = trimmed.split_once(": ")
+    {
+        return rest.to_string();
+    }
+    trimmed.to_string()
 }
 
-/// Pull the change ID out of jj's stderr when the failure is a
-/// divergent-change error (`Error: Change ID `X` is divergent`).
-/// Returns `None` for any other shape so the caller can fall back
-/// to a plain message-only error.
-fn extract_divergent_change_id(stderr: &str) -> Option<&str> {
-    if !stderr.contains("is divergent") {
+/// Pull the change ID out of a jj error message when the failure is
+/// a divergent-change error (`Change ID `X` is divergent`). Works
+/// for both the CLI stderr shape and the libjj wrapped message —
+/// `clean_jj_message` already normalises the prefix, but the
+/// substring marker `Change ID `` only appears in the divergent case
+/// regardless of which backend produced it.
+fn extract_divergent_change_id(message: &str) -> Option<&str> {
+    if !message.contains("is divergent") {
         return None;
     }
-    let after = stderr.split_once("Change ID `")?.1;
+    let after = message.split_once("Change ID `")?.1;
     after.split('`').next()
+}
+
+/// Pull a printable message body out of a `kata_jj::Error`. CLI
+/// `JjFailed` carries the original stderr in a dedicated field;
+/// libjj `Parse` wraps its inner message in the variant's String
+/// payload — `Display` would prepend the misleading "could not
+/// parse jj output:" framing, so reach for the inner directly.
+fn jj_error_message(err: &kata_jj::Error) -> String {
+    match err {
+        kata_jj::Error::JjFailed { stderr, .. } => stderr.clone(),
+        kata_jj::Error::Parse(s) => s.clone(),
+        _ => err.to_string(),
+    }
 }
 
 /// Build the [`RevsetError`] surfaced through `ReviewView` when the
@@ -1843,16 +1874,8 @@ fn extract_divergent_change_id(stderr: &str) -> Option<&str> {
 /// list the conflicting commit IDs so the UI can show the reader
 /// exactly which commits to `jj abandon`.
 async fn build_revset_error(jj: &dyn JjBackend, err: &kata_jj::Error) -> RevsetError {
-    let stderr = match err {
-        kata_jj::Error::JjFailed { stderr, .. } => stderr.as_str(),
-        _ => {
-            return RevsetError {
-                message: err.to_string(),
-                divergent_commit_ids: Vec::new(),
-            };
-        }
-    };
-    let divergent_commit_ids = match extract_divergent_change_id(stderr) {
+    let raw = jj_error_message(err);
+    let divergent_commit_ids = match extract_divergent_change_id(&raw) {
         Some(change_id) => {
             let revset = kata_core::RevSet::new(format!("change_id({change_id})"));
             jj.list_commits(&revset)
@@ -1863,8 +1886,69 @@ async fn build_revset_error(jj: &dyn JjBackend, err: &kata_jj::Error) -> RevsetE
         None => Vec::new(),
     };
     RevsetError {
-        message: clean_jj_stderr(stderr),
+        message: clean_jj_message(&raw),
         divergent_commit_ids,
+    }
+}
+
+#[cfg(test)]
+mod revset_error_tests {
+    use super::*;
+
+    #[test]
+    fn cleans_cli_error_prefix() {
+        assert_eq!(
+            clean_jj_message("Error: revset 'foo' is empty"),
+            "revset 'foo' is empty",
+        );
+    }
+
+    #[test]
+    fn cleans_libjj_wrapper_prefix() {
+        let raw = "libjj resolve revset \"heads(nzvkmnyu)\": \
+                   Change ID `nzvkmnyu` is divergent";
+        assert_eq!(
+            clean_jj_message(raw),
+            "Change ID `nzvkmnyu` is divergent",
+        );
+    }
+
+    #[test]
+    fn passes_through_unprefixed_messages() {
+        assert_eq!(clean_jj_message("just a message"), "just a message");
+    }
+
+    #[test]
+    fn extracts_divergent_id_from_cli_stderr() {
+        let stderr = "Error: Change ID `abcd1234` is divergent\nHint: ...";
+        assert_eq!(extract_divergent_change_id(stderr), Some("abcd1234"));
+    }
+
+    #[test]
+    fn extracts_divergent_id_from_libjj_message() {
+        let msg = "libjj resolve revset \"heads(abcd1234)\": \
+                   Change ID `abcd1234` is divergent";
+        assert_eq!(extract_divergent_change_id(msg), Some("abcd1234"));
+    }
+
+    #[test]
+    fn returns_none_for_non_divergent_messages() {
+        assert_eq!(extract_divergent_change_id("revset is empty"), None);
+    }
+
+    #[test]
+    fn jj_error_message_unwraps_parse_without_display_prefix() {
+        let err = kata_jj::Error::Parse("libjj resolve revset \"x\": boom".into());
+        assert_eq!(jj_error_message(&err), "libjj resolve revset \"x\": boom");
+    }
+
+    #[test]
+    fn jj_error_message_uses_stderr_for_cli_failure() {
+        let err = kata_jj::Error::JjFailed {
+            status: 1,
+            stderr: "Error: bad".into(),
+        };
+        assert_eq!(jj_error_message(&err), "Error: bad");
     }
 }
 
