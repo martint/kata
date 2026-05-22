@@ -175,10 +175,25 @@ export function diffLines(removeLine: string, addLine: string): LineWordDiff | n
   const shorter = a.length < b.length ? a.length : b.length;
   if (lcs * 10 < shorter * 3) return null;
   const { aKind, bKind } = classify(a, b, dp);
-  return {
-    removed: rangesFor(a, aKind, 'r'),
-    added: rangesFor(b, bKind, '+'),
-  };
+  const removed = rangesFor(a, aKind, 'r');
+  const added = rangesFor(b, bKind, '+');
+  // Drop word-diff entirely when the highlights would cover most
+  // of a long enough line. Two long sentences that share little
+  // beyond spaces, punctuation, and a handful of common short words
+  // still pass the token-LCS threshold above — the filler tokens
+  // inflate the match — but tinting 80%+ of the line as "changed"
+  // reads as noise, not signal. Short lines stay highlighted even
+  // when mostly different: a 7-character `foo bar` -> `FOO BAR`
+  // pair is small enough to scan as a single edit and the user
+  // wants to see what changed.
+  const removedChars = removed.reduce((s, r) => s + (r.end - r.start), 0);
+  const addedChars = added.reduce((s, r) => s + (r.end - r.start), 0);
+  const noisy = (len: number, covered: number) =>
+    len > 30 && covered * 5 > len * 3;
+  if (noisy(removeLine.length, removedChars) || noisy(addLine.length, addedChars)) {
+    return null;
+  }
+  return { removed, added };
 }
 
 /** Wrap the syntax-highlighted HTML's text at the given character ranges

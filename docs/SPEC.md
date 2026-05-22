@@ -340,9 +340,11 @@ diff:
 - changed lines get a row tint (green for adds, red for removes),
 - changed *words* within a line get a stronger inline highlight on
   top of the row tint, so the eye lands on the actual edits rather
-  than scanning the whole row. Whitespace-only changes (re-indents,
-  trailing spaces) are not inline-highlighted — the row tint already
-  flags the line, and tinting blank columns reads as noise.
+  than scanning the whole row. The inline highlight is suppressed
+  when it would read as noise: whitespace-only changes (re-indents,
+  trailing spaces), and pairs so dissimilar that tinting them would
+  cover most of the line. The row tint already flags the line in
+  both cases.
 
 Added and removed files render as a single column with no pairing.
 Renames are detected explicitly and rendered with both paths in

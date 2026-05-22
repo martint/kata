@@ -20,15 +20,17 @@ describe('diffLines', () => {
     expect(d!.added).toEqual([{ start: 4, end: 7 }]);
   });
 
-  test('still produces a diff for low-overlap pairs', () => {
-    // The pair was matched at the line level, so we keep showing
-    // word-diff even for very different content — the alternative
-    // (returning null) would silently swallow the highlighting on
-    // exactly the cases where it most needs to confirm what changed.
-    const d = diffLines('apple banana cherry', 'foxtrot golf hotel');
-    expect(d).not.toBeNull();
-    expect(d!.removed.length).toBeGreaterThan(0);
-    expect(d!.added.length).toBeGreaterThan(0);
+  test('drops word-diff when most of the line would be marked', () => {
+    // Two long sentences that share little beyond spaces and a
+    // handful of common short words still pass the LCS-over-shorter
+    // threshold — those filler tokens inflate the match — but
+    // tinting 80%+ of the line reads as noise. Drop the overlay
+    // and let the row tint do the work.
+    const d = diffLines(
+      'apple banana cherry strawberry mango',
+      'foxtrot golf hotel papaya kiwi',
+    );
+    expect(d).toBeNull();
   });
 
   test('handles added text in the middle', () => {
@@ -56,12 +58,14 @@ describe('diffLines', () => {
 
   test('does not extend a highlight onto adjacent changed whitespace', () => {
     // "bar" is genuinely new; the space before it only exists because
-    // "bar" was inserted. Highlight the word, not the blank gap.
+    // "bar" was inserted. Highlight the word, not the blank gap at
+    // its edge.
     const d = diffLines('foo', 'foo bar');
     expect(d).not.toBeNull();
     expect(d!.added).toEqual([{ start: 4, end: 7 }]);
     expect(d!.removed).toEqual([]);
   });
+
 });
 
 describe('computeHunkWordDiff', () => {
