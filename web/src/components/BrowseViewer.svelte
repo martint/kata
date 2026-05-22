@@ -143,7 +143,16 @@
     }
   }
 
+  /** Monotonic tokens guarding the two async loaders below. Quickly
+   *  stepping the selection (arrow keys, fast clicks) fires several
+   *  fetches at once; without a guard the slowest response wins
+   *  regardless of which commit is now selected, so the header could
+   *  end up describing a different commit than the diff beside it. */
+  let detailGen = 0;
+  let commitDiffGen = 0;
+
   async function loadDetail(commitId: CommitId | null) {
+    const gen = ++detailGen;
     if (!commitId) {
       detail = null;
       return;
@@ -153,7 +162,9 @@
     // anything the log row didn't carry.
     detail = page?.rows.find((r) => r.commit.commit_id === commitId) ?? null;
     try {
-      detail = await api.browseCommit(repo, commitId);
+      const fetched = await api.browseCommit(repo, commitId);
+      // Drop the response if a newer selection superseded it.
+      if (gen === detailGen) detail = fetched;
     } catch (e) {
       // Detail-fetch failures shouldn't take down the whole pane —
       // the optimistic data above is good enough. Log and move on.
@@ -169,6 +180,7 @@
     tip: CommitId | null,
     since: CommitId | null,
   ) {
+    const gen = ++commitDiffGen;
     if (!tip) {
       commitDiff = null;
       return;
@@ -177,11 +189,15 @@
     commitDiffError = null;
     commitDiffLoading = true;
     try {
-      commitDiff = await api.browseCommitDiff(repo, tip, since ?? undefined);
+      const fetched = await api.browseCommitDiff(repo, tip, since ?? undefined);
+      // Ignore a stale response — a newer selection is already loading.
+      if (gen === commitDiffGen) commitDiff = fetched;
     } catch (e) {
-      commitDiffError = e instanceof ApiError ? e.message : String(e);
+      if (gen === commitDiffGen) {
+        commitDiffError = e instanceof ApiError ? e.message : String(e);
+      }
     } finally {
-      commitDiffLoading = false;
+      if (gen === commitDiffGen) commitDiffLoading = false;
     }
   }
 
