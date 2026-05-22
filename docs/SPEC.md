@@ -229,16 +229,32 @@ Row two appears only on a review and carries review-scoped state:
 On the desktop the whole header is sticky; every control stays
 visible while the reader scrolls through the diff.
 
-On narrow viewports (≤640px) two things differ:
+On narrow viewports (≤640px) the review header is a distinct,
+compact layout — the desktop header's controls don't all fit a
+phone row legibly, so they're regrouped rather than wrapped into
+a ragged stack:
 
-- The draft-navigation cluster + **Discard** / **Publish** drop
-  onto a dedicated strip below row 1 rather than wrapping among
-  the search / author cluster, where they'd be easy to miss.
-- The header **hides on scroll**. The two-row header is tall on a
-  phone; it slides up out of the viewport as the reader scrolls
-  down into the diff, and slides back on any upward scroll (or
-  when the reader returns near the top). Nothing is removed —
-  every control is one short scroll-up gesture away.
+- **Row 1 — identity:** file-tree toggle, the Kata wordmark, the
+  review number + name, and on the right a 🔍 search button and a
+  **⋯ More** button.
+- **Row 2 — toolbar:** comment navigation, the view toggle, and a
+  **⚑ Filter** button that carries a badge with the count of
+  active filters.
+- **Drafts strip:** when the session has drafts, the
+  draft-navigation cluster + **Discard** / **Publish** sit on a
+  dedicated strip below row 2.
+- **Filter sheet:** tapping ⚑ opens a bottom sheet with the
+  status / severity chips (and a "show all" reset when a group is
+  fully off). The chips don't fit a phone row, so they live here.
+- **More sheet:** tapping ⋯ opens a bottom sheet with the
+  patchset pickers, commit navigation, scroll-to-top, and the
+  archive / delete review actions — the controls used too rarely
+  to spend a phone row on.
+
+The phone header also **hides on scroll**: it slides up out of
+the viewport as the reader scrolls down into the diff and slides
+back on any upward scroll (or on returning near the top). Nothing
+is removed — every control is a sheet tap or a scroll-up away.
 
 ### 3.2 The review list
 

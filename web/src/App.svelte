@@ -15,6 +15,7 @@
   import ReviewList from './components/ReviewList.svelte';
   import ReviewSearch from './components/ReviewSearch.svelte';
   import ReviewViewer, { type ReviewToolbarState } from './components/ReviewViewer.svelte';
+  import Sheet from './components/Sheet.svelte';
   import DemoOverlay from './demo/DemoOverlay.svelte';
 
   /** Demo tour gate. `?demo=1` on initial load latches a
@@ -124,6 +125,34 @@
    *  dynamically. The static fallback in app.css covers the very first
    *  paint before the observer is wired. */
   let headerEl: HTMLElement | undefined = $state();
+
+  /** True on phone-width viewports. The review header is a different
+   *  shape there — a compact two-row layout with the filter chips and
+   *  the overflow controls tucked into bottom sheets — so the markup
+   *  branches on this rather than leaning on CSS reflow alone. */
+  let narrowViewport = $state(false);
+  $effect(() => {
+    const mq = window.matchMedia('(max-width: 640px)');
+    narrowViewport = mq.matches;
+    const update = (e: MediaQueryListEvent) => (narrowViewport = e.matches);
+    mq.addEventListener('change', update);
+    return () => mq.removeEventListener('change', update);
+  });
+
+  /** Which mobile header sheet is open, if any. The filter sheet
+   *  holds the status / severity chips; the "More" sheet holds the
+   *  patchset pickers, commit navigation, and scroll-to-top — all
+   *  the controls that don't fit the compact two-row phone header. */
+  let filterSheetOpen = $state(false);
+  let moreSheetOpen = $state(false);
+
+  /** Count of active (off) filter chips, for the ⚑ button's badge. */
+  function activeFilterCount(f: NonNullable<ReviewToolbarState['filter']>): number {
+    let n = 0;
+    for (const on of Object.values(f.status)) if (!on) n++;
+    for (const on of Object.values(f.flag)) if (!on) n++;
+    return n;
+  }
 
   /** Hide-on-scroll for the sticky header on phones. The two-row
    *  review header eats ~200px of an 812px viewport; sliding it out
@@ -504,7 +533,259 @@
   });
 </script>
 
+<!-- Header control pieces, defined once and rendered in either the
+     desktop two-row header or the compact phone header (and its
+     sheets) below. Snippets live at component scope, not inside
+     `<header>`, so the sheet blocks after `</header>` can reach
+     them too. -->
+{#snippet scrollTopUI()}
+    <button
+      type="button"
+      onclick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+      title="Scroll to the top of the review"
+      aria-label="Scroll to top"
+    >↑ <span class="lbl">Top</span></button>
+  {/snippet}
+
+  {#snippet commitNavUI()}
+    {#if toolbar?.commits}
+      {@const commits = toolbar.commits}
+      <div
+        class="commit-nav"
+        role="group"
+        aria-label="Commit navigation"
+        title={commits.label}
+      >
+        <button onclick={commits.prev} title="Previous commit" aria-label="Previous commit"
+          ><Chevron dir="left" /></button>
+        <span class="position">
+          {commits.position === 0 ? 'All' : commits.position}/{commits.total}
+        </span>
+        <button onclick={commits.next} title="Next commit" aria-label="Next commit"
+          ><Chevron dir="right" /></button>
+        <span class="commit-label">{commits.label}</span>
+      </div>
+    {/if}
+  {/snippet}
+
+  {#snippet searchUI()}
+    {#if toolbar?.search}
+      {@const s = toolbar.search}
+      <ReviewSearch
+        open={s.open}
+        query={s.query}
+        total={s.total}
+        position={s.position}
+        loading={s.loading}
+        onqueryInput={s.onQueryInput}
+        onnext={s.onNext}
+        onprev={s.onPrev}
+        onopen={s.onOpen}
+        onclose={s.onClose}
+      />
+    {/if}
+  {/snippet}
+
+  {#snippet draftClusterUI()}
+    {#if toolbar?.drafts}
+      {@const drafts = toolbar.drafts}
+      <div class="action-cluster">
+        <div class="draft-nav" role="group" aria-label="Draft navigation">
+          {#if drafts.nav}
+            {@const nav = drafts.nav}
+            <button type="button" onclick={nav.prev} title="Previous draft" aria-label="Previous draft"
+              ><Chevron dir="left" /></button>
+            <span class="draft-count" aria-live="polite">
+              {nav.position || '–'}/<strong>{drafts.count}</strong>
+              <span class="lbl">draft{drafts.count === 1 ? '' : 's'}</span>
+            </span>
+            <button type="button" onclick={nav.next} title="Next draft" aria-label="Next draft"
+              ><Chevron dir="right" /></button>
+          {:else}
+            <span class="draft-count" aria-live="polite">
+              <strong>{drafts.count}</strong>
+              <span class="lbl">draft{drafts.count === 1 ? '' : 's'}</span>
+            </span>
+          {/if}
+        </div>
+        <button onclick={drafts.discard} disabled={drafts.saving}>Discard</button>
+        <button class="primary" onclick={drafts.publish} disabled={drafts.saving}>
+          {drafts.saving ? 'Publishing…' : 'Publish'}
+        </button>
+      </div>
+    {/if}
+  {/snippet}
+
+  {#snippet patchsetUI()}
+    {#if toolbar?.patchsets}
+      {@const ps = toolbar.patchsets}
+      <span class="ps-picker-group" data-tour="patchset-picker">
+        <label class="ps-picker">
+          <span class="muted">Patchset</span>
+          <select
+            value={ps.selected}
+            onchange={(e) =>
+              ps.select(Number((e.currentTarget as HTMLSelectElement).value))}
+          >
+            {#each ps.options as opt (opt.n)}
+              <option value={opt.n}>{opt.label}</option>
+            {/each}
+          </select>
+        </label>
+        <label class="ps-picker">
+          <span class="muted">compared to</span>
+          <select
+            value={ps.compareWith ?? ''}
+            onchange={(e) => {
+              const v = (e.currentTarget as HTMLSelectElement).value;
+              ps.selectCompareWith(v === '' ? null : Number(v));
+            }}
+          >
+            <option value="">base</option>
+            {#each ps.options as opt (opt.n)}
+              {#if opt.n !== ps.selected}
+                <option value={opt.n}>PS{opt.n}</option>
+              {/if}
+            {/each}
+          </select>
+        </label>
+      </span>
+    {/if}
+  {/snippet}
+
+  {#snippet commentNavUI()}
+    {#if toolbar?.comments}
+      {@const c = toolbar.comments}
+      <div
+        class="comment-nav"
+        role="group"
+        aria-label="Comment navigation"
+        data-tour="comment-nav"
+      >
+        <button type="button" onclick={c.prev} title="Previous comment" aria-label="Previous comment"
+          ><Chevron dir="left" /></button>
+        <span class="position" aria-live="polite">
+          {c.position || '–'}/{c.total}
+        </span>
+        <button type="button" onclick={c.next} title="Next comment" aria-label="Next comment"
+          ><Chevron dir="right" /></button>
+      </div>
+    {/if}
+  {/snippet}
+
+  {#snippet filterChipsUI()}
+    {#if toolbar?.filter}
+      {@const filter = toolbar.filter}
+      <div class="filter-chips" data-tour="filter-chips">
+        <span class="label">Status</span>
+        <button type="button" class="chip status-draft" class:on={filter.status.draft}
+          aria-pressed={filter.status.draft} onclick={() => filter.toggleStatus('draft')}>Draft</button>
+        <button type="button" class="chip status-open" class:on={filter.status.open}
+          aria-pressed={filter.status.open} onclick={() => filter.toggleStatus('open')}>Open</button>
+        <button type="button" class="chip status-resolved" class:on={filter.status.resolved}
+          aria-pressed={filter.status.resolved} onclick={() => filter.toggleStatus('resolved')}>Resolved</button>
+        <span class="sep" aria-hidden="true"></span>
+        <span class="label">Severity</span>
+        <button type="button" class="chip flag-must-do" class:on={filter.flag['must-do']}
+          aria-pressed={filter.flag['must-do']} onclick={() => filter.toggleFlag('must-do')}>Must do</button>
+        <button type="button" class="chip flag-suggestion" class:on={filter.flag.suggestion}
+          aria-pressed={filter.flag.suggestion} onclick={() => filter.toggleFlag('suggestion')}>Suggestion</button>
+        <button type="button" class="chip flag-question" class:on={filter.flag.question}
+          aria-pressed={filter.flag.question} onclick={() => filter.toggleFlag('question')}>Question</button>
+      </div>
+    {/if}
+  {/snippet}
+
+  {#snippet viewToggleUI()}
+    {#if toolbar?.view}
+      {@const v = toolbar.view}
+      <div class="view-toggle" role="radiogroup" aria-label="View mode" data-tour="view-toggle">
+        <button type="button" class="seg" class:on={v.mode === 'both'} role="radio"
+          aria-checked={v.mode === 'both'} onclick={() => v.set('both')}
+          title="Show diffs and comment threads">Both</button>
+        <button type="button" class="seg" class:on={v.mode === 'diffs'} role="radio"
+          aria-checked={v.mode === 'diffs'} onclick={() => v.set('diffs')}
+          title="Show only the diffs, hide comment threads">Diffs</button>
+        <button type="button" class="seg" class:on={v.mode === 'comments'} role="radio"
+          aria-checked={v.mode === 'comments'} onclick={() => v.set('comments')}
+          title="Show only the comments, hide the diffs">Comments</button>
+      </div>
+    {/if}
+  {/snippet}
+
 <header class="app" class:header-hidden={headerHidden} bind:this={headerEl}>
+  {#if narrowViewport && screen.kind === 'review' && toolbar}
+    <!-- ===== Phone review header: two coherent rows ===== -->
+    {@const t = toolbar}
+    <!-- Row 1 — identity: where am I + the two ways out (search, More). -->
+    <div class="m-row m-identity">
+      <button
+        class="tree-button"
+        type="button"
+        onclick={t.tree.toggle}
+        aria-label="Toggle file list"
+        aria-expanded={!t.tree.collapsed}
+      >☰</button>
+      <h1>
+        <a
+          href="/"
+          class="home-link"
+          onclick={(e) => { e.preventDefault(); goHome(); }}
+          aria-label="Kata — back to review list"
+        >
+          <img class="app-icon" src="/favicon.svg" alt="" width="22" height="22" />
+          <span class="m-wordmark">Kata</span>
+        </a>
+      </h1>
+      {#if t.title}
+        <span class="m-crumb" aria-hidden="true">›</span>
+        <span class="review-title">
+          <span class="review-number">#{t.title.number}</span>
+          <span class="review-name">{t.title.name}</span>
+          {#if t.title.archived}
+            <span class="archived-badge" title="Archived — read-only until unarchived">Archived</span>
+          {/if}
+        </span>
+      {/if}
+      {#if loading}<span class="spinner" aria-label="loading"></span>{/if}
+      <span style="flex: 1"></span>
+      <!-- The search wrapper drops to a full-width line of its own
+           when expanded (see `.m-search.open`), so the More button
+           stays put on row 1 instead of being orphaned below it. -->
+      <span class="m-search" class:open={t.search?.open}>
+        {@render searchUI()}
+      </span>
+      <button
+        class="m-icon-btn"
+        type="button"
+        onclick={() => (moreSheetOpen = true)}
+        aria-label="More controls"
+        aria-haspopup="dialog"
+      >⋯</button>
+    </div>
+    <!-- Row 2 — toolbar: the controls used constantly while reading. -->
+    <div class="m-row m-toolbar">
+      {@render commentNavUI()}
+      {@render viewToggleUI()}
+      <span style="flex: 1"></span>
+      {#if t.filter}
+        {@const fc = activeFilterCount(t.filter)}
+        <button
+          class="m-filter-btn"
+          class:active={fc > 0}
+          type="button"
+          onclick={() => (filterSheetOpen = true)}
+          aria-label="Filter comments"
+          aria-haspopup="dialog"
+        >
+          <span class="m-filter-glyph" aria-hidden="true">⚑</span>
+          Filter
+          {#if fc > 0}<span class="m-filter-badge">{fc}</span>{/if}
+        </button>
+      {/if}
+    </div>
+    {@render draftClusterUI()}
+  {:else}
   <!-- Row 1: global app controls. Always present. -->
   <div class="header-row primary">
     {#if toolbar}
@@ -535,111 +816,20 @@
       </a>
     </h1>
     {#if screen.kind === 'review'}
-      <button
-        onclick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
-        title="Scroll to the top of the review"
-        aria-label="Scroll to top"
-      >↑ <span class="lbl">Top</span></button>
-      {#if toolbar?.commits}
-        {@const commits = toolbar.commits}
-        <div
-          class="commit-nav"
-          role="group"
-          aria-label="Commit navigation"
-          title={commits.label}
-        >
-          <button
-            onclick={commits.prev}
-            title="Previous commit"
-            aria-label="Previous commit"
-          ><Chevron dir="left" /></button>
-          <span class="position">
-            {commits.position === 0 ? 'All' : commits.position}/{commits.total}
-          </span>
-          <button
-            onclick={commits.next}
-            title="Next commit"
-            aria-label="Next commit"
-          ><Chevron dir="right" /></button>
-          <span class="commit-label">{commits.label}</span>
-        </div>
-      {/if}
+      {@render scrollTopUI()}
+      {@render commitNavUI()}
     {/if}
     {#if loading}
       <span class="spinner" aria-label="loading"></span>
     {/if}
     <span style="flex: 1"></span>
-    {#if toolbar?.search}
-      {@const s = toolbar.search}
-      <!-- Search lives in row 1 (the always-on top bar) rather than
-           row 2: row 2 is already crowded with the review identity
-           plus chips + nav + view toggle, and slotting the search
-           strip in there pushes the chip cluster off the line on
-           anything narrower than a wide laptop. Row 1's right side
-           has fewer obligations (just the drafts cluster + signed-
-           in indicator), so the search bar's expanded width fits
-           without wrapping. -->
-      <ReviewSearch
-        open={s.open}
-        query={s.query}
-        total={s.total}
-        position={s.position}
-        loading={s.loading}
-        onqueryInput={s.onQueryInput}
-        onnext={s.onNext}
-        onprev={s.onPrev}
-        onopen={s.onOpen}
-        onclose={s.onClose}
-      />
-    {/if}
-    {#if toolbar}
-      {#if toolbar.drafts}
-        {@const drafts = toolbar.drafts}
-        <!-- Action cluster: draft navigation + Discard + Publish.
-             `display: contents` on desktop so it stays a flat row of
-             flex children; on phones the wrapper becomes a flex line
-             of its own (`flex-basis: 100%`) so the publish/discard
-             pair always lands on a dedicated, visible strip below
-             row 1 instead of wrapping behind the search/auth cluster
-             where the user couldn't find them. -->
-        <div class="action-cluster">
-          <div class="draft-nav" role="group" aria-label="Draft navigation">
-            {#if drafts.nav}
-              {@const nav = drafts.nav}
-              <button
-                type="button"
-                onclick={nav.prev}
-                title="Previous draft"
-                aria-label="Previous draft"
-              ><Chevron dir="left" /></button>
-              <span class="draft-count" aria-live="polite">
-                {nav.position || '–'}/<strong>{drafts.count}</strong>
-                <span class="lbl">draft{drafts.count === 1 ? '' : 's'}</span>
-              </span>
-              <button
-                type="button"
-                onclick={nav.next}
-                title="Next draft"
-                aria-label="Next draft"
-              ><Chevron dir="right" /></button>
-            {:else}
-              <!-- Sessions with only draft replies (no draft comments)
-                   don't have an independent scroll target to nav
-                   between, but we still show the count + publish so
-                   users aren't stranded. -->
-              <span class="draft-count" aria-live="polite">
-                <strong>{drafts.count}</strong>
-                <span class="lbl">draft{drafts.count === 1 ? '' : 's'}</span>
-              </span>
-            {/if}
-          </div>
-          <button onclick={drafts.discard} disabled={drafts.saving}>Discard</button>
-          <button class="primary" onclick={drafts.publish} disabled={drafts.saving}>
-            {drafts.saving ? 'Publishing…' : 'Publish'}
-          </button>
-        </div>
-      {/if}
-    {/if}
+    <!-- Search lives in row 1 (the always-on top bar) rather than
+         row 2: row 2 is already crowded with the review identity
+         plus chips + nav + view toggle. Row 1's right side has
+         fewer obligations, so the search bar's expanded width fits
+         without wrapping. -->
+    {@render searchUI()}
+    {@render draftClusterUI()}
     {#if whoami}
       <span class="author">signed in as {whoami.author}</span>
     {/if}
@@ -683,40 +873,7 @@
           />
         {/if}
       </span>
-      {#if toolbar.patchsets}
-        {@const ps = toolbar.patchsets}
-        <span class="ps-picker-group" data-tour="patchset-picker">
-          <label class="ps-picker">
-            <span class="muted">Patchset</span>
-            <select
-              value={ps.selected}
-              onchange={(e) =>
-                ps.select(Number((e.currentTarget as HTMLSelectElement).value))}
-            >
-              {#each ps.options as opt (opt.n)}
-                <option value={opt.n}>{opt.label}</option>
-              {/each}
-            </select>
-          </label>
-          <label class="ps-picker">
-            <span class="muted">compared to</span>
-            <select
-              value={ps.compareWith ?? ''}
-              onchange={(e) => {
-                const v = (e.currentTarget as HTMLSelectElement).value;
-                ps.selectCompareWith(v === '' ? null : Number(v));
-              }}
-            >
-              <option value="">base</option>
-              {#each ps.options as opt (opt.n)}
-                {#if opt.n !== ps.selected}
-                  <option value={opt.n}>PS{opt.n}</option>
-                {/if}
-              {/each}
-            </select>
-          </label>
-        </span>
-      {/if}
+      {@render patchsetUI()}
       <!-- Float controls to the right so the title gets breathing
            room from the chips next to it. -->
       <span style="flex: 1"></span>
@@ -726,31 +883,7 @@
            the nav or hint disappears (no comments, filter not empty),
            only the elements between the title spacer and the chips
            shift — the chips themselves keep their position. -->
-      {#if toolbar.comments}
-        {@const c = toolbar.comments}
-        <div
-          class="comment-nav"
-          role="group"
-          aria-label="Comment navigation"
-          data-tour="comment-nav"
-        >
-          <button
-            type="button"
-            onclick={c.prev}
-            title="Previous comment"
-            aria-label="Previous comment"
-          ><Chevron dir="left" /></button>
-          <span class="position" aria-live="polite">
-            {c.position || '–'}/{c.total}
-          </span>
-          <button
-            type="button"
-            onclick={c.next}
-            title="Next comment"
-            aria-label="Next comment"
-          ><Chevron dir="right" /></button>
-        </div>
-      {/if}
+      {@render commentNavUI()}
       {#if toolbar.filter && toolbar.filter.hiddenCount > 0}
         <button
           type="button"
@@ -762,96 +895,69 @@
           {toolbar.filter.hiddenCount === 1 ? 'comment' : 'comments'} — show all
         </button>
       {/if}
-      {#if toolbar.filter}
-        {@const filter = toolbar.filter}
-        <div class="filter-chips" data-tour="filter-chips">
-          <span class="label">Status</span>
-          <button
-            type="button"
-            class="chip status-draft"
-            class:on={filter.status.draft}
-            aria-pressed={filter.status.draft}
-            onclick={() => filter.toggleStatus('draft')}
-          >Draft</button>
-          <button
-            type="button"
-            class="chip status-open"
-            class:on={filter.status.open}
-            aria-pressed={filter.status.open}
-            onclick={() => filter.toggleStatus('open')}
-          >Open</button>
-          <button
-            type="button"
-            class="chip status-resolved"
-            class:on={filter.status.resolved}
-            aria-pressed={filter.status.resolved}
-            onclick={() => filter.toggleStatus('resolved')}
-          >Resolved</button>
-          <span class="sep" aria-hidden="true"></span>
-          <span class="label">Severity</span>
-          <button
-            type="button"
-            class="chip flag-must-do"
-            class:on={filter.flag['must-do']}
-            aria-pressed={filter.flag['must-do']}
-            onclick={() => filter.toggleFlag('must-do')}
-          >Must do</button>
-          <button
-            type="button"
-            class="chip flag-suggestion"
-            class:on={filter.flag.suggestion}
-            aria-pressed={filter.flag.suggestion}
-            onclick={() => filter.toggleFlag('suggestion')}
-          >Suggestion</button>
-          <button
-            type="button"
-            class="chip flag-question"
-            class:on={filter.flag.question}
-            aria-pressed={filter.flag.question}
-            onclick={() => filter.toggleFlag('question')}
-          >Question</button>
+      {@render filterChipsUI()}
+      {@render viewToggleUI()}
+    </div>
+  {/if}
+  {/if}
+</header>
+
+{#if narrowViewport && filterSheetOpen && toolbar?.filter}
+  {@const filter = toolbar.filter}
+  <Sheet title="Filter comments" onclose={() => (filterSheetOpen = false)}>
+    {@render filterChipsUI()}
+    {#if filter.hiddenCount > 0}
+      <button
+        type="button"
+        class="sheet-reset"
+        onclick={() => { filter.reset(); filterSheetOpen = false; }}
+      >
+        Show all — {filter.hiddenCount} hidden
+      </button>
+    {/if}
+  </Sheet>
+{/if}
+
+{#if narrowViewport && moreSheetOpen && toolbar}
+  {@const t = toolbar}
+  <Sheet title="More" onclose={() => (moreSheetOpen = false)}>
+    <div class="more-sheet">
+      {#if t.patchsets}
+        <div class="more-row">
+          <span class="more-label">Patchset</span>
+          {@render patchsetUI()}
         </div>
       {/if}
-      {#if toolbar.view}
-        {@const v = toolbar.view}
-        <div
-          class="view-toggle"
-          role="radiogroup"
-          aria-label="View mode"
-          data-tour="view-toggle"
-        >
+      {#if t.commits}
+        <div class="more-row">
+          <span class="more-label">Commit</span>
+          {@render commitNavUI()}
+        </div>
+      {/if}
+      <div class="more-row">
+        <span class="more-label">Page</span>
+        {@render scrollTopUI()}
+      </div>
+      {#if t.actions}
+        {@const a = t.actions}
+        <div class="more-row more-actions">
+          <span class="more-label">Review</span>
           <button
             type="button"
-            class="seg"
-            class:on={v.mode === 'both'}
-            role="radio"
-            aria-checked={v.mode === 'both'}
-            onclick={() => v.set('both')}
-            title="Show diffs and comment threads"
-          >Both</button>
+            onclick={() => { void a.archive(); moreSheetOpen = false; }}
+            disabled={a.busy || !a.manageable}
+          >{a.archived ? 'Unarchive' : 'Archive'}</button>
           <button
             type="button"
-            class="seg"
-            class:on={v.mode === 'diffs'}
-            role="radio"
-            aria-checked={v.mode === 'diffs'}
-            onclick={() => v.set('diffs')}
-            title="Show only the diffs, hide comment threads"
-          >Diffs</button>
-          <button
-            type="button"
-            class="seg"
-            class:on={v.mode === 'comments'}
-            role="radio"
-            aria-checked={v.mode === 'comments'}
-            onclick={() => v.set('comments')}
-            title="Show only the comments, hide the diffs"
-          >Comments</button>
+            class="danger"
+            onclick={() => { void a.delete(); moreSheetOpen = false; }}
+            disabled={a.busy || !a.manageable}
+          >Delete…</button>
         </div>
       {/if}
     </div>
-  {/if}
-</header>
+  </Sheet>
+{/if}
 
 <main class:wide={screen.kind === 'review'} class:browse-main={screen.kind === 'browse'}>
   {#if error}

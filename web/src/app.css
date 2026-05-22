@@ -283,7 +283,7 @@ header.app button {
   font-size: 12px;
 }
 
-header.app .commit-nav {
+.commit-nav {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -296,7 +296,7 @@ header.app .commit-nav {
   min-width: 0;
 }
 
-header.app .commit-nav button {
+.commit-nav button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -305,7 +305,7 @@ header.app .commit-nav button {
   flex: 0 0 auto;
 }
 
-header.app .commit-nav .position {
+.commit-nav .position {
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
   text-align: center;
@@ -315,7 +315,7 @@ header.app .commit-nav .position {
   padding: 0 6px 0 2px;
 }
 
-header.app .commit-nav .commit-label {
+.commit-nav .commit-label {
   color: var(--text);
   white-space: nowrap;
   overflow: hidden;
@@ -352,25 +352,18 @@ header.app .tree-button {
     padding: 8px 12px;
   }
 
+  /* The home + browse screens still use the desktop `.header-row`
+   * markup on a phone — only the *review* header gets the bespoke
+   * two-row `.m-row` treatment further down. Let that single row
+   * wrap and grow rather than clipping its contents. */
   header.app .header-row {
     padding: 0 8px;
     gap: 6px;
-    /* Allow the row to wrap if it can't fit on one line — the wrapped
-     * bottom sits below the start of the row and is fully visible
-     * without scrolling. */
     flex-wrap: wrap;
     height: auto;
     min-height: 44px;
   }
-  /* Same height-clamp removal, repeated with the more-specific
-   * selector that the desktop rule uses. Without this the mobile
-   * `.header-row` override is beaten on specificity grounds and the
-   * row stays pinned to 48px, which then visually clips any wrapped
-   * second line (notably the action-cluster strip — Publish/Discard
-   * paint at y≈70 but row 2 starts at y≈48 with an opaque background
-   * and covers them). */
-  header.app .header-row.primary,
-  header.app .header-row.review {
+  header.app .header-row.primary {
     height: auto;
     min-height: 44px;
   }
@@ -379,116 +372,247 @@ header.app .tree-button {
     font-size: 15px;
   }
 
-  header.app .tree-button {
-    display: inline-flex;
-  }
-
   header.app .author {
     display: none;
   }
 
-  /* `.lbl` is the human-readable label inside buttons that we shrink to
-   * an icon on phones. Hiding the label keeps the icon-only affordance
-   * while the desktop view still reads naturally. */
+  /* `.lbl` is the human-readable label inside buttons that we shrink
+   * to an icon on phones. */
   header.app .lbl {
     display: none;
   }
 
-  header.app button {
-    padding: 4px 8px;
+  /* ===== Phone review header — the bespoke two-row layout ======== */
+
+  /* Both rows are a fixed 44px with a consistent gap. Each row is
+   * sized to fit its contents, so nothing spills onto a third line —
+   * the previous layout wrapped into 5–7 ragged lines. */
+  header.app .m-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 44px;
+    padding: 0 8px;
+    background: var(--bg-panel);
+  }
+  header.app .m-row.m-toolbar {
+    gap: 6px;
+    border-top: 1px solid var(--border-muted);
+  }
+  /* Row 1 wraps for one case only: the search field, when expanded,
+   * takes a full line of its own below the identity strip. */
+  header.app .m-identity {
+    flex-wrap: wrap;
+    height: auto;
+    min-height: 44px;
+  }
+  header.app .m-search {
+    display: inline-flex;
+    flex: 0 0 auto;
+  }
+  /* Expanded search: `order` + full basis push it onto its own
+   * wrapped line so the More button isn't stranded beneath it. */
+  header.app .m-search.open {
+    order: 2;
+    flex: 1 0 100%;
+    margin-bottom: 6px;
   }
 
-  /* Move the draft-nav + Discard + Publish cluster onto its own
-   * sticky-aligned strip below row 1. With `flex-basis: 100%` the
-   * cluster forces a wrap; `order: 2` ensures it lands at the end of
-   * the wrap chain even if row 1's intrinsic widths nearly fit. The
-   * top border + tinted background turn the strip into a clearly-
-   * delineated zone so the user reads "this is where the publish
-   * lives" instead of "the cluster fell off the right edge".
-   * Publish/Discard previously wrapped behind the search + author
-   * cluster on narrow viewports and disappeared from the visible
-   * fold. */
+  header.app .m-row h1 {
+    font-size: 15px;
+    flex: 0 0 auto;
+  }
+  header.app .m-wordmark {
+    font-weight: 600;
+  }
+  /* Breadcrumb tick between the Kata wordmark and the review title. */
+  header.app .m-crumb {
+    color: var(--text-faint);
+    flex: 0 0 auto;
+  }
+  header.app .m-row .review-title {
+    min-width: 0;
+    font-size: 13px;
+  }
+  header.app .m-row .review-name {
+    max-width: 16ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* Every header icon button — tree toggle, More — shares one size
+   * and shape so the row reads as a tidy set, not a pile of
+   * mismatched controls. */
+  header.app .tree-button,
+  header.app .m-icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 34px;
+    height: 32px;
+    padding: 0;
+    font-size: 17px;
+    line-height: 1;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text);
+    cursor: pointer;
+  }
+  header.app .tree-button:hover,
+  header.app .m-icon-btn:hover {
+    background: var(--bg-elevated);
+  }
+
+  /* Filter button: flag glyph + label + active-count badge. The
+   * badge counts chips currently filtering something out. */
+  header.app .m-filter-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    flex: 0 0 auto;
+    height: 32px;
+    padding: 0 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 12px;
+    cursor: pointer;
+  }
+  header.app .m-filter-btn.active {
+    border-color: var(--link);
+    color: var(--link);
+  }
+  header.app .m-filter-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    border-radius: 9999px;
+    background: var(--link);
+    color: var(--on-accent);
+    font-size: 10px;
+    font-weight: 600;
+  }
+
+  /* Drafts strip: a full-width band under row 2 — draft-nav pushed
+   * left, Discard / Publish on the right. Balanced, not floated
+   * against an empty gap. */
   header.app .action-cluster {
     display: flex;
     align-items: center;
-    justify-content: flex-end;
-    gap: 6px;
-    flex-basis: 100%;
-    order: 2;
-    padding: 6px 8px;
-    margin: 0 -8px;
+    gap: 8px;
+    height: 44px;
+    padding: 0 10px;
     border-top: 1px solid var(--border-muted);
     background: var(--bg-panel);
   }
-
-  /* ---- Row 2 pruning on phones --------------------------------- */
-  /* The review-row carries a lot on desktop: title, patchset
-   * pickers with labels, search, comment-nav, filter chip groups
-   * with their "Status" / "Severity" headers, and the three-segment
-   * view toggle. On a 375px viewport all of that wraps to two or
-   * three lines and reads as visual debris. Prune aggressively: hide
-   * group labels, drop the position counter, shorten the title, tighten
-   * chip padding. The functional affordances all stay — they're just
-   * harder to mistake for noise. */
-
-  /* Title: tighter max-width so a long review name doesn't push the
-   * cluster past the right edge. The ellipsis already handles overflow. */
-  header.app .review-title .review-name {
-    max-width: 14ch;
+  header.app .action-cluster .draft-nav {
+    margin-right: auto;
   }
 
-  /* Patchset pickers: hide the "Patchset" / "compared to" text
-   * labels, leave the bare <select> controls. The dropdown's first
-   * option ("PSn") makes the role obvious. */
-  header.app .ps-picker .muted {
-    display: none;
+  /* Toolbar row: trim the view-toggle + comment-nav so all three
+   * groups (nav · view · filter) fit one 375px line without
+   * overflowing. */
+  header.app .m-toolbar .view-toggle .seg {
+    padding: 3px 7px;
   }
-  header.app .ps-picker-group {
-    gap: 4px;
-  }
-  header.app .ps-picker select {
-    padding: 2px 4px;
-    font-size: 11px;
-  }
-
-  /* Filter chips: hide the "Status" / "Severity" group labels and
-   * the vertical separator between them. The chips themselves carry
-   * the meaning. Tighten chip padding so all six fit comfortably. */
-  header.app .filter-chips .label,
-  header.app .filter-chips .sep {
-    display: none;
-  }
-  header.app .filter-chips {
-    gap: 4px;
-  }
-  header.app .chip {
-    padding: 2px 6px;
-    font-size: 10px;
-  }
-
-  /* Comment-nav: hide the M/N counter and keep just the chevrons.
-   * The position number is a desktop convenience; on a cramped phone
-   * row the prev/next pair is the load-bearing part. */
-  header.app .comment-nav .position {
-    display: none;
-  }
-  header.app .comment-nav {
+  header.app .m-toolbar .comment-nav {
+    flex: 0 0 auto;
     gap: 2px;
   }
-
-  /* View toggle: compact text. "Both / Diffs / Comments" already
-   * fits, but the padding bloats it; shrink that. */
-  header.app .view-toggle .seg {
-    padding: 2px 6px;
+  header.app .m-toolbar .comment-nav button {
+    padding: 4px 5px;
   }
+}
 
-  /* Filter-empty hint: it only renders when every chip in a group is
-   * off, which is a deliberate user action — so its full prose ("Filter
-   * hides N comments — show all") is fine. Just shrink padding to match
-   * the cluster around it. */
-  header.app .filter-empty-hint {
-    padding: 2px 6px;
-  }
+/* ---- Phone header bottom sheets (filter / More) ----------------- */
+/* The sheet shell itself lives in `Sheet.svelte`; these rules style
+ * the content `App.svelte` renders inside it. Only reachable on a
+ * phone (the sheets render behind `narrowViewport`). */
+
+/* Filter sheet: the chip cluster gets room to breathe — full-size
+ * chips, group labels visible, wrapping freely. */
+.sheet-body .filter-chips {
+  gap: 8px;
+}
+
+/* "Show all" reset, shown in the filter sheet when every chip in a
+ * group is off. */
+.sheet-reset {
+  margin-top: 14px;
+  width: 100%;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-panel);
+  color: var(--link);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.sheet-reset:hover {
+  background: var(--link-bg);
+}
+
+/* More sheet: a vertical stack of labelled control rows. */
+.more-sheet {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.more-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border-muted);
+}
+.more-row:last-child {
+  border-bottom: none;
+}
+.more-label {
+  flex: 0 0 84px;
+  color: var(--text-muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.more-row select {
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+.more-row button {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.more-row button:hover:not(:disabled) {
+  background: var(--bg-elevated);
+}
+.more-row button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.more-actions button.danger {
+  color: var(--error-text);
+  border-color: var(--error-border);
 }
 
 /* ---- Row 2 (review): title + filter chips + comment nav --------- */
@@ -514,7 +638,7 @@ header.app .review-title .review-name {
   max-width: 28ch;
 }
 
-header.app .ps-picker-group {
+.ps-picker-group {
   /* Wrapper used by the demo tour to highlight both pickers as a
    * single unit. Acts as a flex container so the two `.ps-picker`
    * labels keep their inline layout, then sits as a flex item in
@@ -524,14 +648,14 @@ header.app .ps-picker-group {
   gap: 10px;
 }
 
-header.app .ps-picker {
+.ps-picker {
   display: inline-flex;
   align-items: baseline;
   gap: 4px;
   font-size: 12px;
 }
 
-header.app .ps-picker select {
+.ps-picker select {
   font: inherit;
   padding: 4px 6px;
 }
@@ -550,7 +674,7 @@ header.app .review-title .archived-badge {
   text-transform: uppercase;
 }
 
-header.app .filter-chips {
+.filter-chips {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -558,7 +682,7 @@ header.app .filter-chips {
   min-width: 0;
 }
 
-header.app .filter-chips .label {
+.filter-chips .label {
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -566,14 +690,14 @@ header.app .filter-chips .label {
   margin-right: 2px;
 }
 
-header.app .filter-chips .sep {
+.filter-chips .sep {
   width: 1px;
   height: 16px;
   background: var(--border);
   margin: 0 6px;
 }
 
-header.app .chip {
+.chip {
   border: 1px solid var(--border);
   border-radius: 9999px;
   padding: 2px 10px;
@@ -584,41 +708,41 @@ header.app .chip {
   cursor: pointer;
 }
 
-header.app .chip:hover {
+.chip:hover {
   background: var(--bg-panel);
 }
 
-header.app .chip.on.status-draft {
+.chip.on.status-draft {
   background: var(--attention-bg);
   color: var(--attention-text);
   border-color: var(--attention-border);
 }
 
-header.app .chip.on.status-open {
+.chip.on.status-open {
   background: var(--link-bg);
   color: var(--link);
   border-color: var(--link);
 }
 
-header.app .chip.on.status-resolved {
+.chip.on.status-resolved {
   background: var(--success-bg);
   color: var(--success-text);
   border-color: var(--success-text);
 }
 
-header.app .chip.on.flag-must-do {
+.chip.on.flag-must-do {
   background: var(--error-bg);
   color: var(--error-text);
   border-color: var(--error-text);
 }
 
-header.app .chip.on.flag-suggestion {
+.chip.on.flag-suggestion {
   background: var(--link-bg);
   color: var(--link);
   border-color: var(--link);
 }
 
-header.app .chip.on.flag-question {
+.chip.on.flag-question {
   background: var(--question-bg);
   color: var(--question-text);
   border-color: var(--question-text);
