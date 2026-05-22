@@ -479,6 +479,13 @@ stack of existing threads above the diff, the file-level composer
 mounts below the visible fold; without the scroll the user would
 click "comment on this file" and see nothing change.
 
+If the reviewer is viewing an older patchset (not the review's
+latest), the composer shows a warning: the comment anchors to
+that older patchset and its anchor may drift once the
+conversation moves on to a newer round. The comment is still
+allowed — sometimes a point is specifically about the older
+state — but the reviewer is told before they write it.
+
 ---
 
 ## 7. Annotations

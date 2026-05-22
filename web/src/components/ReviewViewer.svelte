@@ -300,6 +300,22 @@
   let saving = $state(false);
   let error: string | null = $state(null);
 
+  // Reactive context the comment composer reads to warn when a
+  // comment is being written against a patchset that's no longer
+  // the latest — its anchor may drift once the reader moves to a
+  // newer round. A function (not a value) so consumers re-read it
+  // as `selectedPatchset` / the manifest change; returns null when
+  // the viewed patchset *is* the latest.
+  setContext<() => { viewing: number; latest: number } | null>(
+    'kata-patchset-warning',
+    () => {
+      const latest = current.manifest.current_patchset;
+      return selectedPatchset < latest
+        ? { viewing: selectedPatchset, latest }
+        : null;
+    },
+  );
+
   // --- View mode ------------------------------------------------------
   // Three mutually-exclusive display modes: diffs + comments (default),
   // diffs with comments collapsed (compact reading), and comments only

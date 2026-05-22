@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { getContext } from 'svelte';
   import { renderMarkdown } from '../lib/markdown';
   import type { ComposerTarget, DraftCommentInput, Flag } from '../lib/types';
 
@@ -10,6 +11,16 @@
     onsubmit: (input: DraftCommentInput) => Promise<void>;
   }
   const { target, anchorIds, saving, oncancel, onsubmit }: Props = $props();
+
+  /** Set by `ReviewViewer`. Returns `{ viewing, latest }` when the
+   *  reader is on an older patchset than the review's latest — the
+   *  comment will anchor to that older round and may drift once the
+   *  conversation moves on. Null (or absent) when on the latest. */
+  const patchsetWarning =
+    getContext<(() => { viewing: number; latest: number } | null) | undefined>(
+      'kata-patchset-warning',
+    );
+  const stale = $derived(patchsetWarning?.() ?? null);
 
   // Seed from `target.editing` so the composer opens with the draft's
   // current body/flag when re-entering. `$state` ignores its initial
@@ -83,6 +94,14 @@
 </script>
 
 <form class="composer" onsubmit={submit}>
+  {#if stale}
+    <p class="stale-warning" role="status">
+      ⚠ Commenting on <strong>PS{stale.viewing}</strong> — not the
+      latest (<strong>PS{stale.latest}</strong>). This comment
+      anchors to PS{stale.viewing}; it may drift once the change
+      moves on.
+    </p>
+  {/if}
   <header>
     <div class="flags">
       <label><input type="radio" bind:group={flag} value="must-do" /> Must do</label>
@@ -150,6 +169,20 @@
     padding: 10px 12px;
     font-family: ui-sans-serif, system-ui, sans-serif;
     font-size: 13px;
+  }
+
+  /* Shown when the comment is being written against a patchset
+   * that's no longer the latest — the attention palette so it
+   * registers without reading as an error. */
+  .stale-warning {
+    margin: 0;
+    padding: 6px 10px;
+    border: 1px solid var(--attention-border);
+    border-radius: 4px;
+    background: var(--attention-bg);
+    color: var(--attention-text);
+    font-size: 12px;
+    line-height: 1.4;
   }
 
   .composer header {
