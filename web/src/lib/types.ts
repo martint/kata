@@ -83,6 +83,9 @@ export interface LogRow {
   bookmarks?: string[];
   /** True iff this commit is the workspace's `@`. */
   is_working_copy?: boolean;
+  /** True iff this commit is immutable — an ancestor of
+   *  `immutable_heads()` (`trunk()` by default). */
+  immutable?: boolean;
 }
 
 export interface LogPage {

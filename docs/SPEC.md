@@ -953,25 +953,54 @@ The pane has two columns:
   Layout is computed server-side; the client renders SVG paths
   between pre-computed `(col, row)` coordinates and a small
   set of tagged edge shapes (`ToNode`, `ToIntersection`,
-  `FromNode`, `ToMissing`). Each row's text portion shows the
-  subject, bookmark chips, the `@` marker on the working-copy
-  row, and a short commit-id. The default revset is
+  `FromNode`, `ToMissing`). Each row shows the subject, bookmark
+  chips, and a trailing change-id (the commit-id is left off —
+  two ids per row crowded the narrow pane and the change-id is
+  the one a reader references). The node glyph carries state: the
+  working-copy commit renders as a literal `@`; mutable commits
+  get a solid node, immutable ones (ancestors of `trunk()`) a
+  faint node + dimmed subject so settled history reads as
+  subordinate to in-progress work. The default revset is
   `bookmarks() | @ | latest(@-.. | ..@, 50)`; a search box at
-  the top of the pane accepts any free-form revset.
+  the top of the pane accepts any free-form revset. The pane
+  defaults to a narrow width and has a one-click collapse so the
+  diff can take the whole screen. Up / down arrow keys step the
+  selection through the rows. Right-clicking a bookmark chip
+  opens a menu — "Create review from &lt;bookmark&gt;" (hands off
+  to the new-review form) and "Copy bookmark name"; the browser
+  itself never mutates the repo.
 - **Detail** (right). When the reader picks a commit, the
-  detail pane shows description, author, timestamp, refs
-  pointing at it, the changed-files list, and any conflict
-  paths. Each file path is clickable. On first load — when the
-  URL pins no commit — the selection defaults to the
-  working-copy commit (`@`) so the pane opens on something
-  useful rather than an empty placeholder.
+  detail pane shows — top to bottom — the commit metadata
+  (description, author, timestamp, refs), a **Files changed**
+  summary list, and the commit's **diff** against its parent
+  rendered file by file. The summary list is a jump table:
+  clicking a row scrolls to that file's diff; a trailing ↗
+  opens the whole file in the file viewer instead. On first
+  load — when the URL pins no commit — the selection defaults
+  to the working-copy commit (`@`) so the pane opens on
+  something useful rather than an empty placeholder.
+  Shift-clicking a second row selects a **range**; the detail
+  pane then shows the *cumulative* diff across the whole span
+  and a banner naming the range's revset (over change-ids).
 
-Clicking a file path opens the **file viewer** in the right
-pane. The file viewer renders contents at the selected commit
-through the same Shiki pipeline the diff viewer uses (so
-languages already supported in diffs work here too); binary
-files (bytes that don't decode as UTF-8) render a placeholder
-with their size.
+The commit metadata header stays **pinned** to the top of the
+detail pane while the reader scrolls the diffs, so "which commit
+am I looking at" never scrolls away. It also carries the
+**Create review** button — the action is on the current
+selection, so it sits next to the commit it acts on.
+
+The vertical divider between the two panes is **draggable** —
+the reader trades width between the graph and the diff — and the
+graph pane has a **one-click collapse**. Both the split and the
+collapsed state are remembered across reloads. On a narrow
+viewport the panes stack vertically and the divider is dropped.
+
+The ↗ on a summary row opens the **file viewer** in the right
+pane. The file viewer renders the whole file's contents at the
+selected commit through the same Shiki pipeline the diff viewer
+uses (so languages already supported in diffs work here too);
+binary files (bytes that don't decode as UTF-8) render a
+placeholder with their size.
 
 The file viewer's **History** button switches the log pane to
 `files("<path>")` so the reader can see the chain of commits
@@ -979,10 +1008,11 @@ that touched the file. The file viewer itself stays open
 alongside, so the reader can read the file while scanning the
 history below.
 
-The commit detail's **Create review** button navigates to the
-new-review form with the revset pre-filled to
-`<commit>-..<commit>` — the canonical one-commit review shape.
-The reviewer confirms the bookmark / summary and submits.
+The **Create review** button navigates to the new-review form
+with the revset pre-filled — `<commit>-..<commit>` for a single
+selection (the canonical one-commit shape), or
+`<oldest>-..<newest>` over change-ids for a range. The reviewer
+confirms the bookmark / summary and submits.
 
 ### Revision ids everywhere
 

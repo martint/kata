@@ -12,6 +12,7 @@ use kata_core::{ChangeId, CommitId, LogPage, LogRow};
 use serde::Deserialize;
 
 use crate::error::AppResult;
+use crate::service::CommitDiffView;
 use crate::state::AppState;
 
 /// Default revset used when the caller doesn't specify one. Matches
@@ -75,6 +76,32 @@ pub async fn change(
 ) -> AppResult<Json<Option<LogRow>>> {
     let repo = state.service.resolve_repo(&repo_name)?;
     Ok(Json(state.service.browse_change(&repo, &change_id).await?))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CommitDiffQuery {
+    /// Oldest commit of a multi-row range selection. When present
+    /// the diff is cumulative from this commit's parent up to the
+    /// path's `commit_id`; when absent it's the single commit.
+    #[serde(default)]
+    pub since: Option<CommitId>,
+}
+
+/// `GET /api/repos/{repo}/browse/commits/{commit_id}/diff` — the
+/// diff for the browser's detail pane. `commit_id` is the tip;
+/// `?since=<oldest>` makes it the cumulative range diff.
+pub async fn commit_diff(
+    State(state): State<AppState>,
+    Path((repo_name, commit_id)): Path<(String, CommitId)>,
+    Query(q): Query<CommitDiffQuery>,
+) -> AppResult<Json<CommitDiffView>> {
+    let repo = state.service.resolve_repo(&repo_name)?;
+    Ok(Json(
+        state
+            .service
+            .browse_commit_diff(&repo, &commit_id, q.since.as_ref())
+            .await?,
+    ))
 }
 
 #[derive(Debug, Deserialize)]

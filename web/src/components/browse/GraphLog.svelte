@@ -18,6 +18,7 @@
 -->
 <script lang="ts">
   import type { LogRow, CommitId } from '../../lib/types';
+  import { copyText } from '../../lib/clipboard';
   import GraphNode from './GraphNode.svelte';
   import GraphLine from './GraphLine.svelte';
   import RevId from '../RevId.svelte';
@@ -74,7 +75,68 @@
     });
     return out;
   });
+
+  let rowsEl: HTMLElement | undefined = $state();
+
+  /** Up / down arrow keys step the selection through the graph —
+   *  the keyboard counterpart to clicking a row. Ignored while a
+   *  text field has focus (the revset box) so typing isn't
+   *  hijacked, and when a modifier is held. */
+  function onKey(e: KeyboardEvent) {
+    if (e.key === 'Escape' && bmMenu) {
+      bmMenu = null;
+      return;
+    }
+    if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const t = e.target as HTMLElement | null;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
+    if (rows.length === 0) return;
+    const cur = rows.findIndex((r) => r.commit.commit_id === selectedCommitId);
+    // No selection yet → arrow-down lands on the first row,
+    // arrow-up on the last.
+    let next: number;
+    if (cur < 0) {
+      next = e.key === 'ArrowDown' ? 0 : rows.length - 1;
+    } else {
+      next = cur + (e.key === 'ArrowDown' ? 1 : -1);
+      if (next < 0 || next >= rows.length) return;
+    }
+    e.preventDefault();
+    const id = rows[next].commit.commit_id;
+    onselect(id, { extendRange: false });
+    rowsEl
+      ?.querySelector(`[data-row="${next}"]`)
+      ?.scrollIntoView({ block: 'nearest' });
+  }
+
+  /** Right-click context menu for a bookmark chip. Anchored at the
+   *  cursor; both actions are read-only (the browser never mutates
+   *  the repo) — "Create review" hands off to the new-review form,
+   *  "Copy" puts the bookmark name on the clipboard. */
+  let bmMenu = $state<{ x: number; y: number; bookmark: string } | null>(null);
+
+  function openBmMenu(e: MouseEvent, bookmark: string) {
+    e.preventDefault();
+    e.stopPropagation();
+    bmMenu = { x: e.clientX, y: e.clientY, bookmark };
+  }
+
+  function bmCreateReview() {
+    if (!bmMenu) return;
+    // `trunk()..<bookmark>` is the natural "everything on this
+    // branch" revset; the new-review form opens pre-filled with it.
+    const expr = `trunk()..${bmMenu.bookmark}`;
+    location.href = `/?prefill_revset=${encodeURIComponent(expr)}`;
+  }
+
+  async function bmCopy() {
+    if (bmMenu) await copyText(bmMenu.bookmark);
+    bmMenu = null;
+  }
 </script>
+
+<svelte:window onkeydown={onKey} onclick={() => (bmMenu = null)} />
 
 <div class="graph-log">
   <div class="rows" style:--graph-width="{graphWidth}px">
@@ -98,6 +160,7 @@
           {rowHeight}
           isWorkingCopy={row.is_working_copy ?? false}
           hasBookmarks={(row.bookmarks ?? []).length > 0}
+          immutable={row.immutable ?? false}
           selected={row.commit.commit_id === selectedCommitId
             || rangeIds.has(row.commit.commit_id)}
         />
@@ -106,8 +169,8 @@
     <!-- Text column. Each row is a button so the whole row is a
          click target (selecting the commit). Positioned absolutely
          so vertical alignment with the SVG nodes is exact. -->
-    <div class="text-col">
-      {#each rows as row (row.commit.commit_id)}
+    <div class="text-col" bind:this={rowsEl}>
+      {#each rows as row, i (row.commit.commit_id)}
         {@const subj = row.commit.description_first_line || '(no description)'}
         <button
           type="button"
@@ -115,28 +178,53 @@
           class:selected={row.commit.commit_id === selectedCommitId}
           class:in-range={rangeIds.has(row.commit.commit_id) &&
             row.commit.commit_id !== selectedCommitId}
+          class:immutable={row.immutable}
+          data-row={i}
           style:height="{rowHeight}px"
+          title={subj}
           onclick={(e) =>
             onselect(row.commit.commit_id, { extendRange: e.shiftKey })}
         >
           <span class="subject">{subj}</span>
           {#if (row.bookmarks ?? []).length > 0}
             {#each row.bookmarks ?? [] as bm (bm)}
-              <span class="ref">{bm}</span>
+              <span
+                class="ref"
+                role="button"
+                tabindex="-1"
+                title="Right-click for actions"
+                oncontextmenu={(e) => openBmMenu(e, bm)}
+              >{bm}</span>
             {/each}
           {/if}
-          {#if row.is_working_copy}
-            <span class="wc">@</span>
-          {/if}
+          <!-- Trailing change-id only. The commit-id pill was
+               dropped — two ids per row crowded the narrow pane and
+               the change-id is the one a reader references. The `@`
+               marker lives on the graph node, not here. -->
           <span class="meta">
             <RevId id={row.commit.change_id} kind="change" {repo} inline />
-            <RevId id={row.commit.commit_id} kind="commit" {repo} inline />
           </span>
         </button>
       {/each}
     </div>
   </div>
 </div>
+
+{#if bmMenu}
+  <div
+    class="bm-menu"
+    role="menu"
+    style:left="{bmMenu.x}px"
+    style:top="{bmMenu.y}px"
+  >
+    <button type="button" role="menuitem" onclick={bmCreateReview}>
+      Create review from <strong>{bmMenu.bookmark}</strong>
+    </button>
+    <button type="button" role="menuitem" onclick={bmCopy}>
+      Copy bookmark name
+    </button>
+  </div>
+{/if}
 
 <style>
   /* Fills whatever the parent flex column leaves over (the search
@@ -216,6 +304,12 @@
     white-space: nowrap;
   }
 
+  /* Immutable rows recede — settled history reads as subordinate
+   * to mutable in-progress work. Matches the faint graph node. */
+  .row.immutable .subject {
+    color: var(--text-faint);
+  }
+
   .ref {
     flex: 0 0 auto;
     font-size: 11px;
@@ -224,25 +318,42 @@
     border-radius: 4px;
     background: var(--bg-panel);
     color: var(--link);
+    cursor: context-menu;
   }
 
-  .wc {
-    flex: 0 0 auto;
-    font-size: 11px;
-    padding: 1px 6px;
-    border-radius: 4px;
-    background: var(--link-bg);
-    color: var(--link);
-    font-weight: 600;
-  }
-
-  /* Container for the trailing RevId pills. Pushed to the right
-   * end of the row by `margin-left: auto`; RevId itself owns the
-   * font, size, and colour. */
+  /* Trailing change-id pill, pushed to the row's right edge. */
   .meta {
     margin-left: auto;
     flex: 0 0 auto;
     display: inline-flex;
-    gap: 4px;
+  }
+
+  /* Right-click menu for a bookmark chip. `position: fixed`,
+   * anchored at the cursor; closes on any click or Escape. */
+  .bm-menu {
+    position: fixed;
+    z-index: 1000;
+    min-width: 180px;
+    display: flex;
+    flex-direction: column;
+    padding: 4px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  }
+  .bm-menu button {
+    text-align: left;
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    padding: 6px 10px;
+    font: inherit;
+    color: inherit;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .bm-menu button:hover {
+    background: var(--bg-elevated);
   }
 </style>

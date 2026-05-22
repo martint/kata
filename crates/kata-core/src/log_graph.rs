@@ -103,6 +103,11 @@ pub struct LogRow {
     /// current `@`. The UI marks the working-copy node distinctly.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_working_copy: bool,
+    /// True iff this commit is immutable — an ancestor of (or is)
+    /// `immutable_heads()` (`trunk()` by default). The UI colours
+    /// immutable commits apart from mutable in-progress work.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub immutable: bool,
 }
 
 /// One page of the log. `has_more` is true when the layout walk

@@ -1472,6 +1472,45 @@ impl ReviewService {
         Ok(page.rows.into_iter().next())
     }
 
+    /// Diff for the browser's detail pane. Unlike [`Self::commit_diff`]
+    /// this is keyed by `commit_id` (which the browse log carries)
+    /// rather than by `change_id`, so it always describes the exact
+    /// revision the reader picked — no divergent-change ambiguity.
+    ///
+    /// `commit_id` is the tip. `since` is the *oldest* commit of a
+    /// multi-row range selection: when set, the diff is cumulative
+    /// from that commit's parent up to the tip; when `None`, it's
+    /// the single commit against its own parent.
+    pub async fn browse_commit_diff(
+        &self,
+        repo: &RepoId,
+        commit_id: &CommitId,
+        since: Option<&CommitId>,
+    ) -> ServiceResult<CommitDiffView> {
+        let jj = self.jj_for(repo)?;
+        let tip = jj
+            .resolve_endpoint(commit_id.as_str())
+            .await?
+            .ok_or_else(|| ServiceError::NotFound(format!("commit {commit_id}")))?;
+        // The diff base is the parent of the range's oldest commit
+        // (`since` for a range, the tip itself for a single commit).
+        let base_anchor = since.unwrap_or(commit_id);
+        let parent = jj
+            .resolve_endpoint(&format!("{base_anchor}-"))
+            .await?
+            .ok_or_else(|| {
+                ServiceError::NotFound(format!("parent of commit {base_anchor}"))
+            })?;
+        let diff = build_diff(&**jj, &parent.commit_id, &tip.commit_id).await?;
+        Ok(CommitDiffView {
+            base_change: parent.change_id,
+            base_commit: parent.commit_id,
+            tip_change: tip.change_id,
+            tip_commit: tip.commit_id,
+            files: diff.files,
+        })
+    }
+
     /// Read a file's bytes at a specific commit. `None` when the
     /// path doesn't exist there. The bytes are returned raw — the
     /// HTTP layer decides whether to treat them as UTF-8 text or

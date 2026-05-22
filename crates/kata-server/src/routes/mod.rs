@@ -76,6 +76,10 @@ fn api_routes() -> Router<AppState> {
             get(browse::commit),
         )
         .route(
+            "/api/repos/{repo_name}/browse/commits/{commit_id}/diff",
+            get(browse::commit_diff),
+        )
+        .route(
             "/api/repos/{repo_name}/browse/changes/{change_id}",
             get(browse::change),
         )

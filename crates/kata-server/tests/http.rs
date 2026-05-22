@@ -1830,6 +1830,67 @@ async fn browse_commit_returns_a_single_row_or_null() {
 }
 
 #[tokio::test]
+async fn browse_commit_diff_returns_the_commits_files() {
+    // The browser's detail pane fetches a commit's diff against its
+    // parent. Pick the newest log row (a real edit) and confirm the
+    // endpoint returns the change/commit endpoints plus a non-empty
+    // file list.
+    let h = Harness::new().await;
+    let (_, log) = h.json("GET", "/api/repos/main/browse/log", None).await;
+    let commit_id = log["rows"][0]["commit"]["commit_id"]
+        .as_str()
+        .expect("at least one row")
+        .to_owned();
+
+    let (status, body) = h
+        .json(
+            "GET",
+            &format!("/api/repos/main/browse/commits/{commit_id}/diff"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["tip_commit"].as_str(), Some(commit_id.as_str()));
+    assert!(
+        body["files"].as_array().is_some_and(|f| !f.is_empty()),
+        "a real commit has at least one changed file",
+    );
+}
+
+#[tokio::test]
+async fn browse_commit_diff_since_widens_to_a_cumulative_range() {
+    // `?since=<oldest>` makes the diff cumulative — from the oldest
+    // commit's parent up to the path's tip — so a multi-row range
+    // selection in the browser shows the combined diff. With the
+    // harness's two-commit chain, `since=<older>` over `<newer>`
+    // diffs the whole chain against the chain's base.
+    let h = Harness::new().await;
+    let (_, log) = h.json("GET", "/api/repos/main/browse/log", None).await;
+    let rows = log["rows"].as_array().expect("log rows");
+    assert!(rows.len() >= 2, "harness seeds at least two commits");
+    let tip = rows[0]["commit"]["commit_id"].as_str().unwrap().to_owned();
+    let oldest = rows[1]["commit"]["commit_id"].as_str().unwrap().to_owned();
+
+    let (status, body) = h
+        .json(
+            "GET",
+            &format!("/api/repos/main/browse/commits/{tip}/diff?since={oldest}"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["tip_commit"].as_str(), Some(tip.as_str()));
+    // The base is the parent of `oldest`, not of `tip` — i.e. the
+    // range's diff is computed from outside the range.
+    assert_ne!(
+        body["base_commit"].as_str(),
+        Some(oldest.as_str()),
+        "base is the parent of the oldest commit, not the oldest itself",
+    );
+    assert!(body["files"].as_array().is_some_and(|f| !f.is_empty()));
+}
+
+#[tokio::test]
 async fn browse_file_returns_utf8_content_at_a_commit() {
     // The harness seeds a two-commit chain editing `a.txt`. Read
     // the file at the tip commit and verify the JSON shape +

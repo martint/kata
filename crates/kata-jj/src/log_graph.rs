@@ -25,6 +25,9 @@ use kata_core::{CommitId, CommitInfo, LogCoord, LogLine, LogPage, LogRow};
 pub struct LogInputEntry {
     pub commit: CommitInfo,
     pub parents: Vec<EdgeInfo>,
+    /// True iff this commit is immutable (ancestor of
+    /// `immutable_heads()`). Copied straight through to [`LogRow`].
+    pub immutable: bool,
 }
 
 /// A parent edge from a commit. `missing` is true when the parent
@@ -195,6 +198,7 @@ pub fn layout(
             lines,
             bookmarks: Vec::new(),
             is_working_copy: false,
+            immutable: entry.immutable,
         });
         own_widths.push(own_width);
         row += 1;
@@ -351,6 +355,7 @@ mod tests {
                     missing: *m,
                 })
                 .collect(),
+            immutable: false,
         }
     }
 
@@ -471,6 +476,7 @@ mod tests {
                         target: CommitId::new(parent_id),
                         missing: false,
                     }],
+                    immutable: false,
                 }
             })
             .collect::<Vec<_>>();

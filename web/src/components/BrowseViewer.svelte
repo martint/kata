@@ -13,9 +13,17 @@
   import { ApiError, api } from '../lib/api';
   import { copyText } from '../lib/clipboard';
   import { renderMarkdown } from '../lib/markdown';
-  import type { CommitId, LogPage, LogRow } from '../lib/types';
+  import type {
+    CommitDiffView,
+    CommitId,
+    LogPage,
+    LogRow,
+    Patchset,
+  } from '../lib/types';
   import FileViewer from './browse/FileViewer.svelte';
+  import FileDiff from './FileDiff.svelte';
   import GraphLog from './browse/GraphLog.svelte';
+  import Chevron from './Chevron.svelte';
   import RevId from './RevId.svelte';
 
   let {
@@ -66,6 +74,14 @@
    *  order — newest at top, oldest at bottom. */
   let extent: CommitId | null = $state(null);
   let detail: LogRow | null = $state(null);
+  /** The selected commit's diff against its parent — the files +
+   *  hunks the detail pane stacks below the commit metadata. Keyed
+   *  off `selected` by the effect below. */
+  let commitDiff: CommitDiffView | null = $state(null);
+  let commitDiffLoading: boolean = $state(false);
+  let commitDiffError: string | null = $state(null);
+  /** The detail `<aside>` — scope for the scroll-to-file lookup. */
+  let detailPaneEl: HTMLElement | undefined = $state();
   /** When set, the detail pane shows the file viewer instead of
    *  the commit detail. Clicking a file path in the commit detail
    *  populates this; Close clears it. */
@@ -93,8 +109,9 @@
 
   /** When the user has shift-extended a range, the topologically-
    *  oldest commit in it (the bottom row, highest row index) and
-   *  the newest (the top row, lowest row index) define the revset
-   *  the "Create review from N revisions" button hands off. */
+   *  the newest (the top row, lowest row index). The full
+   *  `CommitInfo` for each so callers have both ids: the cumulative
+   *  diff is keyed by commit-id, the revset by change-id. */
   const rangeBounds = $derived.by(() => {
     if (!page || rangeSize < 2 || !selected || !extent) return null;
     const anchorIdx = page.rows.findIndex(
@@ -107,8 +124,8 @@
     const loIdx = Math.min(anchorIdx, extentIdx);
     const hiIdx = Math.max(anchorIdx, extentIdx);
     return {
-      newest: page.rows[loIdx].commit.commit_id,
-      oldest: page.rows[hiIdx].commit.commit_id,
+      newest: page.rows[loIdx].commit,
+      oldest: page.rows[hiIdx].commit,
     };
   });
 
@@ -143,6 +160,103 @@
     }
   }
 
+  /** Fetch the diff shown in the detail pane. A single selected
+   *  commit diffs against its parent; a shift-extended range shows
+   *  the *cumulative* diff from the range's oldest commit's parent
+   *  up to its newest commit. */
+  async function loadCommitDiff(
+    tip: CommitId | null,
+    since: CommitId | null,
+  ) {
+    if (!tip) {
+      commitDiff = null;
+      return;
+    }
+    commitDiff = null;
+    commitDiffError = null;
+    commitDiffLoading = true;
+    try {
+      commitDiff = await api.browseCommitDiff(repo, tip, since ?? undefined);
+    } catch (e) {
+      commitDiffError = e instanceof ApiError ? e.message : String(e);
+    } finally {
+      commitDiffLoading = false;
+    }
+  }
+
+  /** Synthesize a one-patchset `Patchset` from a commit diff so the
+   *  read-only `FileDiff` instances have the endpoint metadata they
+   *  expect. The browser has no real review / patchset chain — this
+   *  is just the (base, tip) pair the diff was computed against. */
+  function patchsetFor(cd: CommitDiffView): Patchset {
+    return {
+      n: 1,
+      base_change: cd.base_change,
+      base_commit: cd.base_commit,
+      tip_change: cd.tip_change,
+      tip_commit: cd.tip_commit,
+      recorded_at: '',
+      parent_patchset: null,
+    };
+  }
+
+  /** Scroll a stacked file diff into view when its row in the
+   *  Files summary is clicked. */
+  function scrollToFile(path: string) {
+    const el = detailPaneEl?.querySelector<HTMLElement>(
+      `[data-browse-file="${CSS.escape(path)}"]`,
+    );
+    el?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  // ---- Graph pane: width, drag-resize, one-click collapse -----------
+  /** Width of the graph (log) pane in px. It's the narrow index;
+   *  the detail pane flexes to fill the rest, so the diffs get the
+   *  bulk of the width. Dragging the divider resizes the graph;
+   *  both the width and the collapsed state persist across reloads. */
+  const LOG_WIDTH_KEY = 'kata:browseLogWidth';
+  const LOG_COLLAPSED_KEY = 'kata:browseLogCollapsed';
+  function readLogWidth(): number {
+    if (typeof localStorage === 'undefined') return 340;
+    const v = Number(localStorage.getItem(LOG_WIDTH_KEY));
+    return Number.isFinite(v) && v >= 220 ? v : 340;
+  }
+  let logWidth = $state(readLogWidth());
+  let logCollapsed = $state(
+    typeof localStorage !== 'undefined' &&
+      localStorage.getItem(LOG_COLLAPSED_KEY) === 'true',
+  );
+  $effect(() => {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(LOG_WIDTH_KEY, String(logWidth));
+      localStorage.setItem(LOG_COLLAPSED_KEY, String(logCollapsed));
+    }
+  });
+
+  function startResize(e: PointerEvent) {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = logWidth;
+    // Keep at least 360px for the detail pane on the right.
+    const maxW = Math.max(220, window.innerWidth - 360);
+    const onMove = (ev: PointerEvent) => {
+      // The graph pane is on the left, so dragging the divider
+      // right (a positive delta) widens it.
+      logWidth = Math.max(220, Math.min(maxW, startW + (ev.clientX - startX)));
+    };
+    const onUp = () => {
+      document.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerup', onUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('pointerup', onUp);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  }
+
   // Initial load + repo/revset reload.
   $effect(() => {
     void repo;
@@ -150,9 +264,21 @@
     void loadPage();
   });
 
-  // Drive detail loading off the selection.
+  // Drive detail + diff loading off the selection.
   $effect(() => {
     void loadDetail(selected);
+  });
+  $effect(() => {
+    // A range shows the cumulative diff (oldest..newest); a single
+    // selection diffs that commit against its parent.
+    if (rangeBounds) {
+      void loadCommitDiff(
+        rangeBounds.newest.commit_id,
+        rangeBounds.oldest.commit_id,
+      );
+    } else {
+      void loadCommitDiff(selected, null);
+    }
   });
 
   // Resolve `?change=<id>` to a concrete commit_id once at mount.
@@ -242,15 +368,26 @@
     // while scanning its history below.
   }
 
+  /** The revset for a shift-extended range, `<oldest>-..<newest>`
+   *  over (short) change-ids — change-ids are stable across
+   *  rewrites, so a review created from this keeps resolving to the
+   *  right commits even as they're amended. Null outside a range. */
+  const rangeRevset = $derived(
+    rangeBounds
+      ? `${shortId(rangeBounds.oldest.change_id)}-..` +
+        `${shortId(rangeBounds.newest.change_id)}`
+      : null,
+  );
+
   /** Navigate to the new-review form with the revset pre-filled.
-   *  Single-row selection produces `<commit>-..<commit>` (one
-   *  commit); a range produces `<oldest>-..<newest>` covering
-   *  every commit in the visual span. The reviewer can adjust
-   *  before submitting. */
+   *  A range produces `<oldest>-..<newest>` over change-ids; a
+   *  single-row selection produces the canonical one-commit
+   *  `<commit>-..<commit>`. The reviewer can adjust before
+   *  submitting. */
   function createReviewFromSelection() {
     let expr: string;
-    if (rangeBounds) {
-      expr = `${rangeBounds.oldest}-..${rangeBounds.newest}`;
+    if (rangeRevset) {
+      expr = rangeRevset;
     } else if (selected) {
       expr = `${selected}-..${selected}`;
     } else {
@@ -265,11 +402,6 @@
     revset = revsetInput.trim();
   }
 
-  function clearSelection() {
-    selected = null;
-    extent = null;
-  }
-
   function shortId(id: string): string {
     return id.length > 12 ? id.slice(0, 12) : id;
   }
@@ -278,9 +410,8 @@
    *  timer so the affordance reads as momentary, not sticky. */
   let rangeCopied = $state(false);
   async function copyRangeRevset() {
-    if (!rangeBounds) return;
-    const expr = `${shortId(rangeBounds.oldest)}-..${shortId(rangeBounds.newest)}`;
-    if (await copyText(expr)) {
+    if (!rangeRevset) return;
+    if (await copyText(rangeRevset)) {
       rangeCopied = true;
       setTimeout(() => (rangeCopied = false), 1500);
     }
@@ -306,7 +437,8 @@
     <span class="topbar-repo">Browsing <strong>{repo}</strong></span>
   </div>
   <div class="browse-shell">
-  <div class="log-pane">
+  {#if !logCollapsed}
+  <div class="log-pane" style:width="{logWidth}px">
     <form class="search-bar" onsubmit={submitRevset}>
       <input
         type="text"
@@ -362,7 +494,35 @@
     {/if}
   </div>
 
-  <aside class="detail-pane" class:viewing-file={viewingPath != null}>
+  <!-- Draggable divider: resizes the graph pane. Hidden on the
+       stacked mobile layout and when the graph is collapsed. -->
+  <div
+    class="pane-divider"
+    role="separator"
+    aria-orientation="vertical"
+    aria-label="Resize the graph pane"
+    onpointerdown={startResize}
+  ></div>
+  {/if}
+
+  <!-- One-click collapse for the graph pane — mirrors the review
+       screen's file-tree toggle. Always present so a collapsed
+       graph can be brought back. -->
+  <button
+    type="button"
+    class="graph-toggle"
+    class:collapsed={logCollapsed}
+    aria-label={logCollapsed ? 'Show the commit graph' : 'Hide the commit graph'}
+    aria-expanded={!logCollapsed}
+    title={logCollapsed ? 'Show the commit graph' : 'Hide the commit graph'}
+    onclick={() => (logCollapsed = !logCollapsed)}
+  ><Chevron dir={logCollapsed ? 'right' : 'left'} size={12} /></button>
+
+  <aside
+    class="detail-pane"
+    class:viewing-file={viewingPath != null}
+    bind:this={detailPaneEl}
+  >
     {#if viewingPath != null && selected}
       <FileViewer
         {repo}
@@ -374,31 +534,23 @@
     {:else if detail}
       {@const c = detail.commit}
       <div class="detail-body">
-        {#if rangeSize > 1 && rangeBounds}
-          <!-- Range header: the user shift-extended a selection.
-               Detail below still shows the anchor's commit so
-               clicking around inside the range still has a
-               meaningful read-out, but the banner up here makes
-               it obvious that "Create review" will use the range
-               and shows the resulting revset. -->
-          <div class="range-banner" role="status">
-            <strong>{rangeSize} revisions selected.</strong>
-            Revset:
+        <header class="detail-header">
+          <div class="detail-header-top">
+            <h3>{c.description_first_line || '(no description)'}</h3>
+            <!-- Create-review acts on the current selection, so it
+                 lives in the (sticky) header right next to the
+                 commit it'll act on. -->
             <button
               type="button"
-              class="range-expr"
-              title="Copy revset to clipboard"
-              onclick={copyRangeRevset}
+              class="primary create-review-btn"
+              onclick={createReviewFromSelection}
+              title="Open the new-review form with the selected revset pre-filled"
             >
-              <code
-                >{shortId(rangeBounds.oldest)}-..{shortId(rangeBounds.newest)}</code
-              >
-              <span class="copy-hint">{rangeCopied ? '✓ copied' : 'copy'}</span>
+              {rangeSize > 1
+                ? `Create review · ${rangeSize} revisions`
+                : 'Create review'}
             </button>
           </div>
-        {/if}
-        <header class="detail-header">
-          <h3>{c.description_first_line || '(no description)'}</h3>
           <p class="detail-meta">
             <RevId id={c.change_id} kind="change" {repo} inline />
             <RevId id={c.commit_id} kind="commit" {repo} inline />
@@ -417,6 +569,25 @@
           {/if}
         </header>
 
+        {#if rangeSize > 1 && rangeRevset}
+          <!-- Range banner: the user shift-extended a selection.
+               The diff below is the cumulative range diff; the
+               banner names the span and offers its revset to copy. -->
+          <div class="range-banner" role="status">
+            <strong>{rangeSize} revisions selected.</strong>
+            Cumulative diff · revset:
+            <button
+              type="button"
+              class="range-expr"
+              title="Copy revset to clipboard"
+              onclick={copyRangeRevset}
+            >
+              <code>{rangeRevset}</code>
+              <span class="copy-hint">{rangeCopied ? '✓ copied' : 'copy'}</span>
+            </button>
+          </div>
+        {/if}
+
         {#if c.description.includes('\n')}
           {@const body = trimDescription(c.description)}
           {#if body.length > 0}
@@ -428,58 +599,78 @@
           {/if}
         {/if}
 
-        {#if c.changed_files.length > 0}
-          <section class="files">
-            <h4>{c.changed_files.length} file{c.changed_files.length === 1 ? '' : 's'} changed</h4>
-            <ul>
-              {#each c.changed_files as path (path)}
-                <li>
-                  <button
-                    type="button"
-                    class="file-link"
-                    onclick={() => openFile(path)}
-                    title="View this file at {shortId(c.commit_id)}"
-                  ><code>{path}</code></button>
-                </li>
+        <!-- Files in this commit + their stacked diffs. The summary
+             list is a jump table — clicking a row scrolls to that
+             file's diff below. -->
+        {#if commitDiffLoading}
+          <p class="muted status">Loading diff…</p>
+        {:else if commitDiffError}
+          <p class="error status">
+            <strong>Couldn't load the diff:</strong> {commitDiffError}
+          </p>
+        {:else if commitDiff}
+          {#if commitDiff.files.length === 0}
+            <p class="muted status">This commit changed no files.</p>
+          {:else}
+            {@const ps = patchsetFor(commitDiff)}
+            <section class="files-summary">
+              <h4>
+                {commitDiff.files.length}
+                file{commitDiff.files.length === 1 ? '' : 's'} changed
+              </h4>
+              <ul>
+                {#each commitDiff.files as f (f.path)}
+                  <li>
+                    <button
+                      type="button"
+                      class="file-jump"
+                      onclick={() => scrollToFile(f.path)}
+                    >
+                      <code class="file-jump-path">{f.path}</code>
+                      <span class="file-jump-counts">
+                        <span class="adds">+{f.added}</span>
+                        <span class="removes">−{f.removed}</span>
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      class="file-open"
+                      title="View the whole file at this commit"
+                      aria-label="View {f.path} at this commit"
+                      onclick={() => openFile(f.path)}
+                    >↗</button>
+                  </li>
+                {/each}
+              </ul>
+            </section>
+            <div class="commit-diffs">
+              {#each commitDiff.files as f (f.path)}
+                <div class="commit-diff-file" data-browse-file={f.path}>
+                  <FileDiff
+                    {repo}
+                    file={f}
+                    patchset={ps}
+                    comments={[]}
+                    responses={[]}
+                    currentPatchset={1}
+                    composing={null}
+                    saving={false}
+                    showComments={false}
+                    stickyHeader={false}
+                    onstartcompose={() => {}}
+                    oncancelcompose={() => {}}
+                    onsubmit={async () => {}}
+                    onreply={async () => {}}
+                    onstatus={async () => {}}
+                    ondelete={async () => {}}
+                    onedit={() => {}}
+                    onselectpatchset={() => {}}
+                  />
+                </div>
               {/each}
-            </ul>
-          </section>
+            </div>
+          {/if}
         {/if}
-
-        {#if (c.conflict_paths ?? []).length > 0}
-          <section class="conflicts">
-            <h4>Conflicts</h4>
-            <ul>
-              {#each c.conflict_paths ?? [] as path (path)}
-                <li>
-                  <button
-                    type="button"
-                    class="file-link conflict"
-                    onclick={() => openFile(path)}
-                  ><code>{path}</code></button>
-                </li>
-              {/each}
-            </ul>
-          </section>
-        {/if}
-
-        <footer class="detail-actions">
-          <button
-            type="button"
-            class="primary"
-            onclick={createReviewFromSelection}
-            title="Open the new-review form with the selected revset pre-filled"
-          >
-            {rangeSize > 1
-              ? `Create review from ${rangeSize} revisions`
-              : 'Create review'}
-          </button>
-          <button
-            type="button"
-            class="close"
-            onclick={clearSelection}
-          >Close</button>
-        </footer>
       </div>
     {:else}
       <p class="muted detail-empty">
@@ -531,13 +722,13 @@
   /* Two-pane shell. The grid columns are flexible: detail pane
    * keeps a sensible default width but adapts on narrow screens
    * via minmax(). */
+  /* Log pane flexes to fill; the divider trades width with the
+   * graph pane (its width is set inline from the `logWidth`
+   * state); the detail pane flexes to fill the rest so the diffs
+   * get the bulk of the width. `min-height: 0` keeps the panes'
+   * inner scroll regions bounded inside the flex-column root. */
   .browse-shell {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(320px, 28%);
-    gap: 0;
-    /* Fills the space the topbar leaves; `min-height: 0` keeps the
-     * grid from growing past the flex parent so the panes' inner
-     * scroll regions stay bounded. */
+    display: flex;
     flex: 1;
     min-height: 0;
     overflow: hidden;
@@ -545,13 +736,46 @@
 
   .log-pane {
     display: flex;
+    flex: 0 0 auto;
     flex-direction: column;
     min-width: 0;
     /* Critical: a flex-column with overflowing children needs
      * `min-height: 0` so the children can shrink past their
      * natural size and trigger the inner scroll. */
     min-height: 0;
+  }
+
+  /* Draggable column divider. A 6px visible rule with a wider
+   * invisible hit area courtesy of the col-resize cursor zone. */
+  .pane-divider {
+    flex: 0 0 6px;
+    background: var(--border);
+    cursor: col-resize;
+    touch-action: none;
+  }
+  .pane-divider:hover,
+  .pane-divider:active {
+    background: var(--link);
+  }
+
+  /* One-click collapse for the graph pane. A thin full-height
+   * strip — chevron points left to collapse, right to re-expand.
+   * Mirrors the review screen's file-tree panel toggle. */
+  .graph-toggle {
+    flex: 0 0 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    background: var(--bg-panel);
+    border: none;
     border-right: 1px solid var(--border);
+    color: var(--text-muted);
+    cursor: pointer;
+  }
+  .graph-toggle:hover {
+    background: var(--bg-elevated);
+    color: var(--link);
   }
 
   .search-bar {
@@ -615,6 +839,10 @@
   }
 
   .detail-pane {
+    /* Flexes to fill whatever the (fixed-width) graph pane leaves —
+     * the diffs are the main content and should get the room. */
+    flex: 1 1 0;
+    min-width: 0;
     overflow-y: auto;
     background: var(--bg-panel);
   }
@@ -639,8 +867,17 @@
     padding: 32px 16px;
   }
 
+  /* The commit title + metadata stay pinned to the top of the
+   * detail pane while the reader scrolls through the diffs below,
+   * so "which commit am I looking at" never scrolls away. */
   .detail-header {
-    margin-bottom: 16px;
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    margin: 0 0 16px 0;
+    padding: 8px 0 10px 0;
+    background: var(--bg-panel);
+    border-bottom: 1px solid var(--border);
   }
 
   .detail-header h3 {
@@ -727,71 +964,126 @@
     font-size: 12px;
   }
 
-  .files,
-  .conflicts {
+  /* Files summary — a jump table above the stacked diffs. Each row
+   * scrolls to its file's diff; the trailing ↗ opens the whole file
+   * in the file viewer instead. */
+  .files-summary {
     margin-top: 16px;
   }
 
-  .files h4,
-  .conflicts h4 {
+  .files-summary h4 {
     margin: 0 0 6px 0;
     font-size: 12px;
     color: var(--text-muted);
     font-weight: 600;
   }
 
-  .files ul,
-  .conflicts ul {
+  .files-summary ul {
     margin: 0;
     padding: 0;
     list-style: none;
+    border: 1px solid var(--border-muted);
+    border-radius: 6px;
+    overflow: hidden;
   }
 
-  .files li,
-  .conflicts li {
-    padding: 2px 0;
-    font-size: 12px;
+  .files-summary li {
+    display: flex;
+    align-items: stretch;
+  }
+  .files-summary li + li {
+    border-top: 1px solid var(--border-muted);
   }
 
-  .file-link {
+  .file-jump {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 5px 8px;
     background: transparent;
     border: none;
-    padding: 0;
-    margin: 0;
     cursor: pointer;
-    color: var(--link);
     font: inherit;
-    font-size: 12px;
     text-align: left;
+    color: var(--text);
   }
-
-  .file-link:hover {
-    text-decoration: underline;
+  .file-jump:hover {
+    background: var(--bg-elevated);
   }
-
-  .file-link.conflict {
-    color: var(--warn-text);
-  }
-
-  .file-link code {
+  .file-jump-path {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 12px;
   }
-
-  .detail-actions {
-    margin-top: 16px;
-    display: flex;
-    justify-content: flex-end;
-    gap: 8px;
+  .file-jump-counts {
+    flex: 0 0 auto;
+    font-size: 11px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .file-jump-counts .adds {
+    color: var(--add-text);
+  }
+  .file-jump-counts .removes {
+    color: var(--remove-text);
   }
 
-  .detail-actions .primary {
+  .file-open {
+    flex: 0 0 auto;
+    width: 30px;
+    background: transparent;
+    border: none;
+    border-left: 1px solid var(--border-muted);
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 13px;
+  }
+  .file-open:hover {
+    background: var(--bg-elevated);
+    color: var(--link);
+  }
+
+  /* Stacked per-file diffs below the summary. `FileDiff` brings its
+   * own bordered card + `16px 0` vertical margin, so this wrapper
+   * adds no box of its own — it's only a scroll anchor for the
+   * Files-summary jump links. A plain `display: contents` would
+   * drop the `data-browse-file` element from the box tree, so keep
+   * it a div but style-free. */
+  .commit-diffs {
+    margin-top: 4px;
+  }
+
+  /* Header top row: commit title on the left, Create-review on
+   * the right. Lives inside the sticky `.detail-header` so the
+   * action stays reachable while the diffs scroll. */
+  .detail-header-top {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+  }
+  .detail-header-top h3 {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .create-review-btn {
+    flex: 0 0 auto;
     background: var(--link);
     color: var(--on-accent);
     border: 1px solid var(--link);
+    border-radius: 6px;
+    padding: 5px 12px;
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    white-space: nowrap;
   }
-
-  .detail-actions .primary:hover {
+  .create-review-btn:hover {
     filter: brightness(1.05);
   }
 
@@ -800,14 +1092,23 @@
     border: 1px solid var(--border);
   }
 
-  /* Mobile: stack the two panes. The detail pane drops below
-   * the log and the user scrolls between them. */
+  /* Mobile: stack the two panes vertically. The divider and the
+   * collapse toggle have no meaning in a column, so both are
+   * hidden and the graph pane drops its dragged width. */
   @media (max-width: 720px) {
     .browse-shell {
-      grid-template-columns: 1fr;
-      grid-template-rows: 1fr auto;
+      flex-direction: column;
+    }
+    .pane-divider,
+    .graph-toggle {
+      display: none;
+    }
+    .log-pane {
+      flex: 1 1 50%;
+      width: auto !important;
     }
     .detail-pane {
+      flex: 1 1 auto;
       border-top: 1px solid var(--border);
     }
   }

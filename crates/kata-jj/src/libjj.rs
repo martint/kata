@@ -954,12 +954,31 @@ impl JjBackend for JjLib {
                 entries.push(crate::log_graph::LogInputEntry {
                     commit: info,
                     parents,
+                    immutable: false,
                 });
                 rows_consumed += 1;
                 // Collect one beyond max_rows so `has_more` is
                 // accurate without dragging the whole revset in.
                 if rows_consumed > max_rows {
                     break;
+                }
+            }
+            // Mark which of the collected commits are immutable —
+            // ancestors of `immutable_heads()` (`trunk()` by
+            // default). `containing_fn` gives an efficient
+            // membership test without materialising the (possibly
+            // whole-history) immutable set. An empty / unresolvable
+            // immutable revset leaves every entry mutable.
+            if let Ok(Some(immutable_rs)) =
+                evaluate_user_revset(&repo, "::immutable_heads()", ws)
+            {
+                let contains = immutable_rs.containing_fn();
+                for entry in &mut entries {
+                    if let Some(cid) = jj_lib::backend::CommitId::try_from_hex(
+                        entry.commit.commit_id.as_str(),
+                    ) {
+                        entry.immutable = contains(&cid).unwrap_or(false);
+                    }
                 }
             }
             Ok(crate::log_graph::layout(entries, max_rows))

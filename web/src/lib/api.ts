@@ -130,6 +130,18 @@ export const api = {
       'GET',
       `${repoBase(repo)}/browse/changes/${enc(change_id)}`,
     ),
+  /** Diff for the browser detail pane's stacked file diffs. Keyed
+   *  by commit_id so it describes the exact revision the reader
+   *  picked. `since` (the oldest commit of a multi-row range)
+   *  makes it the cumulative range diff instead of a single
+   *  commit's. */
+  browseCommitDiff: (repo: string, commit_id: CommitId, since?: CommitId) => {
+    const qs = since ? `?since=${enc(since)}` : '';
+    return request<CommitDiffView>(
+      'GET',
+      `${repoBase(repo)}/browse/commits/${enc(commit_id)}/diff${qs}`,
+    );
+  },
   /** File contents at a (commit, path). `binary: true` means the
    *  bytes didn't decode as UTF-8 and `content` is empty — the
    *  viewer renders a placeholder in that case. 404 when the

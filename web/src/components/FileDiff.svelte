@@ -118,6 +118,13 @@
     lastVisitAt?: string | null;
     /** Currently signed-in author identity. */
     viewer?: string;
+    /** Whether the file header sticks to the top while scrolling.
+     *  True in the review viewer (the window is the scroll root and
+     *  the header pins under the app header). The browser stacks
+     *  several FileDiffs inside its own scrolling detail pane with
+     *  its own sticky commit header, so it passes `false` to keep
+     *  these per-file headers in normal flow. */
+    stickyHeader?: boolean;
   }
   let {
     repo,
@@ -156,6 +163,7 @@
     collapsed = $bindable(false),
     lastVisitAt = null,
     viewer = '',
+    stickyHeader = true,
   }: Props = $props();
 
   /** Debug-mode hooks. `debug` comes from ReviewViewer's context
@@ -1743,7 +1751,7 @@
   class="file-diff"
   data-file-path={file.path}
 >
-  <header class="file-header">
+  <header class="file-header" class:flush={!stickyHeader}>
     {#if showDiffs}
       <!-- The fold toggle only makes sense when the diff is actually
            on screen — in comments-only mode there's nothing under
@@ -2356,6 +2364,13 @@
     position: sticky;
     top: var(--app-header-h);
     z-index: 10;
+  }
+
+  /* Browser mode: the FileDiff is one of several stacked inside a
+   * scrolling detail pane that has its own sticky header, so the
+   * per-file header stays in normal flow instead of pinning. */
+  .file-header.flush {
+    position: static;
   }
 
   .toggle {
