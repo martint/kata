@@ -258,6 +258,43 @@ describe('alignedRows', () => {
     ]);
   });
 
+  test('unpaired remove before a pair does not duplicate trailing unpaired adds', () => {
+    // Regression: an unpaired remove sitting *before* a later paired
+    // remove, with unpaired adds trailing past the last pair. The
+    // layout merge used to treat an unpaired remove as licence to
+    // flush *every* remaining unpaired add; the next paired remove
+    // then rewound the add cursor and the same trailing adds were
+    // emitted again — added lines rendered two or three times and out
+    // of order in side-by-side view.
+    //   - the alpha helper does stuff   ↔ + the alpha helper does more stuff
+    //   - qqq                             (unpaired remove, sits first)
+    //   - the beta helper does stuff    ↔ + the beta helper does more stuff
+    //                                     + www  (unpaired add, trailing)
+    const a = alignBlock(
+      ['the alpha helper does stuff', 'qqq', 'the beta helper does stuff'],
+      [
+        'the alpha helper does more stuff',
+        'the beta helper does more stuff',
+        'www',
+      ],
+    );
+    expect(a.pairs).toEqual([
+      { removeIndex: 0, addIndex: 0 },
+      { removeIndex: 2, addIndex: 1 },
+    ]);
+    expect(a.unpairedRemoves).toEqual([1]);
+    expect(a.unpairedAdds).toEqual([2]);
+    const rows = alignedRows(a);
+    // Every add index appears exactly once, in order — no `addIndex: 2`
+    // emitted early and then again.
+    expect(rows).toEqual([
+      { removeIndex: 0, addIndex: 0 },
+      { removeIndex: 1, addIndex: null },
+      { removeIndex: 2, addIndex: 1 },
+      { removeIndex: null, addIndex: 2 },
+    ]);
+  });
+
   test('fully-unpaired uneven block index-zips with blanks on the shorter side', () => {
     const a = alignBlock(['aaa'], ['xxx', 'yyy', 'zzz']);
     const rows = alignedRows(a);

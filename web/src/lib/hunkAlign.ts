@@ -201,7 +201,14 @@ export function alignedRows(alignment: BlockAlignment): AlignedRow[] {
   let addCursor = 0;
   for (let ri = 0; ri < totalRemoves; ri++) {
     const pairedAdd = removeToAdd.get(ri);
-    const advanceTo = pairedAdd ?? totalAdds;
+    // A paired remove pulls the cursor up to its partner, flushing the
+    // unpaired adds passed on the way. An *unpaired* remove constrains
+    // the add side not at all, so it must NOT advance the cursor:
+    // flushing here would emit unpaired adds that belong after a later
+    // paired remove, and that paired remove's `addCursor = pairedAdd + 1`
+    // reset would then re-emit the very same adds. Trailing unpaired
+    // adds (past the last pair) are flushed by the final loop instead.
+    const advanceTo = pairedAdd ?? addCursor;
     while (addCursor < advanceTo) {
       if (unpairedAddSet.has(addCursor)) {
         out.push({ removeIndex: null, addIndex: addCursor });
