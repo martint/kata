@@ -2194,7 +2194,25 @@
     // retries internally, so this is belt-and-braces.
     requestAnimationFrame(jumpToHash);
     window.addEventListener('hashchange', jumpToHash);
-    return () => window.removeEventListener('hashchange', jumpToHash);
+    // Escape closes the file-tree drawer on phones, where it's a
+    // modal overlay over the diff — the backdrop tap and the ☰
+    // toggle already close it, Escape is the missing keyboard
+    // gesture. A no-op on desktop, where the tree is in-flow (and
+    // Escape stays free for the comment composer).
+    const onKeydown = (e: KeyboardEvent) => {
+      if (
+        e.key === 'Escape' &&
+        !treeCollapsed &&
+        window.matchMedia('(max-width: 640px)').matches
+      ) {
+        treeCollapsed = true;
+      }
+    };
+    window.addEventListener('keydown', onKeydown);
+    return () => {
+      window.removeEventListener('hashchange', jumpToHash);
+      window.removeEventListener('keydown', onKeydown);
+    };
   });
 
   const reviewAnchorIds = $derived({
