@@ -284,9 +284,14 @@ impl JjRepoHandle {
 impl JjRepoHandle {
     /// Full hunks for one file in the rebase-based interdiff. Same
     /// (from_commit, to_commit) semantics as [`Self::compute_rebased_diff`],
-    /// but populates `FileChange::hunks` from imara-diff. Returns an
-    /// error when the file isn't in the interdiff (deleted on both
-    /// sides, identical, etc.).
+    /// but populates `FileChange::hunks` from imara-diff.
+    ///
+    /// A file that isn't in the interdiff (unchanged between the two
+    /// rebased trees) is a valid query — the regular per-file diff
+    /// returns an empty `FileChange` for an unchanged file too — so
+    /// this returns an empty diff rather than erroring. The caller
+    /// asks per-file off a list that can lag a patchset switch by a
+    /// frame; a stale path must not 500.
     pub fn compute_rebased_file_hunks(
         &self,
         from_commit_id: &KataCommitId,
@@ -294,16 +299,16 @@ impl JjRepoHandle {
         path: &str,
     ) -> Result<kata_core::FileChange> {
         let diff = self.compute_rebased_diff(from_commit_id, to_commit_id)?;
-        let target = diff
-            .files
-            .into_iter()
-            .find(|f| f.path == path)
-            .ok_or_else(|| {
-                Error::Parse(format!(
-                    "file {:?} not present in rebased interdiff",
-                    path
-                ))
-            })?;
+        let Some(target) = diff.files.into_iter().find(|f| f.path == path) else {
+            return Ok(kata_core::FileChange {
+                path: path.to_string(),
+                status: FileStatus::Modified,
+                hunks: Some(Vec::new()),
+                binary: false,
+                added: 0,
+                removed: 0,
+            });
+        };
         if target.binary {
             return Ok(target);
         }
