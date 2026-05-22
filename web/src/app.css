@@ -830,6 +830,41 @@ input[type='text'] {
   min-width: 0;
 }
 
+/* A row has two groups: `.row-primary` (number + name + archived
+ * tag) and `.row-meta` (revset, last-activity, comment count). On
+ * the desktop they share one line — primary takes the slack so the
+ * meta cluster sits flush right. On a phone the row stacks: primary
+ * on line 1 with the full width for the name, meta on line 2 at a
+ * smaller size. Before this split every part of the row shared one
+ * cramped line and all of it truncated to a few characters. */
+.review-list .row-primary {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.review-list .row-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex: 0 0 auto;
+}
+
+@media (max-width: 640px) {
+  .review-list button.row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+  }
+  .review-list .row-meta {
+    flex-wrap: wrap;
+    gap: 4px 10px;
+    font-size: 11px;
+  }
+}
+
 /* The li holds the row button plus an optional kebab actions menu.
  * `position: relative` so the kebab's absolute-positioned dropdown
  * anchors against the li; the kebab itself sits to the right of the
@@ -885,7 +920,7 @@ input[type='text'] {
   background: var(--bg-panel);
 }
 
-.review-list .row > strong {
+.review-list .row-primary > strong {
   flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;

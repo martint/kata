@@ -876,12 +876,15 @@
             class="row"
             onclick={() => (selectMode && selectable ? toggleSelect(id) : onopen(s.manifest.number))}
           >
-            <span class="review-number">#{s.manifest.number}</span>
-            <strong>{s.manifest.name}</strong>
-            <span class="meta">{s.manifest.revset}</span>
-            <span style="flex: 1"></span>
-            <span class="meta when" title={lastActivity(s)}>{relative(lastActivity(s))}</span>
-            <span class="meta">{s.published_comment_count} comments</span>
+            <span class="row-primary">
+              <span class="review-number">#{s.manifest.number}</span>
+              <strong>{s.manifest.name}</strong>
+            </span>
+            <span class="row-meta">
+              <span class="meta revset">{s.manifest.revset}</span>
+              <span class="meta when" title={lastActivity(s)}>{relative(lastActivity(s))}</span>
+              <span class="meta">{s.published_comment_count} comments</span>
+            </span>
           </button>
           {#if !selectMode}
             <span class="row-actions">
@@ -909,13 +912,16 @@
               class="row archived"
               onclick={() => (selectMode && selectable ? toggleSelect(id) : onopen(s.manifest.number))}
             >
-              <span class="review-number">#{s.manifest.number}</span>
-              <strong>{s.manifest.name}</strong>
-              <span class="meta">{s.manifest.revset}</span>
-              <span class="archived-tag">archived</span>
-              <span style="flex: 1"></span>
-              <span class="meta when" title={lastActivity(s)}>{relative(lastActivity(s))}</span>
-              <span class="meta">{s.published_comment_count} comments</span>
+              <span class="row-primary">
+                <span class="review-number">#{s.manifest.number}</span>
+                <strong>{s.manifest.name}</strong>
+                <span class="archived-tag">archived</span>
+              </span>
+              <span class="row-meta">
+                <span class="meta revset">{s.manifest.revset}</span>
+                <span class="meta when" title={lastActivity(s)}>{relative(lastActivity(s))}</span>
+                <span class="meta">{s.published_comment_count} comments</span>
+              </span>
             </button>
             {#if !selectMode}
               <span class="row-actions">
