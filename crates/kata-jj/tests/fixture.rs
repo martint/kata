@@ -77,6 +77,82 @@ fn current_change_and_commit(root: &Path, revset: &str) -> (ChangeId, CommitId) 
 }
 
 #[tokio::test]
+async fn resolve_range_handles_branches_off_different_trunk_commits() {
+    // Variation of the "aggregating branches" case where each side
+    // branch is rooted at a *different* trunk commit (real PR stacks
+    // often look like this — each PR branches off whatever main was
+    // at the time). The revset's roots have several distinct parents
+    // outside the set; resolve_range must pick the right one (the
+    // shared ancestor) instead of failing as "multiple heads".
+    let fx = Fixture::new();
+    fx.write("seed.txt", "seed\n");
+    fx.jj(&["describe", "-m", "trunk 1"]);
+    // Branch a starts here.
+    fx.jj(&["bookmark", "create", "branch-a", "-r", "@"]);
+    // Trunk moves on.
+    fx.jj(&["new", "-m", "trunk 2"]);
+    // Branch b starts here.
+    fx.jj(&["bookmark", "create", "branch-b", "-r", "@"]);
+    // Trunk moves on again — this is main.
+    fx.jj(&["new", "-m", "trunk 3"]);
+    fx.jj(&["bookmark", "create", "main", "-r", "@"]);
+    // Side commit on branch-a (off trunk 1).
+    fx.jj(&["new", "branch-a", "-m", "a edit"]);
+    fx.jj(&["bookmark", "set", "branch-a", "-r", "@"]);
+    // Side commit on branch-b (off trunk 2).
+    fx.jj(&["new", "branch-b", "-m", "b edit"]);
+    fx.jj(&["bookmark", "set", "branch-b", "-r", "@"]);
+    // Merge them on top of main.
+    fx.jj(&["new", "main", "branch-a", "branch-b", "-m", "merge"]);
+    fx.jj(&["bookmark", "create", "stack-tip", "-r", "@"]);
+
+    let cli = fx.cli();
+    let range = cli
+        .resolve_range(&RevSet::new("trunk()..stack-tip"))
+        .await
+        .expect("resolve_range");
+    let (_, tip_commit) = current_change_and_commit(&fx.root, "stack-tip");
+    assert_eq!(range.tip.commit_id, tip_commit);
+    let (_, trunk_commit) = current_change_and_commit(&fx.root, "main");
+    assert_eq!(range.base.commit_id, trunk_commit);
+}
+
+#[tokio::test]
+async fn resolve_range_handles_a_revset_aggregating_multiple_branches() {
+    // User-reported bug: a revset like `trunk()..stack-tip` where
+    // `stack-tip` is reachable via a merge commit that aggregates
+    // several side branches. Each side branch carries its own
+    // bookmark, so the revset spans several bookmark refs — but the
+    // set's graph-theoretic `heads()` is still a single commit (the
+    // merge / its descendant). `resolve_range` must not reject this
+    // as "multiple heads".
+    let fx = Fixture::new();
+    fx.write("seed.txt", "seed\n");
+    fx.jj(&["describe", "-m", "trunk commit"]);
+    fx.jj(&["bookmark", "create", "main", "-r", "@"]);
+    fx.jj(&["new", "main", "-m", "branch a"]);
+    fx.jj(&["bookmark", "create", "branch-a", "-r", "@"]);
+    fx.jj(&["new", "main", "-m", "branch b"]);
+    fx.jj(&["bookmark", "create", "branch-b", "-r", "@"]);
+    fx.jj(&["new", "main", "-m", "branch c"]);
+    fx.jj(&["bookmark", "create", "branch-c", "-r", "@"]);
+    fx.jj(&["new", "branch-a", "branch-b", "branch-c", "-m", "merge"]);
+    fx.jj(&["bookmark", "create", "stack-tip", "-r", "@"]);
+
+    let cli = fx.cli();
+    let range = cli
+        .resolve_range(&RevSet::new("trunk()..stack-tip"))
+        .await
+        .expect("resolve_range");
+    let (tip_change, tip_commit) = current_change_and_commit(&fx.root, "stack-tip");
+    assert_eq!(range.tip.commit_id, tip_commit);
+    assert_eq!(range.tip.change_id, tip_change);
+    let (base_change, base_commit) = current_change_and_commit(&fx.root, "main");
+    assert_eq!(range.base.commit_id, base_commit);
+    assert_eq!(range.base.change_id, base_change);
+}
+
+#[tokio::test]
 async fn bookmarks_and_range_resolution() {
     let fx = Fixture::new();
     fx.write("a.txt", "hello\nworld\n");

@@ -710,9 +710,25 @@ impl JjBackend for JjLib {
                 &revset,
                 ws,
             )?;
+            // Base is the commit on the other side of the revset's
+            // lower boundary — for a `base..tip` review diff to mirror
+            // the revset, base needs to be the merge-base of `tip`
+            // with whatever sits just outside the set.
+            // `heads(::tip & ~X)` computes that directly: among the
+            // tip's ancestors that aren't in the set, take the
+            // topological heads (the ones closest to the boundary).
+            // For a simple linear `A..B` this collapses to `A`.
+            //
+            // The older `roots(X)-` recipe failed whenever X
+            // aggregated side branches rooted at different upstream
+            // commits — a 3-parent merge of PR branches that each
+            // started off a different point on `main`, for example.
+            // `roots(X)` then has several commits with distinct
+            // parents, and `roots(X)-` is a multi-commit set that
+            // can't be collapsed into "the base".
             let base = solo_endpoint(
                 &repo,
-                &format!("roots({revset})-"),
+                &format!("heads(::{} & ~({revset}))", tip.commit_id),
                 &revset,
                 ws,
             )?;

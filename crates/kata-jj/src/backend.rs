@@ -91,8 +91,10 @@ pub trait JjBackend: Send + Sync {
     ) -> Result<Vec<FileChange>>;
 
     /// Resolve `revset` to its base and tip endpoints. Convention:
-    /// `tip = heads(revset)`, `base = roots(revset)-` (the parent of the
-    /// earliest commit in the set).
+    /// `tip = heads(revset)` (the topological head of the set, errors
+    /// when there's more than one), `base = heads(::tip & ~revset)`
+    /// (the merge-base of the tip with whatever sits just outside
+    /// the set — for a simple linear `A..B` this is just `A`).
     async fn resolve_range(&self, revset: &RevSet) -> Result<ReviewRange>;
 
     /// Metadata for every commit in `revset`, oldest first. The UI's
