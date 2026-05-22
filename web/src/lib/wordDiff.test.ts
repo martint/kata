@@ -66,6 +66,17 @@ describe('diffLines', () => {
     expect(d!.removed).toEqual([]);
   });
 
+  test('folds whitespace between two highlighted words into one range', () => {
+    // Two changed words separated by a space — whether the space is
+    // itself classified as changed or unchanged — belong to one
+    // edit. Splitting the highlight at the gap fragments the visual
+    // block and the eye has to stitch the halves back together.
+    const d = diffLines('foo bar', 'FOO BAR');
+    expect(d).not.toBeNull();
+    expect(d!.removed).toEqual([{ start: 0, end: 7 }]);
+    expect(d!.added).toEqual([{ start: 0, end: 7 }]);
+  });
+
 });
 
 describe('computeHunkWordDiff', () => {

@@ -128,18 +128,43 @@ function classify(a: Token[], b: Token[], dp: Uint32Array): { aKind: string[]; b
 
 /** Merge consecutive tokens that share a kind into character ranges.
  *  Adjacent ranges with the same kind collapse so the overlay isn't
- *  a swarm of one-character spans. */
+ *  a swarm of one-character spans.
+ *
+ *  Whitespace policy:
+ *    - standalone changed whitespace doesn't earn a highlight on its
+ *      own (a re-indent or trailing space would otherwise light up as
+ *      bright tint on a blank column, reading as noise on top of the
+ *      row tint);
+ *    - whitespace sitting *between* two highlighted words is folded
+ *      into the same highlight — the edit is one block, not two
+ *      fragments, and bridging the gap saves the eye from stitching
+ *      the halves back together. The kind of the bridging whitespace
+ *      itself (changed or unchanged) doesn't matter; what matters is
+ *      that highlighted words sit on both sides of it. */
 function rangesFor(tokens: Token[], kinds: string[], target: string): WordDiffRange[] {
   const out: WordDiffRange[] = [];
   let cur: WordDiffRange | null = null;
   for (let i = 0; i < tokens.length; i++) {
-    // A changed token that is only whitespace isn't worth tinting:
-    // re-indentation and trailing-space edits would otherwise light
-    // up as inline highlights — bright tint on blank columns, which
-    // reads as noise on top of the row tint that already flags the
-    // line. Treat it like an unchanged token: it ends the current
-    // run rather than joining or starting one.
-    if (kinds[i] !== target || tokens[i].text.trim() === '') {
+    const isWs = tokens[i].text.trim() === '';
+    if (isWs) {
+      // Whitespace can only ever *bridge* — it never starts a run.
+      if (cur === null) continue;
+      // Look past any further whitespace for the next non-ws token.
+      // If that token is also a highlight, the whitespace sits
+      // inside a single edit and gets folded in; otherwise the run
+      // ends here.
+      let j = i + 1;
+      while (j < tokens.length && tokens[j].text.trim() === '') j++;
+      const bridges = j < tokens.length && kinds[j] === target;
+      if (bridges) {
+        cur.end = tokens[i].end;
+        continue;
+      }
+      out.push(cur);
+      cur = null;
+      continue;
+    }
+    if (kinds[i] !== target) {
       if (cur) {
         out.push(cur);
         cur = null;
