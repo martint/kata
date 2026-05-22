@@ -112,6 +112,19 @@
    *  change. The counter is the smallest fix that doesn't add a stale
    *  remount on regular in-app navigation. */
   let popstateGen = $state(0);
+
+  /** `pathname + search` (everything but the hash) of the URL the
+   *  current `screen` was built against. A `popstate` whose URL still
+   *  matches this is a hash-only change: ReviewViewer's in-review
+   *  jumps (`#file-`, `#c-`, `#L:`) set `location.hash`, which fires
+   *  popstate. That must NOT rebuild `screen` or bump `popstateGen` —
+   *  doing so remounts the viewer mid-jump, throwing away the file
+   *  tree's scroll position and re-fetching every diff. ReviewViewer's
+   *  own `hashchange` listener owns the scroll for those. */
+  let syncedNavUrl = '';
+  function rememberNavUrl() {
+    syncedNavUrl = location.pathname + location.search;
+  }
   /** Mirrored from ReviewViewer so its review-level controls (publish /
    *  discard, diff-collapse toggle, etc.) can live in the sticky top bar —
    *  always reachable while scrolling, instead of in a banner inside the
@@ -334,6 +347,7 @@
     if (location.pathname + location.search !== path) {
       history.pushState({}, '', path);
     }
+    rememberNavUrl();
     await showReview(repo, number, undefined, undefined, undefined, undefined, false);
   }
 
@@ -356,6 +370,7 @@
     if (location.pathname + location.search !== target) {
       history.replaceState({}, '', target);
     }
+    rememberNavUrl();
   }
 
   /** Called by ReviewViewer when any of its view-state fields change
@@ -379,6 +394,7 @@
     if (location.pathname + location.search !== path) {
       history.pushState({}, '', path);
     }
+    rememberNavUrl();
   }
 
   /** Navigate to the per-repo review list (the "home" screen). Used
@@ -400,6 +416,7 @@
 
   /** Reflect the current URL into `screen`. Runs on mount and on popstate. */
   async function syncFromUrl() {
+    rememberNavUrl();
     // `/r/<repo>/browse` routes through the browse pane.
     const browseMatch = location.pathname.match(/^\/r\/([^/]+)\/browse$/);
     if (browseMatch) {
@@ -491,11 +508,20 @@
         event.review_id === screen.view.manifest.review_id
       ) {
         history.replaceState({}, '', '/');
+        rememberNavUrl();
         screen = { kind: 'list' };
         void loadList(repo);
       }
     });
     window.addEventListener('popstate', async () => {
+      // A popstate whose pathname+search still match what `screen` was
+      // built against is a hash-only change — ReviewViewer sets
+      // `location.hash` for its `#file-`/`#c-`/`#L:` in-review jumps,
+      // and that fires popstate. ReviewViewer's own `hashchange`
+      // listener does the scroll; rebuilding `screen` / bumping
+      // `popstateGen` here would remount the viewer mid-jump and lose
+      // the file tree's scroll position.
+      if (location.pathname + location.search === syncedNavUrl) return;
       // Await syncFromUrl so `screen` is rebuilt against the restored
       // URL before we bump the gen counter. If the new URL produces a
       // different `screen.initialPatchset` the {#key} block will have
