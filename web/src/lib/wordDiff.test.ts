@@ -45,6 +45,23 @@ describe('diffLines', () => {
     expect(d!.added).toEqual([]);
     expect(d!.removed.length).toBeGreaterThan(0);
   });
+
+  test('ignores whitespace-only changes', () => {
+    // The line differs, but only in whitespace — a trailing space, a
+    // re-indent. The row tint flags the line; there's nothing for the
+    // inline word highlight to point at.
+    expect(diffLines('foo', 'foo  ')).toEqual({ removed: [], added: [] });
+    expect(diffLines('  foo', '      foo')).toEqual({ removed: [], added: [] });
+  });
+
+  test('does not extend a highlight onto adjacent changed whitespace', () => {
+    // "bar" is genuinely new; the space before it only exists because
+    // "bar" was inserted. Highlight the word, not the blank gap.
+    const d = diffLines('foo', 'foo bar');
+    expect(d).not.toBeNull();
+    expect(d!.added).toEqual([{ start: 4, end: 7 }]);
+    expect(d!.removed).toEqual([]);
+  });
 });
 
 describe('computeHunkWordDiff', () => {

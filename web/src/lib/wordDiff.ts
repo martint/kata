@@ -133,7 +133,13 @@ function rangesFor(tokens: Token[], kinds: string[], target: string): WordDiffRa
   const out: WordDiffRange[] = [];
   let cur: WordDiffRange | null = null;
   for (let i = 0; i < tokens.length; i++) {
-    if (kinds[i] !== target) {
+    // A changed token that is only whitespace isn't worth tinting:
+    // re-indentation and trailing-space edits would otherwise light
+    // up as inline highlights — bright tint on blank columns, which
+    // reads as noise on top of the row tint that already flags the
+    // line. Treat it like an unchanged token: it ends the current
+    // run rather than joining or starting one.
+    if (kinds[i] !== target || tokens[i].text.trim() === '') {
       if (cur) {
         out.push(cur);
         cur = null;
