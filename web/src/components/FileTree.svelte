@@ -20,6 +20,10 @@
     navTotal?: number;
     onprev?: () => void;
     onnext?: () => void;
+    /** Optional secondary per-file action — adds a trailing ↗ on
+     *  each leaf. The repository browser passes its "open the whole
+     *  file" handler; review screens leave it unset. */
+    onopen?: (path: string) => void;
   }
   const {
     files,
@@ -29,6 +33,7 @@
     navTotal = 0,
     onprev,
     onnext,
+    onopen,
   }: Props = $props();
 
   let query = $state('');
@@ -92,6 +97,7 @@
             depth={0}
             {onselect}
             {activePath}
+            {onopen}
           />
         {/each}
       </ul>

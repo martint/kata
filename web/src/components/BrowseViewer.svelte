@@ -22,6 +22,7 @@
   } from '../lib/types';
   import FileViewer from './browse/FileViewer.svelte';
   import FileDiff from './FileDiff.svelte';
+  import FileTree from './FileTree.svelte';
   import GraphLog from './browse/GraphLog.svelte';
   import Chevron from './Chevron.svelte';
   import RevId from './RevId.svelte';
@@ -200,8 +201,8 @@
     };
   }
 
-  /** Scroll a stacked file diff into view when its row in the
-   *  Files summary is clicked. */
+  /** Scroll a stacked file diff into view when its leaf in the
+   *  file tree is clicked. */
   function scrollToFile(path: string) {
     const el = detailPaneEl?.querySelector<HTMLElement>(
       `[data-browse-file="${CSS.escape(path)}"]`,
@@ -599,9 +600,11 @@
           {/if}
         {/if}
 
-        <!-- Files in this commit + their stacked diffs. The summary
-             list is a jump table — clicking a row scrolls to that
-             file's diff below. -->
+        <!-- Files in this commit + their stacked diffs. The tree is
+             a jump table — clicking a file scrolls to its diff
+             below; the trailing ↗ opens the whole file. Same
+             foldable component the review screen's file tree
+             uses. -->
         {#if commitDiffLoading}
           <p class="muted status">Loading diff…</p>
         {:else if commitDiffError}
@@ -613,36 +616,11 @@
             <p class="muted status">This commit changed no files.</p>
           {:else}
             {@const ps = patchsetFor(commitDiff)}
-            <section class="files-summary">
-              <h4>
-                {commitDiff.files.length}
-                file{commitDiff.files.length === 1 ? '' : 's'} changed
-              </h4>
-              <ul>
-                {#each commitDiff.files as f (f.path)}
-                  <li>
-                    <button
-                      type="button"
-                      class="file-jump"
-                      onclick={() => scrollToFile(f.path)}
-                    >
-                      <code class="file-jump-path">{f.path}</code>
-                      <span class="file-jump-counts">
-                        <span class="adds">+{f.added}</span>
-                        <span class="removes">−{f.removed}</span>
-                      </span>
-                    </button>
-                    <button
-                      type="button"
-                      class="file-open"
-                      title="View the whole file at this commit"
-                      aria-label="View {f.path} at this commit"
-                      onclick={() => openFile(f.path)}
-                    >↗</button>
-                  </li>
-                {/each}
-              </ul>
-            </section>
+            <FileTree
+              files={commitDiff.files}
+              onselect={scrollToFile}
+              onopen={openFile}
+            />
             <div class="commit-diffs">
               {#each commitDiff.files as f (f.path)}
                 <div class="commit-diff-file" data-browse-file={f.path}>
@@ -964,94 +942,10 @@
     font-size: 12px;
   }
 
-  /* Files summary — a jump table above the stacked diffs. Each row
-   * scrolls to its file's diff; the trailing ↗ opens the whole file
-   * in the file viewer instead. */
-  .files-summary {
-    margin-top: 16px;
-  }
-
-  .files-summary h4 {
-    margin: 0 0 6px 0;
-    font-size: 12px;
-    color: var(--text-muted);
-    font-weight: 600;
-  }
-
-  .files-summary ul {
-    margin: 0;
-    padding: 0;
-    list-style: none;
-    border: 1px solid var(--border-muted);
-    border-radius: 6px;
-    overflow: hidden;
-  }
-
-  .files-summary li {
-    display: flex;
-    align-items: stretch;
-  }
-  .files-summary li + li {
-    border-top: 1px solid var(--border-muted);
-  }
-
-  .file-jump {
-    flex: 1;
-    min-width: 0;
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
-    padding: 5px 8px;
-    background: transparent;
-    border: none;
-    cursor: pointer;
-    font: inherit;
-    text-align: left;
-    color: var(--text);
-  }
-  .file-jump:hover {
-    background: var(--bg-elevated);
-  }
-  .file-jump-path {
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 12px;
-  }
-  .file-jump-counts {
-    flex: 0 0 auto;
-    font-size: 11px;
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  }
-  .file-jump-counts .adds {
-    color: var(--add-text);
-  }
-  .file-jump-counts .removes {
-    color: var(--remove-text);
-  }
-
-  .file-open {
-    flex: 0 0 auto;
-    width: 30px;
-    background: transparent;
-    border: none;
-    border-left: 1px solid var(--border-muted);
-    color: var(--text-muted);
-    cursor: pointer;
-    font-size: 13px;
-  }
-  .file-open:hover {
-    background: var(--bg-elevated);
-    color: var(--link);
-  }
-
-  /* Stacked per-file diffs below the summary. `FileDiff` brings its
-   * own bordered card + `16px 0` vertical margin, so this wrapper
-   * adds no box of its own — it's only a scroll anchor for the
-   * Files-summary jump links. A plain `display: contents` would
+  /* Stacked per-file diffs below the file tree. `FileDiff` brings
+   * its own bordered card + `16px 0` vertical margin, so this
+   * wrapper adds no box of its own — it's only a scroll anchor for
+   * the file tree's jump links. A plain `display: contents` would
    * drop the `data-browse-file` element from the box tree, so keep
    * it a div but style-free. */
   .commit-diffs {

@@ -982,11 +982,12 @@ The pane has two columns:
   itself never mutates the repo.
 - **Detail** (right). When the reader picks a commit, the
   detail pane shows — top to bottom — the commit metadata
-  (description, author, timestamp, refs), a **Files changed**
-  summary list, and the commit's **diff** against its parent
-  rendered file by file. The summary list is a jump table:
-  clicking a row scrolls to that file's diff; a trailing ↗
-  opens the whole file in the file viewer instead. On first
+  (description, author, timestamp, refs), a **file tree**, and
+  the commit's **diff** against its parent rendered file by
+  file. The file tree is the same foldable, nested-folder
+  component the review screen uses: clicking a file scrolls to
+  its diff; a trailing ↗ opens the whole file in the file
+  viewer instead. On first
   load — when the URL pins no commit — the selection defaults
   to the working-copy commit (`@`) so the pane opens on
   something useful rather than an empty placeholder.

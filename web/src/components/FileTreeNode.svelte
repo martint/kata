@@ -10,8 +10,13 @@
      *  highlights so the tree stays oriented as the reader
      *  scrolls. */
     activePath?: string | null;
+    /** Optional secondary per-file action. When set, each leaf gets
+     *  a trailing ↗ button — the repository browser uses it to open
+     *  the whole file in the file viewer. Review screens leave it
+     *  unset, so the leaf is a single click target. */
+    onopen?: (path: string) => void;
   }
-  const { node, depth, onselect, activePath }: Props = $props();
+  const { node, depth, onselect, activePath, onopen }: Props = $props();
 
   let collapsed = $state(false);
 
@@ -22,19 +27,29 @@
 
 <li>
   {#if node.file}
-    <button
-      class="leaf"
-      class:active={activePath === node.file.path}
-      style:padding-left="{8 + depth * 14}px"
-      onclick={() => onselect(node.file!.path)}
-    >
-      <span class="status status-{node.file.status}">{statusChar(node.file.status)}</span>
-      <span class="name">{node.name}</span>
-      <span class="stats">
-        <span class="adds">+{node.added}</span>
-        <span class="removes">-{node.removed}</span>
-      </span>
-    </button>
+    <div class="leaf-row">
+      <button
+        class="leaf"
+        class:active={activePath === node.file.path}
+        style:padding-left="{8 + depth * 14}px"
+        onclick={() => onselect(node.file!.path)}
+      >
+        <span class="status status-{node.file.status}">{statusChar(node.file.status)}</span>
+        <span class="name">{node.name}</span>
+        <span class="stats">
+          <span class="adds">+{node.added}</span>
+          <span class="removes">-{node.removed}</span>
+        </span>
+      </button>
+      {#if onopen}
+        <button
+          class="open"
+          title="View the whole file"
+          aria-label="View {node.file.path}"
+          onclick={() => onopen!(node.file!.path)}
+        >↗</button>
+      {/if}
+    </div>
   {:else}
     <button class="folder" style:padding-left="{8 + depth * 14}px" onclick={() => (collapsed = !collapsed)}>
       <span class="caret">{collapsed ? '▸' : '▾'}</span>
@@ -52,6 +67,7 @@
             depth={depth + 1}
             {onselect}
             {activePath}
+            {onopen}
           />
         {/each}
       </ul>
@@ -99,6 +115,31 @@
 
   .leaf.active:hover {
     background: var(--link-bg);
+  }
+
+  /* A leaf plus its optional trailing ↗ action sit on one row; the
+   * leaf flexes to fill, the action takes only what it needs. With
+   * no `onopen` the row wraps a single full-width button — visually
+   * identical to a bare leaf. */
+  .leaf-row {
+    display: flex;
+    align-items: stretch;
+  }
+
+  .leaf-row .leaf {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .open {
+    flex: 0 0 auto;
+    width: auto;
+    color: var(--text-faint);
+    font-size: 12px;
+  }
+
+  .open:hover {
+    color: var(--link);
   }
 
   .folder-name {
