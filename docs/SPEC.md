@@ -970,7 +970,9 @@ The pane has two columns:
   get a solid node, immutable ones (ancestors of `trunk()`) a
   faint node + dimmed subject so settled history reads as
   subordinate to in-progress work. The default revset is
-  `bookmarks() | @ | latest(@-.. | ..@, 50)`; a search box at
+  `trunk() | bookmarks() | @ | latest(@-.. | ..@, 50)` — `trunk()`
+  is listed explicitly so the main line is always anchored on the
+  graph even when no local bookmark points at it. A search box at
   the top of the pane accepts any free-form revset. The pane
   defaults to a narrow width and has a one-click collapse so the
   diff can take the whole screen. Up / down arrow keys step the

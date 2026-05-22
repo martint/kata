@@ -1395,9 +1395,9 @@ impl ReviewService {
     /// stem graph + per-row decoration (bookmarks pointing at each
     /// commit, the `@` marker on the working-copy row). `max_rows`
     /// caps the page. The default revset used by the UI is
-    /// `bookmarks() | @ | latest(@-.. | ..@, 50)` — named branches
-    /// + working copy + recent neighbourhood — but any expression
-    /// the operator types is honoured.
+    /// `trunk() | bookmarks() | @ | latest(@-.. | ..@, 50)` — trunk
+    /// + named branches + working copy + recent neighbourhood — but
+    /// any expression the operator types is honoured.
     pub async fn browse_log(
         &self,
         repo: &RepoId,

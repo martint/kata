@@ -443,7 +443,7 @@
       <input
         type="text"
         bind:value={revsetInput}
-        placeholder="bookmarks() | @ | latest(@-.. | ..@, 50)"
+        placeholder="trunk() | bookmarks() | @ | latest(@-.. | ..@, 50)"
         spellcheck="false"
         autocomplete="off"
       />

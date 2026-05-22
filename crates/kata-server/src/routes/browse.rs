@@ -15,11 +15,13 @@ use crate::error::AppResult;
 use crate::service::CommitDiffView;
 use crate::state::AppState;
 
-/// Default revset used when the caller doesn't specify one. Matches
-/// the IDEAS.md recipe: named branches + the workspace's `@` +
-/// a short window of recent neighbourhood (ancestors of `@` mixed
-/// with its descendants).
-const DEFAULT_REVSET: &str = "bookmarks() | @ | latest(@-.. | ..@, 50)";
+/// Default revset used when the caller doesn't specify one:
+/// `trunk()` + named branches + the workspace's `@` + a short
+/// window of recent neighbourhood (ancestors of `@` mixed with its
+/// descendants). `trunk()` is listed explicitly so the main line is
+/// always anchored on the graph even when no local bookmark points
+/// at it (e.g. the trunk is only a remote-tracking branch).
+const DEFAULT_REVSET: &str = "trunk() | bookmarks() | @ | latest(@-.. | ..@, 50)";
 
 /// Default page size. Generous because the SVG renderer
 /// virtualises and a typical browse session wants enough rows to
@@ -29,7 +31,7 @@ const DEFAULT_MAX_ROWS: usize = 200;
 #[derive(Debug, Deserialize)]
 pub struct LogQuery {
     /// Free-form revset expression. Omit to use the default
-    /// (`bookmarks() | @ | latest(@-.. | ..@, 50)`).
+    /// (`trunk() | bookmarks() | @ | latest(@-.. | ..@, 50)`).
     #[serde(default)]
     pub revset: Option<String>,
     /// Cap on the number of rows returned. Defaults to
