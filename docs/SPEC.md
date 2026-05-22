@@ -226,14 +226,19 @@ Row two appears only on a review and carries review-scoped state:
   **Diffs**, **Comments** — the user picks how much chrome they
   want around the code.
 
-Everything in row two is sticky; the user can scroll through the
-diff and still reach any of these controls without scrolling back.
+On the desktop the whole header is sticky; every control stays
+visible while the reader scrolls through the diff.
 
-On narrow viewports (≤640px) the draft-navigation cluster +
-**Discard** / **Publish** drop onto a dedicated strip below row 1
-rather than wrapping among the search / author cluster. Without
-the dedicated strip Publish/Discard wrap behind the rest of row 1
-and the user can't find them.
+On narrow viewports (≤640px) two things differ:
+
+- The draft-navigation cluster + **Discard** / **Publish** drop
+  onto a dedicated strip below row 1 rather than wrapping among
+  the search / author cluster, where they'd be easy to miss.
+- The header **hides on scroll**. The two-row header is tall on a
+  phone; it slides up out of the viewport as the reader scrolls
+  down into the diff, and slides back on any upward scroll (or
+  when the reader returns near the top). Nothing is removed —
+  every control is one short scroll-up gesture away.
 
 ### 3.2 The review list
 

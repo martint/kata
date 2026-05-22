@@ -124,12 +124,48 @@
    *  dynamically. The static fallback in app.css covers the very first
    *  paint before the observer is wired. */
   let headerEl: HTMLElement | undefined = $state();
+
+  /** Hide-on-scroll for the sticky header on phones. The two-row
+   *  review header eats ~200px of an 812px viewport; sliding it out
+   *  of the way while the reader scrolls down into the diff reclaims
+   *  that space, and a scroll-up gesture brings it straight back.
+   *  Desktop keeps the header permanently pinned. */
+  let headerHidden = $state(false);
+  $effect(() => {
+    const mq = window.matchMedia('(max-width: 640px)');
+    let lastY = window.scrollY;
+    function onScroll() {
+      if (!mq.matches) {
+        headerHidden = false;
+        return;
+      }
+      const y = window.scrollY;
+      const delta = y - lastY;
+      // Always reveal near the top; otherwise react to a deliberate
+      // scroll (the >6px guard ignores sub-pixel / momentum jitter).
+      if (y < (headerEl?.offsetHeight ?? 48)) {
+        headerHidden = false;
+      } else if (delta > 6) {
+        headerHidden = true;
+      } else if (delta < -6) {
+        headerHidden = false;
+      }
+      lastY = y;
+    }
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  });
+
   $effect(() => {
     if (!headerEl) return;
+    // Publish the header's rendered height as `--app-header-h` for
+    // every sticky file-header / tree-pane offset. When the header
+    // is hidden the offset collapses to 0 so those stickies ride up
+    // to the viewport top instead of leaving a 44px dead band.
     const update = () => {
       document.documentElement.style.setProperty(
         '--app-header-h',
-        `${headerEl!.offsetHeight}px`,
+        headerHidden ? '0px' : `${headerEl!.offsetHeight}px`,
       );
     };
     update();
@@ -468,7 +504,7 @@
   });
 </script>
 
-<header class="app" bind:this={headerEl}>
+<header class="app" class:header-hidden={headerHidden} bind:this={headerEl}>
   <!-- Row 1: global app controls. Always present. -->
   <div class="header-row primary">
     {#if toolbar}

@@ -161,6 +161,22 @@ header.app {
    * they make every browser tested mask correctly. */
   isolation: isolate;
   transform: translateZ(0);
+  /* Slide transition for the phone-only hide-on-scroll behaviour
+   * (see `.header-hidden`). Inert on desktop, which never toggles
+   * the class. */
+  transition: transform 0.2s ease;
+}
+
+/* Hide-on-scroll: on phones the header slides up out of the
+ * viewport as the reader scrolls down into the diff, and slides
+ * back on any upward scroll. `App.svelte` collapses `--app-header-h`
+ * to 0 in lockstep so sticky file headers ride up to the top edge
+ * rather than leaving a dead band. The `translateZ(0)` is kept so
+ * the iOS sticky-paint fix above still holds while hidden. */
+@media (max-width: 640px) {
+  header.app.header-hidden {
+    transform: translateY(-100%) translateZ(0);
+  }
 }
 
 header.app .header-row {
