@@ -1013,12 +1013,19 @@
     .graph-toggle {
       display: none;
     }
+    /* Stacked layout: the graph takes a fixed slice off the top and
+     * scrolls within it; the detail pane takes the rest. A
+     * shrinkable graph pane (`flex: 1 1 …`) collapsed to just the
+     * revset bar once the detail's content grew tall, hiding the
+     * commit list entirely. A fixed basis with no shrink keeps the
+     * graph usable. */
     .log-pane {
-      flex: 1 1 50%;
+      flex: 0 0 42vh;
       width: auto !important;
     }
     .detail-pane {
-      flex: 1 1 auto;
+      flex: 1 1 0;
+      min-height: 0;
       border-top: 1px solid var(--border);
     }
   }
