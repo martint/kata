@@ -382,6 +382,13 @@ header.app .tree-button {
     display: none;
   }
 
+  /* …except the draft navigator keeps its "drafts" word: it sits one
+   * row below the comment navigator and the two would otherwise be
+   * indistinguishable `</>` pairs. The action row has the room. */
+  header.app .draft-nav .lbl {
+    display: inline;
+  }
+
   /* ===== Phone review header — the bespoke two-row layout ======== */
 
   /* Both rows are a fixed 44px with a consistent gap. Each row is
@@ -781,6 +788,14 @@ header.app .comment-nav .position {
   font-variant-numeric: tabular-nums;
   min-width: 3.5em;
   text-align: center;
+}
+
+/* Bubble glyph that brands the comment navigator. Faint so it reads
+ * as a label, not a button. */
+header.app .comment-nav .nav-icon {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-faint);
 }
 
 /* Segmented control for the three mutually-exclusive display modes

@@ -11,6 +11,7 @@
   } from './lib/types';
   import ActionsMenu from './components/ActionsMenu.svelte';
   import BrowseViewer from './components/BrowseViewer.svelte';
+  import Bubble from './components/Bubble.svelte';
   import Chevron from './components/Chevron.svelte';
   import ReviewList from './components/ReviewList.svelte';
   import ReviewSearch from './components/ReviewSearch.svelte';
@@ -688,6 +689,10 @@
         aria-label="Comment navigation"
         data-tour="comment-nav"
       >
+        <!-- Bubble glyph marks this as the *comment* navigator — without
+             it, it's an unlabelled `</>` pair that reads identically to
+             the draft navigator sitting one row below. -->
+        <span class="nav-icon" aria-hidden="true"><Bubble size={13} /></span>
         <button type="button" onclick={c.prev} title="Previous comment" aria-label="Previous comment"
           ><Chevron dir="left" /></button>
         <span class="position" aria-live="polite">
