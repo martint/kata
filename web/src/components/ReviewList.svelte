@@ -726,6 +726,20 @@
     margin-left: 6px;
   }
 
+  /* On a phone the heading and the hint don't share a line. The h3
+   * is a flex row; switch it to a column so the hint drops cleanly
+   * underneath instead of two wrapped fragments interleaving. */
+  @media (max-width: 640px) {
+    .recent-section h3 {
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 2px;
+    }
+    .recent-section h3 .recent-hint {
+      margin-left: 0;
+    }
+  }
+
   .recent-list {
     list-style: none;
     margin: 0;
