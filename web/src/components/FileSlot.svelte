@@ -283,10 +283,18 @@
       });
   });
 
-  /** What we actually hand to `FileDiff`: the cached resolved one if
-   *  a previous fetch (in this slot or another mount of it) put one
-   *  there, otherwise the metadata-only original. */
-  const effectiveFile = $derived(diffCache.get(cacheKey) ?? file);
+  /** What we actually hand to `FileDiff`: prefer the inline hunks if
+   *  `file` already carries them (the scoped `commit_diff` path ships
+   *  per-commit hunks inline, and the cache key is patchset+compare
+   *  only — it can't distinguish a scoped render from an unscoped one
+   *  of the same `(patchset, path)`, so a prior unscoped fetch would
+   *  otherwise resurrect the wrong hunks under a scoped view). Fall
+   *  back to the cache for the metadata-only flow (open_review files
+   *  arrive without hunks), and finally to the metadata-only original
+   *  while the fetch is still in flight. */
+  const effectiveFile = $derived(
+    file.hunks != null ? file : (diffCache.get(cacheKey) ?? file),
+  );
 
   /** Generous rootMargin so files don't churn mount/unmount during normal
    *  scrolling — we keep ~3 viewport-heights' worth of files alive at a
