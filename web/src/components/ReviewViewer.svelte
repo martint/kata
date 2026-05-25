@@ -1906,6 +1906,63 @@
     }
   }
 
+  /** Revset edit state. Only the review's creator sees the edit
+   *  affordance; the input pre-fills with the current revset and a
+   *  no-op save (same string) silently closes the editor. Server
+   *  errors (bad revset, "multiple heads", etc.) render inline
+   *  rather than as a global error so the reader keeps their
+   *  in-progress draft. */
+  let editingRevset = $state(false);
+  let revsetDraft = $state('');
+  let savingRevset = $state(false);
+  let revsetError: string | null = $state(null);
+  let revsetInputEl: HTMLInputElement | undefined = $state();
+  const canEditRevset = $derived(
+    !!viewer && viewer === current.manifest.created_by,
+  );
+  async function startEditRevset() {
+    revsetDraft = current.manifest.revset;
+    revsetError = null;
+    editingRevset = true;
+    // Wait for the input to mount, then focus + select so the user
+    // can start typing immediately (or hit Escape with no fuss).
+    await tick();
+    revsetInputEl?.focus();
+    revsetInputEl?.select();
+  }
+  function cancelEditRevset() {
+    editingRevset = false;
+    revsetError = null;
+  }
+  async function saveRevset() {
+    const next = revsetDraft.trim();
+    if (next.length === 0 || next === current.manifest.revset) {
+      cancelEditRevset();
+      return;
+    }
+    if (savingRevset) return;
+    savingRevset = true;
+    revsetError = null;
+    try {
+      await api.updateRevset(repo, current.manifest.number, next);
+      await refresh();
+      editingRevset = false;
+    } catch (e) {
+      revsetError = (e as Error).message;
+    } finally {
+      savingRevset = false;
+    }
+  }
+  function onRevsetKeydown(e: KeyboardEvent) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      void saveRevset();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      cancelEditRevset();
+    }
+  }
+
   async function refresh() {
     const wasOnLatest = selectedPatchset === current.manifest.current_patchset;
     const compare = compareWith ?? undefined;
@@ -2694,9 +2751,49 @@
        `.header-row.review` row. -->
   <p class="muted">
     {#if current.manifest.bookmark}bookmark: <strong>{current.manifest.bookmark}</strong> ·{/if}
-    revset: <code>{current.manifest.revset}</code>
+    revset:
+    {#if editingRevset}
+      <input
+        class="revset-input"
+        type="text"
+        bind:value={revsetDraft}
+        bind:this={revsetInputEl}
+        onkeydown={onRevsetKeydown}
+        disabled={savingRevset}
+        spellcheck="false"
+        autocomplete="off"
+        autocapitalize="off"
+        aria-label="Revset"
+      />
+      <button
+        type="button"
+        class="revset-save"
+        onclick={saveRevset}
+        disabled={savingRevset}
+      >{savingRevset ? 'Saving…' : 'Save'}</button>
+      <button
+        type="button"
+        class="revset-cancel"
+        onclick={cancelEditRevset}
+        disabled={savingRevset}
+      >Cancel</button>
+    {:else}
+      <code>{current.manifest.revset}</code>
+      {#if canEditRevset}
+        <button
+          type="button"
+          class="revset-edit"
+          onclick={startEditRevset}
+          title="Edit revset"
+          aria-label="Edit revset"
+        >✎</button>
+      {/if}
+    {/if}
     · by <strong>{current.manifest.created_by}</strong>
   </p>
+  {#if revsetError}
+    <p class="revset-error" role="alert">⚠ {revsetError}</p>
+  {/if}
   <!-- Patchset / compared-to selectors live in the top header
        (App.svelte's row-2 header) so the dropdowns sit alongside the
        review identity that they switch between. Only the base→tip
@@ -3033,6 +3130,79 @@
   .refresh-btn:disabled {
     opacity: 0.6;
     cursor: default;
+  }
+
+  /* Pencil button next to the revset code. Faint by default —
+   * it's a structural-edit affordance for the creator and shouldn't
+   * compete with the revset itself for attention. */
+  .revset-edit {
+    margin-left: 4px;
+    padding: 0 5px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 3px;
+    color: var(--text-faint);
+    cursor: pointer;
+    font-size: 12px;
+    line-height: 1.4;
+  }
+
+  .revset-edit:hover {
+    background: var(--bg-panel);
+    border-color: var(--border);
+    color: var(--link);
+  }
+
+  /* Inline revset editor — sits in the same paragraph as the rest
+   * of the identity line. Sized in `em` so it stretches with the
+   * surrounding font. */
+  .revset-input {
+    margin: 0 6px;
+    padding: 2px 6px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    width: 28em;
+    max-width: 100%;
+    box-sizing: border-box;
+  }
+
+  .revset-save,
+  .revset-cancel {
+    margin-right: 4px;
+    padding: 2px 10px;
+    font-size: 12px;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+
+  .revset-save {
+    background: var(--link);
+    color: var(--on-accent);
+    border: 1px solid var(--link);
+  }
+
+  .revset-cancel {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+  }
+
+  .revset-save:disabled,
+  .revset-cancel:disabled {
+    opacity: 0.6;
+    cursor: default;
+  }
+
+  /* Inline error under the revset row — failed `update_revset`
+   * lands here without taking down the whole viewer. */
+  .revset-error {
+    margin: 4px 0 0 0;
+    padding: 4px 10px;
+    border: 1px solid var(--error-border);
+    border-radius: 4px;
+    background: var(--error-bg);
+    color: var(--error-text);
+    font-size: 12px;
   }
 
   /* Compare-mode badge: replaces the usual "base xxx → tip yyy"

@@ -144,25 +144,6 @@ would close the loop:
 The panel only renders when `revset_error` is set, so the cost is
 gated.
 
-## Edit a review's revset after creation
-
-Today only `refresh_review` and `update_review_summary` mutate a
-review. There's no way to rewrite `manifest.revset` itself, which
-is exactly what a reader wants to do when divergence is genuine
-("both versions are real, the review should track only the new
-one") or when the original revset stopped meaning what they
-intended. The shape is straightforward:
-
-- `POST /api/repos/<slug>/reviews/<n>/revset` taking `{ revset:
-  string }`.
-- Service-side: validate the new revset resolves to a single tip
-  + base, append a new patchset, record the previous one's tip
-  as `parent_patchset` if it descends.
-
-Wait for the demand signal before building — most reviews probably
-don't hit this, and the divergence banner + `jj abandon` workflow
-covers the common case.
-
 ## Two-phase comment resolution: claim vs. acknowledgement
 
 The current model treats "resolved" as a single-actor decision: a

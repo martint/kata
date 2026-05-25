@@ -656,6 +656,26 @@ header chip on a comment exposes this as "PSN" with two flavours:
   the context the reviewer wrote it in" when the anchor has
   drifted on the current view.
 
+### 10.3 Editing the revset
+
+The review's creator can rewrite `manifest.revset` after creation
+— a pencil affordance next to the revset on the review summary
+opens an inline editor. Saving validates the new expression
+against the underlying jj repo and records a new patchset for
+the resolved endpoints (or no new patchset if they happen to
+match the current one, making the operation idempotent).
+Continuation versus rewritten follows the same rule as a
+refresh: a descendant tip or the same change-id is a
+continuation; anything else is recorded with `parent_patchset:
+null`. Non-creators don't see the affordance — the same
+permission rule as summary editing. Agents reach the same
+operation via the `update_review_revset` MCP tool.
+
+This covers the cases the divergence banner + `jj abandon`
+workflow can't: the wrong bookmark was named at creation time,
+or the branch's identity legitimately moved (a feature renamed
+mid-flight).
+
 ---
 
 ## 11. Patchset compare (interdiff)

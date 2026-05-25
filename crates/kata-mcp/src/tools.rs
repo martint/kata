@@ -160,6 +160,27 @@ impl ReviewMcp {
     }
 
     #[tool(
+        description = "Replace the revset on a review and record the new resolved endpoints as a new patchset. Only the review's creator may call this. Use this when the original revset stopped meaning what the author intended — e.g. after `jj abandon` on a divergent change, or when the reviewer wants to track a different branch tip. Idempotent: passing a revset that resolves to the same endpoints updates `manifest.revset` but adds no new patchset."
+    )]
+    async fn update_review_revset(
+        &self,
+        Parameters(args): Parameters<UpdateRevsetArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let repo = self.resolve(&args.repo)?;
+        let manifest = self
+            .service
+            .update_review_revset(
+                &repo,
+                &args.review_id,
+                &self.author,
+                kata_core::RevSet::new(args.revset),
+            )
+            .await
+            .map_err(into_mcp)?;
+        Ok(text_json(&manifest))
+    }
+
+    #[tool(
         description = "Start or reuse the agent's open draft session for a review. Idempotent — same session is returned until it's published or discarded."
     )]
     async fn start_session(
@@ -705,6 +726,15 @@ pub struct UpdateSummaryArgs {
     /// New summary. `null` (or omitting) clears the existing one.
     #[serde(default)]
     pub summary: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct UpdateRevsetArgs {
+    pub repo: String,
+    pub review_id: ReviewId,
+    /// New revset expression. Must resolve to a single tip via the
+    /// same `heads(<revset>)` recipe that `create_review` uses.
+    pub revset: String,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]

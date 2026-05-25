@@ -206,6 +206,16 @@ export const api = {
       `${repoBase(repo)}/reviews/${number}/summary`,
       { summary },
     ),
+  /** Replace the review's revset and record a new patchset for the
+   *  resolved endpoints. Creator-only. Idempotent when the new
+   *  revset resolves to the same endpoints as the current
+   *  patchset — no new patchset is added in that case. */
+  updateRevset: (repo: string, number: number, revset: string) =>
+    request<ReviewManifest>(
+      'PUT',
+      `${repoBase(repo)}/reviews/${number}/revset`,
+      { revset },
+    ),
   /** Mark the review archived (creator-only). The returned manifest
    *  carries the new `archived_at`. Other tabs learn via the
    *  `review-updated` SSE event. */

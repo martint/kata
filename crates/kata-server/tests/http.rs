@@ -465,6 +465,127 @@ async fn refresh_review_appends_a_new_patchset_when_the_tip_moves() {
     assert_ne!(patchsets[0]["tip_commit"], patchsets[1]["tip_commit"]);
 }
 
+/// `update_revset` rewrites `manifest.revset` and records a new
+/// patchset for the resolved endpoints. Creator-only; agents reach
+/// the same path via the `update_review_revset` MCP tool.
+#[tokio::test]
+async fn update_revset_records_a_new_patchset_for_new_endpoints() {
+    let h = Harness::new().await;
+    let (_, created) = h
+        .json(
+            "POST",
+            "/api/repos/main/reviews",
+            Some(json!({
+                "name": "feature",
+                "revset": "@-..feature",
+                "bookmark": "feature",
+                "created_by": "alice@example.com",
+            })),
+        )
+        .await;
+    let review_url = format!(
+        "/api/repos/main/reviews/{}",
+        created["number"].as_u64().unwrap()
+    );
+
+    // Create a second branch off the same parent — a distinct tip
+    // for the revset to point at.
+    run_jj(&h.workspace_path, &["new", "feature-", "-m", "other tip"]);
+    std::fs::write(h.workspace_path.join("b.txt"), "elsewhere\n").unwrap();
+    run_jj(
+        &h.workspace_path,
+        &["bookmark", "create", "other-branch", "-r", "@"],
+    );
+
+    let (status, manifest) = h
+        .json(
+            "PUT",
+            &format!("{review_url}/revset"),
+            Some(json!({ "revset": "@-..other-branch" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(manifest["revset"], "@-..other-branch");
+    let patchsets = manifest["patchsets"].as_array().unwrap();
+    assert_eq!(patchsets.len(), 2);
+    assert_eq!(manifest["current_patchset"], 2);
+    assert_ne!(patchsets[0]["tip_commit"], patchsets[1]["tip_commit"]);
+}
+
+/// Only the review's creator may rewrite its revset. A non-creator
+/// gets BadRequest, the same shape `update_summary` uses for the
+/// equivalent gate.
+#[tokio::test]
+async fn update_revset_rejects_non_creator() {
+    let h = Harness::new().await;
+    let (_, created) = h
+        .json(
+            "POST",
+            "/api/repos/main/reviews",
+            Some(json!({
+                "name": "feature",
+                "revset": "@-..feature",
+                "bookmark": "feature",
+                "created_by": "alice@example.com",
+            })),
+        )
+        .await;
+    let review_url = format!(
+        "/api/repos/main/reviews/{}",
+        created["number"].as_u64().unwrap()
+    );
+
+    let req = Request::builder()
+        .method("PUT")
+        .uri(format!("{review_url}/revset"))
+        .header("content-type", "application/json")
+        .header("x-review-author", "bob@example.com")
+        .body(Body::from(
+            serde_json::to_vec(&json!({ "revset": "@-..feature" })).unwrap(),
+        ))
+        .unwrap();
+    let resp = h.router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+/// Calling `update_revset` with an expression that resolves to the
+/// same endpoints as the current patchset rewrites the manifest's
+/// revset field but doesn't add a new patchset — the operation is
+/// idempotent on the patchset chain.
+#[tokio::test]
+async fn update_revset_with_same_endpoints_skips_patchset() {
+    let h = Harness::new().await;
+    let (_, created) = h
+        .json(
+            "POST",
+            "/api/repos/main/reviews",
+            Some(json!({
+                "name": "feature",
+                "revset": "@-..feature",
+                "bookmark": "feature",
+                "created_by": "alice@example.com",
+            })),
+        )
+        .await;
+    let review_url = format!(
+        "/api/repos/main/reviews/{}",
+        created["number"].as_u64().unwrap()
+    );
+
+    // `@-..@` resolves to the same (base, tip) as `@-..feature` —
+    // the bookmark and `@` point at the same commit at creation.
+    let (status, manifest) = h
+        .json(
+            "PUT",
+            &format!("{review_url}/revset"),
+            Some(json!({ "revset": "@-..@" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(manifest["revset"], "@-..@");
+    assert_eq!(manifest["patchsets"].as_array().unwrap().len(), 1);
+}
+
 /// After a refresh appends a new patchset, comments published
 /// against the previous patchset must still render at their original
 /// lines when nothing about those lines changed — `anchor.kind`

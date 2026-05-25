@@ -148,6 +148,27 @@ pub async fn update_summary(
     ))
 }
 
+#[derive(Debug, Deserialize)]
+pub struct UpdateRevsetBody {
+    pub revset: String,
+}
+
+pub async fn update_revset(
+    State(state): State<AppState>,
+    ViewerAuthor(actor): ViewerAuthor,
+    Path((repo_name, review_number)): Path<(String, u32)>,
+    Json(body): Json<UpdateRevsetBody>,
+) -> AppResult<Json<ReviewManifest>> {
+    let repo = state.service.resolve_repo(&repo_name)?;
+    let review_id = state.service.resolve_review_number(&repo, review_number).await?;
+    Ok(Json(
+        state
+            .service
+            .update_review_revset(&repo, &review_id, &actor, kata_core::RevSet::new(body.revset))
+            .await?,
+    ))
+}
+
 pub async fn archive_review(
     State(state): State<AppState>,
     ViewerAuthor(actor): ViewerAuthor,

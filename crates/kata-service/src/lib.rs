@@ -1305,6 +1305,67 @@ impl ReviewService {
         Ok(manifest)
     }
 
+    /// Replace the review's revset and record the new resolved
+    /// endpoints as a new patchset. Only the `created_by` author may
+    /// call this. The `parent_patchset` linkage follows the same rule
+    /// as [`Self::refresh_review`] (same change-id or descendant tip
+    /// → continuation, otherwise `None`/"rewritten"). When the new
+    /// revset happens to resolve to endpoints identical to the
+    /// current patchset, the manifest's `revset` field is updated but
+    /// no new patchset is appended — that path is idempotent.
+    pub async fn update_review_revset(
+        &self,
+        repo: &RepoId,
+        review: &ReviewId,
+        actor: &Author,
+        new_revset: RevSet,
+    ) -> ServiceResult<ReviewManifest> {
+        let jj = self.jj_for(repo)?;
+        let mut manifest = self.storage.open_review(repo, review).await?;
+        if actor != &manifest.created_by {
+            return Err(ServiceError::BadRequest(
+                "only the review's creator can update its revset".into(),
+            ));
+        }
+        let range = jj.resolve_range(&new_revset).await?;
+        let current = manifest.current().clone();
+        let endpoints_moved = range.tip.commit_id != current.tip_commit
+            || range.base.commit_id != current.base_commit;
+        manifest.revset = new_revset;
+        if endpoints_moved {
+            // Same continuation rule as refresh_review — either a
+            // descendant tip or the same change-id signals an
+            // amend/extension, not a rewrite.
+            let same_tip_change = range.tip.change_id == current.tip_change;
+            let descends = jj
+                .is_ancestor(&current.tip_commit, &range.tip.commit_id)
+                .await?;
+            let parent_patchset = if same_tip_change || descends {
+                Some(current.n)
+            } else {
+                None
+            };
+            let next_n = manifest.patchsets.iter().map(|p| p.n).max().unwrap_or(0) + 1;
+            manifest.patchsets.push(Patchset {
+                n: next_n,
+                base_change: range.base.change_id,
+                base_commit: range.base.commit_id,
+                tip_change: range.tip.change_id,
+                tip_commit: range.tip.commit_id,
+                recorded_at: Utc::now(),
+                parent_patchset,
+            });
+            manifest.current_patchset = next_n;
+        }
+        self.storage.update_review(repo, &manifest).await?;
+        let repo_name = self.repo_name(repo).unwrap_or_default();
+        self.emit(Event::ReviewUpdated {
+            repo: repo_name,
+            review_id: manifest.review_id.clone(),
+        });
+        Ok(manifest)
+    }
+
     /// Replace the review's free-text summary. Only the `created_by`
     /// author may call this. Passing `None` (or an empty string) clears
     /// the summary.
