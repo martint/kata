@@ -593,6 +593,18 @@ The viewer's "last visit" is the wall-clock timestamp of their
 previous open of the review. First-time visitors don't see unread
 markers (there's no past visit to compare against).
 
+Clicking any fold control on a thread that's force-expanded by
+unread replies acknowledges the unread state for that thread
+within the session — the next render evaluates the thread
+without the unread-force, so the explicit fold takes visual
+effect. (Without this, after an SSE-driven refresh leaves the
+in-memory `last_visit_at` lagging behind new replies, the click
+would be a silent no-op: the stored fold flag already matches
+what the click would write.) The acknowledgement is session-
+local; a fresh page load resurfaces the unread state until the
+user acknowledges again, which keeps the cross-visit "since you
+were here" surfacing intact.
+
 ### 9.2 "Since you were here" banner
 
 A compact banner above the review summary surfaces review-relevant

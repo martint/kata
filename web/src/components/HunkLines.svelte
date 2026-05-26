@@ -143,6 +143,15 @@
   const foldVersionCtx = getContext<{ read: () => number; bump: () => void } | undefined>(
     'kata-fold-version',
   );
+  // Session-local "I've seen this" set, populated by every fold
+  // action below. See ReviewViewer for the rationale — without it
+  // a folded thread whose responses post-date the in-memory
+  // `lastVisitAt` (typical after an SSE refresh leaves
+  // `lastVisitAt` stale) stays force-expanded and clicking fold
+  // becomes a silent no-op.
+  const acknowledgedUnread = getContext<Set<string> | undefined>(
+    'kata-acknowledged-unread',
+  );
 
   function isFolded(id: string): boolean {
     foldVersionCtx?.read();
@@ -157,7 +166,7 @@
   function isEffectivelyExpanded(commentId: string): boolean {
     return (
       !isFolded(commentId) ||
-      hasUnreadReplies(commentId, responses, lastVisitAt, viewer)
+      hasUnreadReplies(commentId, responses, lastVisitAt, viewer, acknowledgedUnread)
     );
   }
 
@@ -209,6 +218,11 @@
     if (!foldStore) return;
     void preserveScrollAnchor(() => {
       foldStore.set('comment', id, !isFolded(id));
+      // Any explicit fold action also acknowledges the unread state
+      // for that thread, so a click on a force-expanded thread
+      // actually folds it visually. See ReviewViewer's
+      // `acknowledgedUnread`.
+      acknowledgedUnread?.add(id);
       foldVersionCtx?.bump();
     });
   }
@@ -637,7 +651,11 @@
     const target = !allOutdatedFoldedAt(a);
     void preserveScrollAnchor(() => {
       for (const e of entries) {
-        foldStore.set('comment', idOf(e), target);
+        const id = idOf(e);
+        foldStore.set('comment', id, target);
+        // See toggleFoldOne — the click acknowledges any
+        // unread-reply force on the affected threads.
+        acknowledgedUnread?.add(id);
       }
       foldVersionCtx?.bump();
     });
@@ -740,7 +758,11 @@
     const target = anyExpanded;
     void preserveScrollAnchor(() => {
       for (const e of entries) {
-        foldStore.set('comment', idOf(e), target);
+        const id = idOf(e);
+        foldStore.set('comment', id, target);
+        // See toggleFoldOne — the click acknowledges any
+        // unread-reply force on the affected threads.
+        acknowledgedUnread?.add(id);
       }
       foldVersionCtx?.bump();
     });

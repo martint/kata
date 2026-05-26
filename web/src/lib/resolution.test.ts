@@ -196,4 +196,43 @@ describe('hasUnreadReplies', () => {
       hasUnreadReplies('c1', [unread()], null, 'reviewer@example.com'),
     ).toBe(false);
   });
+
+  test(
+    'an acknowledged comment id no longer counts as unread, even with a ' +
+      'reply newer than the last visit',
+    () => {
+      // The regression behind this: after an SSE-driven refresh the
+      // in-memory `lastVisitAt` lags behind any replies that arrived
+      // in the meantime, so folded threads with new replies stayed
+      // force-expanded forever — clicking fold was a silent no-op
+      // because the stored fold flag already matched what the click
+      // would write. The acknowledgement set lets the click handler
+      // tell us "the user has seen this", so the next render
+      // evaluates the thread without unread-force and the fold takes
+      // visual effect.
+      const acked = new Set(['c1']);
+      expect(
+        hasUnreadReplies(
+          'c1',
+          [unread()],
+          '2026-05-15T20:00:00Z',
+          'reviewer@example.com',
+          acked,
+        ),
+      ).toBe(false);
+    },
+  );
+
+  test('an empty acknowledged set is equivalent to omitting it', () => {
+    // Don't accidentally short-circuit comments not in the set.
+    expect(
+      hasUnreadReplies(
+        'c1',
+        [unread()],
+        '2026-05-15T20:00:00Z',
+        'reviewer@example.com',
+        new Set(),
+      ),
+    ).toBe(true);
+  });
 });

@@ -2,7 +2,7 @@
   import { getContext } from 'svelte';
   import { copyText } from '../lib/clipboard';
   import { renderMarkdown } from '../lib/markdown';
-  import { isThreadFolded, resolutionFor } from '../lib/resolution';
+  import { hasUnreadReplies as hasUnreadRepliesShared, isThreadFolded, resolutionFor } from '../lib/resolution';
   import { preserveScrollAnchor } from '../lib/scrollAnchor';
   import type { FoldStore } from '../lib/foldStore';
   import type { SearchMatch } from '../lib/search';
@@ -149,19 +149,28 @@
       .sort((a, b) => a.created_at.localeCompare(b.created_at));
   }
 
+  // Per-session acknowledgement set — see ReviewViewer. Comment ids
+  // here are treated as "user has seen the unread reply" so the
+  // 'new replies' badge dismisses and the resolved-collapse stops
+  // being overridden, letting an explicit fold actually hide the
+  // thread. The local wrapper just adapts the imported helper to
+  // this component's prop closures.
+  const acknowledgedUnread = getContext<Set<string> | undefined>(
+    'kata-acknowledged-unread',
+  );
+
   /** Does this comment have at least one response that landed after
    *  the viewer's last open of the review (and that the viewer didn't
    *  author themselves)? Drives the 'new replies' badge and overrides
    *  the resolved-collapse so unread threads stay expanded even after
    *  the responder marked them done. */
   function hasUnreadReplies(commentId: string): boolean {
-    if (!lastVisitAt) return false;
-    return responses.some(
-      (r) =>
-        r.in_reply_to === commentId &&
-        !r.draft &&
-        r.author !== viewer &&
-        r.created_at > lastVisitAt,
+    return hasUnreadRepliesShared(
+      commentId,
+      responses,
+      lastVisitAt,
+      viewer,
+      acknowledgedUnread,
     );
   }
 
@@ -229,6 +238,11 @@
     void preserveScrollAnchor(() => {
       const next = !isFolded(commentId);
       foldStore.set('comment', commentId, next);
+      // Explicit fold action acknowledges the unread-replies
+      // force-expand for this thread so the chevron click
+      // actually hides it. See ReviewViewer's
+      // `acknowledgedUnread`.
+      acknowledgedUnread?.add(commentId);
       localFoldVersion++;
       foldVersionCtx?.bump();
     });

@@ -183,6 +183,14 @@
   const foldVersionCtx = getContext<{ read: () => number; bump: () => void } | undefined>(
     'kata-fold-version',
   );
+  // Per-session acknowledgement set — see ReviewViewer's
+  // `acknowledgedUnread`. We add to it on the orphan-section
+  // toggle so a click on the section chevron acknowledges any
+  // unread-reply force-expand the threads inside might still be
+  // carrying, letting the fold actually hide them.
+  const acknowledgedUnread = getContext<Set<string> | undefined>(
+    'kata-acknowledged-unread',
+  );
 
   /** Are all orphan-line comments currently folded? Drives the
    *  section chevron's direction (▶ vs ▼) and the click action
@@ -205,6 +213,7 @@
     const target = !orphanSectionAllFolded();
     for (const c of orphanLineComments) {
       foldStore.set('comment', c.comment_id, target);
+      acknowledgedUnread?.add(c.comment_id);
     }
     foldVersionCtx?.bump();
   }

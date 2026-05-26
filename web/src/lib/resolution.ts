@@ -38,13 +38,27 @@ export function isThreadFolded(
 /** True when the thread `commentId` has at least one published
  *  response newer than the viewer's last visit (and not authored by
  *  the viewer). Used to force-expand folded threads so a fresh
- *  response can't hide behind a fold set by the responder. */
+ *  response can't hide behind a fold set by the responder.
+ *
+ *  `acknowledged` is the per-session set of comment ids the user has
+ *  already explicitly folded. Without this opt-out, a folded thread
+ *  whose responses are newer than `lastVisitAt` stays force-expanded
+ *  forever (clicking fold becomes a silent no-op because the stored
+ *  fold flag already matches what the click would write). On any
+ *  fold action we add the affected ids to `acknowledged`; subsequent
+ *  reads here return `false` so the user's explicit choice takes
+ *  effect. Note that this is session-local — a fresh page load
+ *  resurfaces the unread badge until the user acknowledges again,
+ *  which preserves the "since you were here" surfacing across
+ *  visits. */
 export function hasUnreadReplies(
   commentId: string,
   responses: ResponseView[],
   lastVisitAt: string | null,
   viewer: string,
+  acknowledged?: ReadonlySet<string>,
 ): boolean {
+  if (acknowledged?.has(commentId)) return false;
   if (!lastVisitAt) return false;
   return responses.some(
     (r) =>

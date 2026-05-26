@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, setContext, tick } from 'svelte';
-  import { SvelteMap } from 'svelte/reactivity';
+  import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import { api } from '../lib/api';
   import { subscribe as subscribeEvents } from '../lib/events';
   import type {
@@ -259,6 +259,17 @@
       foldVersion++;
     },
   });
+  // Per-session set of comment / annotation ids whose unread-replies
+  // force-expand the user has explicitly dismissed by clicking a fold
+  // control on the thread. `hasUnreadReplies` consults this so that
+  // clicking fold on a force-expanded thread actually hides it —
+  // without it the click was a silent no-op (target=true matched the
+  // stored=true, no write happened, and the unread force kept the
+  // thread visible). Session-local: a fresh page load resurfaces the
+  // "since you were here" highlight until the user acknowledges
+  // again, which is what we want for that surfacing to keep working.
+  const acknowledgedUnread = new SvelteSet<string>();
+  setContext<SvelteSet<string>>('kata-acknowledged-unread', acknowledgedUnread);
   // Garbage-collect entries that no longer match anything in this
   // review — renamed files, deleted comments, dropped commits would
   // otherwise grow the per-review blob indefinitely. One-shot on

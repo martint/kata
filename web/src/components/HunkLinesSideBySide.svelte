@@ -124,6 +124,15 @@
   const foldVersionCtx = getContext<{ read: () => number; bump: () => void } | undefined>(
     'kata-fold-version',
   );
+  // Session-local "I've seen the unread reply on this thread"
+  // set, populated by every fold action below. See ReviewViewer for
+  // the rationale — without it a folded thread whose responses
+  // post-date the in-memory `lastVisitAt` (typical after an SSE
+  // refresh leaves `lastVisitAt` stale) stays force-expanded and
+  // clicking fold becomes a silent no-op.
+  const acknowledgedUnread = getContext<Set<string> | undefined>(
+    'kata-acknowledged-unread',
+  );
 
   function isFolded(id: string): boolean {
     foldVersionCtx?.read();
@@ -134,13 +143,21 @@
   function isEffectivelyExpanded(commentId: string): boolean {
     return (
       !isFolded(commentId) ||
-      hasUnreadReplies(commentId, responses, lastVisitAt, viewer)
+      hasUnreadReplies(commentId, responses, lastVisitAt, viewer, acknowledgedUnread)
     );
   }
   function toggleFoldOne(id: string) {
     if (!foldStore) return;
     void preserveScrollAnchor(() => {
-      foldStore.set('comment', id, !isFolded(id));
+      const next = !isFolded(id);
+      foldStore.set('comment', id, next);
+      // Any explicit fold action also acknowledges the unread state
+      // for that thread, so a click on a force-expanded thread
+      // actually folds it visually. Adding for both directions
+      // (fold + expand) is intentional — once the user interacts
+      // with a thread, the "new replies since you arrived" highlight
+      // has served its purpose for that thread.
+      acknowledgedUnread?.add(id);
       foldVersionCtx?.bump();
     });
   }
@@ -490,11 +507,11 @@
     const target = !allOutdatedFoldedAt(side, line);
     void preserveScrollAnchor(() => {
       for (const en of entries) {
-        foldStore.set(
-          'comment',
-          en.kind === 'comment' ? en.c.comment_id : en.n.annotation_id,
-          target,
-        );
+        const id = en.kind === 'comment' ? en.c.comment_id : en.n.annotation_id;
+        foldStore.set('comment', id, target);
+        // See toggleFoldOne — the click acknowledges any
+        // unread-reply force on the affected threads.
+        acknowledgedUnread?.add(id);
       }
       foldVersionCtx?.bump();
     });
@@ -590,11 +607,11 @@
     const target = anyExpanded;
     void preserveScrollAnchor(() => {
       for (const en of entries) {
-        foldStore.set(
-          'comment',
-          en.kind === 'comment' ? en.c.comment_id : en.n.annotation_id,
-          target,
-        );
+        const id = en.kind === 'comment' ? en.c.comment_id : en.n.annotation_id;
+        foldStore.set('comment', id, target);
+        // See toggleFoldOne — the click acknowledges any
+        // unread-reply force on the affected threads.
+        acknowledgedUnread?.add(id);
       }
       foldVersionCtx?.bump();
     });
