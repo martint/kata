@@ -270,6 +270,18 @@
   // again, which is what we want for that surfacing to keep working.
   const acknowledgedUnread = new SvelteSet<string>();
   setContext<SvelteSet<string>>('kata-acknowledged-unread', acknowledgedUnread);
+  // File paths whose CommentThread currently has an active reply
+  // composer (the user clicked Reply and may be mid-typing). The
+  // composer body lives in local component state, so if FileSlot
+  // virtualises the FileDiff away mid-draft the typed text is
+  // lost. CommentThread updates this set on reply start / cancel /
+  // submit; FileSlot's `forceRender` (below) keeps the slot
+  // mounted while its path is in the set.
+  const filesWithReplyInProgress = new SvelteSet<string>();
+  setContext<SvelteSet<string>>(
+    'kata-files-with-reply',
+    filesWithReplyInProgress,
+  );
   // Garbage-collect entries that no longer match anything in this
   // review — renamed files, deleted comments, dropped commits would
   // otherwise grow the per-review blob indefinitely. One-shot on
@@ -3091,7 +3103,8 @@
             : null}
           forceRender={!!(composing &&
             'file' in composing &&
-            composing.file === f.path)}
+            composing.file === f.path) ||
+            filesWithReplyInProgress.has(f.path)}
           {showDiffs}
           {showComments}
           {defaultThreadsCollapsed}

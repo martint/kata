@@ -924,6 +924,7 @@
                   {#if leftThreads.length > 0}
                     <CommentThread
                       comments={leftThreads}
+                      filePath={filePath}
                       {responses}
                       {saving}
                       {currentPatchset}
@@ -1070,6 +1071,7 @@
                   {#if rightThreads.length > 0}
                     <CommentThread
                       comments={rightThreads}
+                      filePath={filePath}
                       {responses}
                       {saving}
                       {currentPatchset}

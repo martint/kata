@@ -1928,6 +1928,7 @@
     <div class="file-thread">
       <CommentThread
         comments={fileLevelComments}
+        filePath={file.path}
         {responses}
         {saving}
         {currentPatchset}
@@ -1981,6 +1982,7 @@
       {#if !orphanFolded}
         <CommentThread
           comments={orphanLineComments}
+          filePath={file.path}
           {responses}
           {saving}
           {currentPatchset}
@@ -2044,6 +2046,7 @@
             </div>
             <CommentThread
               comments={[c]}
+              filePath={file.path}
               {responses}
               {saving}
               {currentPatchset}

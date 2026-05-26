@@ -996,6 +996,7 @@
                 {#if threads.length > 0}
                   <CommentThread
                     comments={threads}
+                    filePath={filePath}
                     {responses}
                     {saving}
                     {currentPatchset}

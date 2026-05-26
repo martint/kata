@@ -90,6 +90,14 @@
      *  so the chevron earns its keep by letting the user hide just
      *  one thread within the group. */
     showFold?: boolean;
+    /** Path of the file these comments belong to, when applicable.
+     *  Threaded down so opening a reply composer can ask ReviewViewer
+     *  to keep the owning FileSlot mounted while the user is typing —
+     *  otherwise scrolling away would virtualise the slot, destroy
+     *  the in-progress reply, and lose whatever the user had typed.
+     *  Omitted by call sites where this isn't relevant (commit-level
+     *  threads in CommitsPanel, which aren't FileSlot-virtualised). */
+    filePath?: string | null;
   }
   const {
     comments,
@@ -106,7 +114,17 @@
     viewer = '',
     defaultThreadsCollapsed = false,
     showFold = false,
+    filePath = null,
   }: Props = $props();
+
+  // Coordination with FileSlot virtualisation — see ReviewViewer.
+  // The reply lifecycle (start / cancel / submit) below updates this
+  // set so the owning slot stays mounted while a draft reply is
+  // still open. Optional context: standalone test renders may not
+  // provide it.
+  const filesWithReplyInProgress = getContext<Set<string> | undefined>(
+    'kata-files-with-reply',
+  );
 
   const visibleComments = $derived(
     editingCommentId
@@ -187,9 +205,28 @@
     return u.toString();
   }
 
+  /** Open the reply composer for `commentId`. Also pins the owning
+   *  FileSlot in place (via `filesWithReplyInProgress`) so the user
+   *  can scroll the page without losing the in-progress reply. */
+  function startReply(commentId: string) {
+    replyingTo = commentId;
+    if (filePath) filesWithReplyInProgress?.add(filePath);
+  }
+
+  /** Close the reply composer without submitting. Releases the
+   *  FileSlot pin if there are no other reply composers open in
+   *  this same file. (There can't be — `replyingTo` is one id at a
+   *  time per CommentThread instance — but the asymmetric add /
+   *  delete is the right shape regardless.) */
+  function cancelReply() {
+    replyingTo = null;
+    if (filePath) filesWithReplyInProgress?.delete(filePath);
+  }
+
   async function submitReply(input: DraftResponseInput) {
     await onreply(input);
     replyingTo = null;
+    if (filePath) filesWithReplyInProgress?.delete(filePath);
   }
 
   /** Per-thread fold lookup. The store remembers the user's explicit
@@ -398,14 +435,14 @@
           <ResponseComposer
             commentId={c.comment_id}
             {saving}
-            oncancel={() => (replyingTo = null)}
+            oncancel={cancelReply}
             onsubmit={submitReply}
           />
         {:else}
           <button
             type="button"
             class="action-button"
-            onclick={() => (replyingTo = c.comment_id)}
+            onclick={() => startReply(c.comment_id)}
           >
             Reply
           </button>
