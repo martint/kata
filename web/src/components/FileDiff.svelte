@@ -2789,14 +2789,23 @@
   }
 
   /* PROTOTYPE: precise selection paint. The browser's native
-   * `::selection` is suppressed everywhere inside the diff; the
-   * custom `.selection-overlay` divs (positioned absolutely in
+   * `::selection` is suppressed on diff content cells; the custom
+   * `.selection-overlay` divs (positioned absolutely in
    * `hunksWrapperEl` by the effect in the script block) provide all
    * the selection paint. This gives us per-line precision (rect
    * width follows the actual selected character range) AND an
    * inter-line gap fill (each rect's height is stretched to meet
-   * the next rect's top). */
-  .hunks :global(::selection) {
+   * the next rect's top).
+   *
+   * Scoped to `.content` (and its descendants) rather than the
+   * whole `.hunks` subtree because comment threads live inside
+   * `.hunks` too — and they have no `.selection-overlay`, so the
+   * old broader `.hunks ::selection` rule made native selections
+   * inside comment bodies render with a transparent background
+   * (the user saw "drag does nothing" because the selection IS
+   * happening, just invisibly). */
+  .hunks :global(.content::selection),
+  .hunks :global(.content *::selection) {
     background: transparent;
   }
   .selection-overlay {
