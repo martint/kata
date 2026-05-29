@@ -385,8 +385,8 @@ async fn merge_commit_with_conflict_emits_conflict_hunk_and_path() {
     );
 
     // (b) The diff against side A should render the conflict as a
-    //     Conflict hunk with one side per parent — not as a regular
-    //     histogram diff that flattens the conflict.
+    //     Conflict hunk with one term per merge ancestor / side —
+    //     not as a regular histogram diff that flattens the conflict.
     let diff = build_diff(&cli, &a_commit, &merge_commit).await.unwrap();
     let file = diff
         .files
@@ -400,17 +400,79 @@ async fn merge_commit_with_conflict_emits_conflict_hunk_and_path() {
     // Removes (the merge bases) + adds (the parents) — at minimum
     // we expect 1 base + 2 sides, so 3 entries total.
     assert!(
-        conflict.sides.len() >= 3,
-        "expected at least 3 conflict sides (1 base + 2 parents), got {}",
-        conflict.sides.len(),
+        conflict.terms.len() >= 3,
+        "expected at least 3 conflict terms (1 base + 2 parents), got {}",
+        conflict.terms.len(),
     );
-    // Side labels: removes get "Base"; adds get either parent
+    // Labels: bases get "Base" (or "Base N"); adds get either parent
     // descriptions (when the merge structure matches the parent
     // count) or generic "Side N". Just check that labels are
     // non-empty and distinct enough for the renderer.
-    for side in &conflict.sides {
-        assert!(!side.label.is_empty(), "side label should not be empty");
+    for term in &conflict.terms {
+        assert!(!term.label.is_empty(), "term label should not be empty");
     }
+    // The first term should be a Base, the rest at least include
+    // some Sides — verify the kind classification.
+    let base_count = conflict
+        .terms
+        .iter()
+        .filter(|t| t.kind == kata_core::ConflictTermKind::Base)
+        .count();
+    let side_count = conflict
+        .terms
+        .iter()
+        .filter(|t| t.kind == kata_core::ConflictTermKind::Side)
+        .count();
+    assert!(base_count >= 1, "expected at least 1 Base term, got {base_count}");
+    assert_eq!(
+        side_count, 2,
+        "expected exactly 2 Side terms for a 2-parent merge, got {side_count}",
+    );
+    // Sides carry per-line diffs against the first base — both sides
+    // edited the same line `B`, so each Side term should contain
+    // at least one Added line (their own version of the conflict
+    // marker line) and at least one Removed line (the base's `B`).
+    for term in &conflict.terms {
+        if term.kind != kata_core::ConflictTermKind::Side {
+            continue;
+        }
+        let added = term
+            .lines
+            .iter()
+            .filter(|l| l.origin == kata_core::LineOrigin::Added)
+            .count();
+        let removed = term
+            .lines
+            .iter()
+            .filter(|l| l.origin == kata_core::LineOrigin::Removed)
+            .count();
+        assert!(
+            added >= 1,
+            "side {:?} should have at least one Added line vs the base; got {} added, {} removed",
+            term.label,
+            added,
+            removed,
+        );
+        assert!(
+            removed >= 1,
+            "side {:?} should have at least one Removed line vs the base; got {} added, {} removed",
+            term.label,
+            added,
+            removed,
+        );
+    }
+    // Base terms should be entirely Context (no Added / Removed) —
+    // they have nothing to diff against themselves.
+    let base = conflict
+        .terms
+        .iter()
+        .find(|t| t.kind == kata_core::ConflictTermKind::Base)
+        .expect("at least one Base term");
+    assert!(
+        base.lines.iter().all(|l| l.origin == kata_core::LineOrigin::Context),
+        "Base term lines should all be Context, got {:?}",
+        base.lines.iter().map(|l| l.origin).collect::<Vec<_>>(),
+    );
 }
 
 /// `list_commits` must return its result oldest-first. The trait

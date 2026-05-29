@@ -135,9 +135,9 @@ pub async fn compute_one_file_hunks<B: JjBackend + ?Sized>(
     // than a missing diff; the badge in the commits panel calls out
     // the conflict separately.
     if let Some(path) = tip_path
-        && let Some(sides) = backend.read_conflict_at(tip, path).await?
+        && let Some(terms) = backend.read_conflict_at(tip, path).await?
     {
-        file.hunks = Some(vec![Hunk::Conflict(ConflictHunk { sides })]);
+        file.hunks = Some(vec![Hunk::Conflict(ConflictHunk { terms })]);
         file.binary = false;
         file.added = 0;
         file.removed = 0;
@@ -207,9 +207,9 @@ pub async fn build_diff<B: JjBackend + ?Sized>(
         // the merge structure directly, not just one blob per side).
         let (_, tip_path) = side_paths(f);
         if let Some(path) = tip_path
-            && let Some(sides) = backend.read_conflict_at(tip, path).await?
+            && let Some(terms) = backend.read_conflict_at(tip, path).await?
         {
-            f.hunks = Some(vec![Hunk::Conflict(ConflictHunk { sides })]);
+            f.hunks = Some(vec![Hunk::Conflict(ConflictHunk { terms })]);
             f.binary = false;
             f.added = 0;
             f.removed = 0;

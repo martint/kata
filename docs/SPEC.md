@@ -396,19 +396,30 @@ of the merge that disagree. Kata leans on that directly:
   unresolved conflict gets a `⚠ conflict` chip on its row in the
   commits panel, with a hover tooltip listing the conflicted paths.
   No need to check anything out to spot them.
-- **Conflict region in the diff.** When the file's content at a
-  patchset's tip is a conflict, the diff renders that file's hunks
-  as a stacked **conflict panel**: one section per side of the
-  merge, labelled (e.g. `Base`, `from <parent-description>`), with
-  the side's content shown verbatim. Each section sits on the warn
-  palette so the eye registers "this isn't regular code" before
-  reading anything.
+- **Conflict block in the diff.** When the file's content at a
+  patchset's tip is a conflict, the diff renders that file as a
+  stacked **conflict block**: one section per *term* of the merge
+  — the bases first (jj's `removes()`) then the sides (`adds()`).
+  Each section carries a kind chip (`Base` / `Side 1` / `Side 2`,
+  numbered if more than one of a kind) plus the parent-derived
+  label (`"from main"`, `"from feature/a"`, falling back to
+  `"Base N"` / `"Side N"` when correlation isn't possible). The
+  whole block sits on a faint diagonal stripe so the eye registers
+  "this region is conflicted" before reading anything.
+- **Per-line diff inside each side.** Side terms render with the
+  same add / remove / context coloring as a regular hunk: the per-
+  line origins are computed server-side by diffing each side
+  against the first base, so the reader sees what each side
+  actually changed instead of comparing two opaque blobs by eye.
+  The base term itself is shown as plain content (it's the
+  reference). Criss-cross merges with multiple bases render the
+  primary base as plain content and any secondary bases with the
+  same diff-vs-primary coloring.
 
-Conflict regions don't go through the regular base→tip pairing,
-word diff, or inline-comment anchoring — each side is its own
-self-contained version of the file, and there's no single line in
-the merged result for a comment to anchor to. Commenting on
-specific sides of a conflict is out of scope for this iteration.
+Conflict regions don't go through inline-comment anchoring —
+there's no single line in the merged result for a comment to
+anchor to. Commenting on specific sides of a conflict is out of
+scope for this iteration.
 
 **Local-workflow only.** `jj` will not push a conflicted commit to
 a remote git repository, so reviews containing conflict regions

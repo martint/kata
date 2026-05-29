@@ -189,9 +189,31 @@ describe('searchReview', () => {
         file('c.ts', [
           {
             kind: 'conflict',
-            sides: [
-              { label: 'Base', lines: ['needle line\n'] },
-              { label: 'Side 1', lines: ['needle here\n'] },
+            terms: [
+              {
+                label: 'Base',
+                kind: 'base',
+                lines: [
+                  {
+                    origin: 'context',
+                    base_line: 1,
+                    tip_line: 1,
+                    content: 'needle line\n',
+                  },
+                ],
+              },
+              {
+                label: 'Side 1',
+                kind: 'side',
+                lines: [
+                  {
+                    origin: 'added',
+                    base_line: null,
+                    tip_line: 1,
+                    content: 'needle here\n',
+                  },
+                ],
+              },
             ],
           } as Hunk,
         ]),

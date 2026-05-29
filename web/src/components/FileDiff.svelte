@@ -2139,28 +2139,62 @@
             </div>
           {/if}
           {#if eh.kind === 'conflict'}
-            <!-- Conflict hunks bypass the regular base/tip pairing
-                 entirely: each side of the merge is its own self-
-                 contained version of the file content, so we stack
-                 them vertically with a label per side. No SBS split,
-                 no word diff, no inline-comment anchoring — comments
-                 on conflict regions are out of scope for this
-                 iteration. -->
+            <!-- Conflict hunks render as a stacked column of labelled
+                 terms — base(s) first, then sides — with the per-line
+                 diff origin tags computed server-side against the
+                 first base. The reader sees what *each side* added
+                 or removed instead of three disconnected full-file
+                 blocks. No SBS split (a single conflict has no
+                 obvious base/tip axis per term), no inline-comment
+                 anchoring (spec §5.6, out of scope). -->
+            {@const baseCount = eh.terms.filter((t) => t.kind === 'base').length}
             <div class="conflict-panel">
-              {#each eh.sides as side, sideIdx (sideIdx)}
-                <section class="conflict-side">
-                  <header class="conflict-side-head">
-                    <span class="conflict-badge">⚠ conflict</span>
-                    <span class="conflict-side-label">{side.label}</span>
+              {#each eh.terms as term, termIdx (termIdx)}
+                {@const sideIdx =
+                  term.kind === 'side'
+                    ? eh.terms
+                        .slice(0, termIdx)
+                        .filter((t) => t.kind === 'side').length
+                    : -1}
+                {@const baseIdx =
+                  term.kind === 'base'
+                    ? eh.terms
+                        .slice(0, termIdx)
+                        .filter((t) => t.kind === 'base').length
+                    : -1}
+                <section class="conflict-term term-{term.kind}">
+                  <header class="conflict-term-head">
+                    <span class="conflict-kind-chip kind-{term.kind}">
+                      {#if term.kind === 'base'}
+                        {baseCount > 1 ? `Base ${baseIdx + 1}` : 'Base'}
+                      {:else}
+                        Side {sideIdx + 1}
+                      {/if}
+                    </span>
+                    <span class="conflict-term-label">{term.label}</span>
                   </header>
-                  {#if side.lines.length === 0}
-                    <p class="conflict-empty muted">(absent on this side)</p>
+                  {#if term.lines.length === 0}
+                    <p class="conflict-empty muted">(absent on this term)</p>
                   {:else}
-                    <pre
-                      class="conflict-side-body">{#each side.lines as ln, li (li)}<span class="conflict-line"
-                          >{ln || ' '}</span
-                        >
-{/each}</pre>
+                    <table class="conflict-term-body">
+                      <colgroup>
+                        <col class="ln-col" />
+                        <col class="ln-col" />
+                        <col class="content-col" />
+                      </colgroup>
+                      <tbody>
+                        {#each term.lines as ln, li (li)}
+                          <tr class="conflict-row origin-{ln.origin}">
+                            <td class="ln base">{ln.base_line ?? ''}</td>
+                            <td class="ln tip">{ln.tip_line ?? ''}</td>
+                            <td class="content"
+                              ><pre>{ln.content.replace(/\n$/, '') || ' '}</pre
+                              ></td
+                            >
+                          </tr>
+                        {/each}
+                      </tbody>
+                    </table>
                   {/if}
                 </section>
               {/each}
@@ -2659,27 +2693,36 @@
     position: relative;
   }
 
-  /* Conflict region. Each side stacks under the next inside a
-   * single panel — bordered + warn-tinted so the eye registers the
-   * region as "not regular code" before reading anything. Mirrors
-   * the way `jj resolve` shows conflict regions in the terminal
-   * (one labelled section per side). */
+  /* Conflict block: one labelled term per merge ancestor / side,
+   * stacked vertically. The whole block gets a warning-bordered
+   * frame plus a faint diagonal-stripe background so it reads as a
+   * cohesive "this region is conflicted" surface — borrowed from
+   * jjuicy's visual treatment, which trades the disconnected-panel
+   * look for something that fits inline alongside regular hunks. */
   .conflict-panel {
     border: 1px solid var(--warn-text);
     border-radius: 4px;
     margin: 8px 0;
     overflow: hidden;
-    background: var(--bg);
+    background:
+      repeating-linear-gradient(
+        135deg,
+        var(--bg) 0px,
+        var(--bg) 14px,
+        var(--warn-bg) 14px,
+        var(--warn-bg) 16px
+      );
   }
 
-  .conflict-side {
+  .conflict-term {
     border-top: 1px solid var(--warn-text);
+    background: var(--bg);
   }
-  .conflict-side:first-child {
+  .conflict-term:first-child {
     border-top: none;
   }
 
-  .conflict-side-head {
+  .conflict-term-head {
     display: flex;
     align-items: baseline;
     gap: 8px;
@@ -2689,24 +2732,73 @@
     color: var(--warn-text);
   }
 
-  .conflict-side-head .conflict-badge {
+  /* Kind chip uses the same chip vocabulary as the resolution
+   * badges in CommentThread so readers don't have to learn a new
+   * shape; `kind-base` / `kind-side` just swap the accent. */
+  .conflict-kind-chip {
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.04em;
+    padding: 1px 6px;
+    border-radius: 9999px;
+    background: var(--bg);
+    color: var(--warn-text);
+  }
+  .conflict-kind-chip.kind-side {
+    background: var(--warn-text);
+    color: var(--warn-bg);
   }
 
-  .conflict-side-label {
+  .conflict-term-label {
     font-weight: 600;
   }
 
-  .conflict-side-body {
+  .conflict-term-body {
     margin: 0;
-    padding: 6px 10px;
+    border-collapse: separate;
+    border-spacing: 0;
+    width: 100%;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 13px;
     line-height: 1.45;
+  }
+
+  .conflict-term-body .ln-col {
+    width: 48px;
+  }
+
+  .conflict-term-body .ln {
+    text-align: right;
+    padding: 0 8px;
+    color: var(--text-faint);
+    user-select: none;
+    border-right: 1px solid var(--border);
+    font-variant-numeric: tabular-nums;
+    /* Match HunkLines's gutter alignment so the line numbers line
+     * up visually with the regular hunks above/below this conflict
+     * block. */
+    vertical-align: top;
+  }
+
+  .conflict-term-body .content {
+    padding: 0 8px;
+    vertical-align: top;
+  }
+
+  .conflict-term-body .content pre {
+    margin: 0;
     white-space: pre;
-    overflow-x: auto;
+    overflow-x: visible;
+  }
+
+  /* Per-row tinting matches the regular hunk renderer's
+   * `--add-bg` / `--remove-bg` so the reader's eye carries the same
+   * colour mapping across conflict and non-conflict regions. */
+  .conflict-row.origin-added {
+    background: var(--add-bg);
+  }
+  .conflict-row.origin-removed {
+    background: var(--remove-bg);
   }
 
   .conflict-empty {

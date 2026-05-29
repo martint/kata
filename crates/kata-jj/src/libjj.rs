@@ -554,15 +554,15 @@ impl JjBackend for JjLib {
         &self,
         commit: &KataCommitId,
         path: &str,
-    ) -> Result<Option<Vec<kata_core::ConflictSide>>> {
+    ) -> Result<Option<Vec<kata_core::ConflictTerm>>> {
         let loader = self.loader.clone();
         let commit = commit.clone();
         let path = path.to_string();
         tokio::task::spawn_blocking(
-            move || -> Result<Option<Vec<kata_core::ConflictSide>>> {
+            move || -> Result<Option<Vec<kata_core::ConflictTerm>>> {
                 let repo = futures::executor::block_on(loader.load_at_head())
                     .map_err(|e| Error::Parse(format!("libjj load_at_head: {e}")))?;
-                read_conflict_sides_at(&repo, &commit, &path)
+                read_conflict_terms_at(&repo, &commit, &path)
             },
         )
         .await
@@ -1237,18 +1237,27 @@ fn file_bytes_from_value(
     }
 }
 
-/// Extract the structured conflict sides for `path` at `commit`, or
+/// Extract the structured conflict terms for `path` at `commit`, or
 /// `Ok(None)` if the file is resolved (or absent). Side labels are
 /// derived from the commit's parents when the merge's add-count
 /// matches the parent count (the common case for an honest merge
 /// commit); otherwise fall back to `Side N`. `removes` are labelled
 /// `Base` (or `Base N` when there's more than one merge base, which
 /// happens for criss-cross merges).
-fn read_conflict_sides_at(
+///
+/// Each non-base term's `lines` are produced by running an
+/// imara-diff against the *first* base term so the frontend can
+/// render them with normal added / removed colouring instead of a
+/// disconnected stacked panel. Multi-base conflicts (rare; happens
+/// for criss-cross merges) just show the secondary bases as their
+/// own plain-content blocks alongside the first one — the per-side
+/// diff is still anchored to the first base, which is good enough
+/// for review surfacing.
+fn read_conflict_terms_at(
     repo: &Arc<ReadonlyRepo>,
     commit_id: &KataCommitId,
     path: &str,
-) -> Result<Option<Vec<kata_core::ConflictSide>>> {
+) -> Result<Option<Vec<kata_core::ConflictTerm>>> {
     let commit = lookup_commit(repo, commit_id)?;
     let repo_path = jj_lib::repo_path::RepoPathBuf::from_internal_string(path)
         .map_err(|e| Error::Parse(format!("libjj repo_path: {e}")))?;
@@ -1257,56 +1266,184 @@ fn read_conflict_sides_at(
     if value.is_resolved() {
         return Ok(None);
     }
-    // Materialise per-side bytes by reading each File term out of the
-    // merge. Non-File terms (symlink / tree / absent) are rendered as
-    // an empty side so the reader still sees a slot exists.
     let store = repo.store();
-    let mut remove_labels: Vec<String> = Vec::new();
     let removes_vec: Vec<_> = value.removes().cloned().collect();
-    for (i, _) in removes_vec.iter().enumerate() {
-        remove_labels.push(if removes_vec.len() == 1 {
-            "Base".to_string()
-        } else {
-            format!("Base {}", i + 1)
-        });
-    }
+    let adds_vec: Vec<_> = value.adds().cloned().collect();
+
+    // Read raw bytes once per term so the per-side diffs can borrow
+    // the first base's content without re-reading.
+    let remove_bytes: Vec<Vec<u8>> = removes_vec
+        .iter()
+        .map(|term| term_bytes(store, repo_path.as_ref(), term))
+        .collect::<Result<_>>()?;
+    let add_bytes: Vec<Vec<u8>> = adds_vec
+        .iter()
+        .map(|term| term_bytes(store, repo_path.as_ref(), term))
+        .collect::<Result<_>>()?;
+
+    let remove_labels: Vec<String> = (0..removes_vec.len())
+        .map(|i| {
+            if removes_vec.len() == 1 {
+                "Base".to_string()
+            } else {
+                format!("Base {}", i + 1)
+            }
+        })
+        .collect();
     // Best-effort: label each "add" term after the corresponding
     // parent's description first line. Works for merge commits whose
     // conflict shape exactly mirrors their parent set; otherwise we
     // can't reliably correlate add-index → parent, so fall back to
     // generic `Side N`.
-    let adds_vec: Vec<_> = value.adds().cloned().collect();
-    let parent_labels = parent_labels_for_adds(repo, &commit, adds_vec.len())?;
-    let mut sides = Vec::with_capacity(removes_vec.len() + adds_vec.len());
-    for (label, term) in remove_labels.iter().zip(removes_vec.iter()) {
-        sides.push(side_from_term(store, repo_path.as_ref(), label, term)?);
+    let add_labels = parent_labels_for_adds(repo, &commit, adds_vec.len())?;
+
+    // The first base is the reference both Side terms (and any
+    // secondary Base terms) get diffed against. An empty Vec stands
+    // in if there are no removes at all — pure-add conflicts then
+    // render every side as a full-file insertion.
+    let base_ref: &[u8] = remove_bytes.first().map(Vec::as_slice).unwrap_or(&[]);
+    let base_text = String::from_utf8_lossy(base_ref);
+
+    let mut terms =
+        Vec::with_capacity(removes_vec.len() + adds_vec.len());
+    for (i, (label, bytes)) in remove_labels.iter().zip(remove_bytes.iter()).enumerate() {
+        terms.push(kata_core::ConflictTerm {
+            label: label.clone(),
+            kind: kata_core::ConflictTermKind::Base,
+            lines: if i == 0 {
+                // The reference base — display as plain content
+                // (every line is Context vs. itself).
+                base_lines_as_context(&base_text)
+            } else {
+                // Secondary base. Still a Base in terms of *kind*,
+                // but the renderer wants to show how it differs
+                // from the reference base for the criss-cross case.
+                diff_against_base(&base_text, &String::from_utf8_lossy(bytes))
+            },
+        });
     }
-    for (label, term) in parent_labels.iter().zip(adds_vec.iter()) {
-        sides.push(side_from_term(store, repo_path.as_ref(), label, term)?);
+    for (label, bytes) in add_labels.iter().zip(add_bytes.iter()) {
+        terms.push(kata_core::ConflictTerm {
+            label: label.clone(),
+            kind: kata_core::ConflictTermKind::Side,
+            lines: diff_against_base(&base_text, &String::from_utf8_lossy(bytes)),
+        });
     }
-    Ok(Some(sides))
+    Ok(Some(terms))
 }
 
-/// Build a `ConflictSide` from one Merge term. Non-File terms (and
-/// the trivially-absent term) read as an empty side — the conflict
-/// is still surfaced; the renderer just shows "no content on this
-/// side".
-fn side_from_term(
+/// Read one merge term's file bytes. Non-File terms (symlink /
+/// tree / absent) return empty bytes — the conflict is still
+/// surfaced; the renderer just shows an empty term.
+fn term_bytes(
     store: &Arc<jj_lib::store::Store>,
     path: &jj_lib::repo_path::RepoPath,
-    label: &str,
     term: &Option<jj_lib::backend::TreeValue>,
-) -> Result<kata_core::ConflictSide> {
-    let bytes = match term {
+) -> Result<Vec<u8>> {
+    Ok(match term {
         Some(jj_lib::backend::TreeValue::File { id, .. }) => read_file_bytes(store, path, id)?,
         _ => Vec::new(),
-    };
-    let text = String::from_utf8_lossy(&bytes);
-    let lines = text.lines().map(str::to_owned).collect();
-    Ok(kata_core::ConflictSide {
-        label: label.to_string(),
-        lines,
     })
+}
+
+/// Wrap each line of `text` as a `Context` `HunkLine`. Used for the
+/// reference base term, which has no "other side" to diff against.
+fn base_lines_as_context(text: &str) -> Vec<kata_core::HunkLine> {
+    text.split_inclusive('\n')
+        .enumerate()
+        .map(|(i, line)| kata_core::HunkLine {
+            origin: kata_core::LineOrigin::Context,
+            base_line: Some((i + 1) as u32),
+            tip_line: Some((i + 1) as u32),
+            content: line.to_string(),
+        })
+        .collect()
+}
+
+/// Per-line diff of `side` against `base`, with every line of both
+/// covered (Context for unchanged, Removed for base-only, Added for
+/// side-only). Unlike `histogram_hunks` this fills in the unchanged
+/// regions too so the rendered conflict term reads as the side's
+/// full content with what changed vs. the base highlighted in place.
+fn diff_against_base(base: &str, side: &str) -> Vec<kata_core::HunkLine> {
+    use imara_diff::{Algorithm, diff};
+    use imara_diff::intern::InternedInput;
+    use imara_diff::sink::Sink;
+    use std::ops::Range;
+
+    struct PerLineSink<'a> {
+        input: &'a InternedInput<&'a str>,
+        base_cursor: u32,
+        tip_cursor: u32,
+        out: Vec<kata_core::HunkLine>,
+    }
+
+    impl<'a> PerLineSink<'a> {
+        /// Emit Context entries from `base_cursor` up to `before_end`
+        /// (exclusive). Both cursors advance — unchanged regions
+        /// exist on both sides at the same content.
+        fn fill_context(&mut self, before_end: u32) {
+            while self.base_cursor < before_end {
+                let token = self.input.before[self.base_cursor as usize];
+                let content = format!("{}\n", self.input.interner[token]);
+                self.out.push(kata_core::HunkLine {
+                    origin: kata_core::LineOrigin::Context,
+                    base_line: Some(self.base_cursor + 1),
+                    tip_line: Some(self.tip_cursor + 1),
+                    content,
+                });
+                self.base_cursor += 1;
+                self.tip_cursor += 1;
+            }
+        }
+    }
+
+    impl<'a> Sink for PerLineSink<'a> {
+        type Out = Vec<kata_core::HunkLine>;
+
+        fn process_change(&mut self, before: Range<u32>, after: Range<u32>) {
+            self.fill_context(before.start);
+            for i in before.start..before.end {
+                let token = self.input.before[i as usize];
+                let content = format!("{}\n", self.input.interner[token]);
+                self.out.push(kata_core::HunkLine {
+                    origin: kata_core::LineOrigin::Removed,
+                    base_line: Some(i + 1),
+                    tip_line: None,
+                    content,
+                });
+            }
+            self.base_cursor = before.end;
+            for i in after.start..after.end {
+                let token = self.input.after[i as usize];
+                let content = format!("{}\n", self.input.interner[token]);
+                self.out.push(kata_core::HunkLine {
+                    origin: kata_core::LineOrigin::Added,
+                    base_line: None,
+                    tip_line: Some(i + 1),
+                    content,
+                });
+            }
+            self.tip_cursor = after.end;
+        }
+
+        fn finish(mut self) -> Self::Out {
+            // Trailing unchanged region (after the last `process_change`)
+            // — fill all the way to the end of the base file.
+            let end = self.input.before.len() as u32;
+            self.fill_context(end);
+            self.out
+        }
+    }
+
+    let input = InternedInput::new(base, side);
+    let sink = PerLineSink {
+        input: &input,
+        base_cursor: 0,
+        tip_cursor: 0,
+        out: Vec::new(),
+    };
+    diff(Algorithm::Histogram, &input, sink)
 }
 
 /// Derive per-`add` labels for a conflict on `commit`. When the

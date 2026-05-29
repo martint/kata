@@ -128,10 +128,10 @@ export function searchReview(
     // Diff lines first.
     if (file.hunks) {
       for (const hunk of file.hunks) {
-        // Conflict hunks ship their content as a `Vec<ConflictSide>`
+        // Conflict hunks ship their content as a `Vec<ConflictTerm>`
         // rather than the regular base/tip line list. Searching them
-        // requires a different shape (side label + free-form lines);
-        // out of v1 scope.
+        // requires a different shape (per-term label + diff-vs-base
+        // lines); out of v1 scope.
         if (hunk.kind !== 'regular') continue;
         for (const line of hunk.lines) {
           const content = line.content.replace(/\n$/, '');

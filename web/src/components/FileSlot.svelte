@@ -359,10 +359,10 @@
     }
     const lineCount = f.hunks.reduce((sum, h) => {
       if (h.kind === 'regular') return sum + h.lines.length;
-      // Conflict hunks: count every side's lines so the height
-      // estimate reflects the stacked-side layout the renderer
+      // Conflict hunks: count every term's lines so the height
+      // estimate reflects the stacked-term layout the renderer
       // produces.
-      return sum + h.sides.reduce((s, side) => s + side.lines.length, 0);
+      return sum + h.terms.reduce((s, term) => s + term.lines.length, 0);
     }, 0);
     return lineCount * 20 + f.hunks.length * 30 + 60;
   }

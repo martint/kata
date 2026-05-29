@@ -245,22 +245,32 @@ export interface RegularHunk {
   lines: HunkLine[];
 }
 
-/** A conflict region as jj keeps it. Each side is the file content
- *  on one branch of the merge, with a `label` derived from the
- *  parent commit when the system can correlate them (otherwise
- *  `Base` / `Side N`). Conflict hunks render stacked vertically
- *  rather than going through the base/tip pairing the regular
- *  hunks use. */
+/** A conflict region as jj keeps it. Each *term* is one component
+ *  of the merge: bases (the merge ancestors, from jj's `removes()`)
+ *  followed by sides (the conflicting versions, from `adds()`).
+ *  Labels are derived from parent commits when the system can
+ *  correlate them (otherwise `Base` / `Side N`).
+ *
+ *  Side terms carry a per-line diff against the *first* base term,
+ *  so the renderer can show what each side added or removed instead
+ *  of stacking disconnected full-file blocks. The base term itself
+ *  is rendered as plain Context content (it's the reference). */
 export interface ConflictHunk {
   kind: 'conflict';
-  sides: ConflictSide[];
+  terms: ConflictTerm[];
 }
 
-export interface ConflictSide {
+export interface ConflictTerm {
   label: string;
-  /** Raw file content lines on this side, in source order. */
-  lines: string[];
+  kind: ConflictTermKind;
+  /** Lines of this term, with origin tags relative to the first
+   *  Base term in the enclosing `ConflictHunk`. For a `base` term
+   *  all origins are `context`; for a `side` term they're a per-
+   *  line diff against the base. */
+  lines: HunkLine[];
 }
+
+export type ConflictTermKind = 'base' | 'side';
 
 export interface FileChange {
   path: string;

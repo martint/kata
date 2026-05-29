@@ -2,7 +2,7 @@ use std::path::Path;
 
 use async_trait::async_trait;
 use kata_core::{
-    Bookmark, ChangeId, CommitId, CommitInfo, ConflictSide, FileChange, OpId, RevSet,
+    Bookmark, ChangeId, CommitId, CommitInfo, ConflictTerm, FileChange, OpId, RevSet,
 };
 use serde::{Deserialize, Serialize};
 
@@ -56,7 +56,7 @@ pub trait JjBackend: Send + Sync {
         &self,
         _commit: &CommitId,
         _path: &str,
-    ) -> Result<Option<Vec<ConflictSide>>> {
+    ) -> Result<Option<Vec<ConflictTerm>>> {
         Ok(None)
     }
 

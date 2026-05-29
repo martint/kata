@@ -10,8 +10,8 @@ pub use compare::{
     ChangeStatus, PairDiffCounts, PatchsetCompareView, PatchsetEndpoints, PatchsetPair,
 };
 pub use diff::{
-    ConflictHunk, ConflictSide, Diff, FileChange, FileStatus, Hunk, HunkLine, LineOrigin,
-    RegularHunk,
+    ConflictHunk, ConflictTerm, ConflictTermKind, Diff, FileChange, FileStatus, Hunk, HunkLine,
+    LineOrigin, RegularHunk,
 };
 pub use documents::{
     Annotation, ApiToken, Comment, Flag, Patchset, RepoManifest, ResolutionAction, Response,

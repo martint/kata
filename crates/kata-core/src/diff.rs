@@ -70,26 +70,51 @@ pub struct RegularHunk {
 /// that information takes on its way to the renderer.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ConflictHunk {
-    /// One entry per side of the merge. For the common 3-way case
-    /// this is `[base, side_1, side_2]`; for N-way merges the list
-    /// extends accordingly. Order is stable across calls but is not
-    /// semantically significant beyond labelling.
-    pub sides: Vec<ConflictSide>,
+    /// All terms of the merge, in a stable order: bases first (the
+    /// `removes()` of jj's `Merge`), then sides (the `adds()`). For
+    /// the common 3-way case this is `[Base, Side, Side]`; criss-
+    /// cross merges extend the base count, N-way merges extend the
+    /// side count.
+    pub terms: Vec<ConflictTerm>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct ConflictSide {
-    /// Human-readable label for this side. Auto-derived from parent
+pub struct ConflictTerm {
+    /// Human-readable label for this term. Auto-derived from parent
     /// commit metadata where possible (`"from main"`, `"from feature"`,
     /// or the parent's one-line description); falls back to `"Base"`
     /// for the merge base term and `"Side N"` for unlabelled sides.
     pub label: String,
-    /// Raw content lines on this side, in source order. Conflict
-    /// rendering doesn't have a meaningful base/tip distinction —
-    /// each side is its own self-contained version — so we drop the
-    /// HunkLine `origin` / line-number plumbing and just keep the
-    /// bytes.
-    pub lines: Vec<String>,
+    /// Whether this term is a `Base` (a merge ancestor, from
+    /// `removes()`) or a `Side` (a conflicting version, from
+    /// `adds()`). The renderer uses this to distinguish what to
+    /// compare against what — a Base term renders as plain content,
+    /// a Side term renders with `Added` / `Removed` origins computed
+    /// vs. the first Base in the same `ConflictHunk`.
+    pub kind: ConflictTermKind,
+    /// Lines of this term, with origin tags relative to the first
+    /// `Base` in the enclosing `ConflictHunk`. For a `Base` term all
+    /// origins are `Context` (the base is its own reference); for a
+    /// `Side` term they're a per-line diff against the base so the
+    /// reader sees what *this* side added or removed. Line numbers
+    /// follow the same `HunkLine` convention used by regular hunks.
+    pub lines: Vec<HunkLine>,
+}
+
+/// Distinguishes the two kinds of merge terms exposed by jj. The
+/// frontend reads this to label each block (`Base` vs `Side 1` /
+/// `Side 2`) and to decide how to colour the diff origins.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ConflictTermKind {
+    /// A merge ancestor (negative term in jj's `Merge`). Most 3-way
+    /// merges have exactly one of these; criss-cross merges can have
+    /// more.
+    Base,
+    /// One of the conflicting versions (positive term — an `adds()`
+    /// entry). Three-way merges have exactly two; N-way merges have
+    /// N.
+    Side,
 }
 
 /// Which side(s) a line exists on within a hunk.
