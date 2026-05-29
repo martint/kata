@@ -2578,6 +2578,33 @@
     }
   }
 
+  async function deleteResponse(response: ResponseView) {
+    if (!confirm('Delete this draft reply?')) return;
+    saving = true;
+    error = null;
+    try {
+      await api.deleteResponse(
+        repo,
+        current.manifest.number,
+        response.session_id,
+        response.response_id,
+      );
+      current = {
+        ...current,
+        drafts: {
+          ...current.drafts,
+          responses: current.drafts.responses.filter(
+            (r) => r.response_id !== response.response_id,
+          ),
+        },
+      };
+    } catch (e) {
+      error = (e as Error).message;
+    } finally {
+      saving = false;
+    }
+  }
+
   async function publish() {
     if (!current.drafts.session) return;
     saving = true;
@@ -2992,6 +3019,7 @@
         onreply={submitResponse}
         onstatus={setStatus}
         ondelete={deleteComment}
+        ondeleteresponse={deleteResponse}
         onedit={startEdit}
         onselectpatchset={jumpToPatchset}
       />
@@ -3120,6 +3148,7 @@
           onreply={submitResponse}
           onstatus={setStatus}
           ondelete={deleteComment}
+          ondeleteresponse={deleteResponse}
           onedit={startEdit}
           onselectpatchset={jumpToPatchset}
         />

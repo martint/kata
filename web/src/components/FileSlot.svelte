@@ -118,6 +118,10 @@
     onreply: (input: DraftResponseInput) => Promise<void>;
     onstatus: (commentId: string, action: ResolutionAction) => Promise<void>;
     ondelete: (comment: CommentView) => Promise<void>;
+    /** Discard a draft response. Forwarded through FileDiff /
+     *  HunkLines so the per-reply Delete button in CommentThread
+     *  can call back into ReviewViewer. */
+    ondeleteresponse?: (response: ResponseView) => Promise<void>;
     onedit: (comment: CommentView) => void;
     onselectpatchset: (n: number, commentId?: string) => void;
     /** Currently-open annotation composer, if any. Non-null only when
@@ -170,6 +174,7 @@
     onreply,
     onstatus,
     ondelete,
+    ondeleteresponse,
     onedit,
     onselectpatchset,
     composingAnnotation = null,
@@ -405,6 +410,7 @@
         {onreply}
         {onstatus}
         {ondelete}
+        {ondeleteresponse}
         {onedit}
         {onselectpatchset}
       />

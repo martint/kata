@@ -237,4 +237,73 @@ describe('CommentThread', () => {
     expect(within(replies as HTMLElement).getByText('Acknowledged.')).toBeTruthy();
     expect(within(replies as HTMLElement).getByText('replied')).toBeTruthy();
   });
+
+  test(
+    'a published reply has no Delete affordance — only drafts can be discarded',
+    () => {
+      const c = comment({ comment_id: 'c1' });
+      const r = response({
+        in_reply_to: 'c1',
+        body: 'Looks good.',
+        draft: false,
+      });
+      const { container } = renderThread({
+        comments: [c],
+        responses: [r],
+        ondeleteresponse: noop,
+      });
+      const replyLi = container.querySelector('.reply') as HTMLElement | null;
+      expect(replyLi).not.toBeNull();
+      expect(replyLi!.querySelector('button.reply-delete')).toBeNull();
+    },
+  );
+
+  test(
+    'a draft reply gets a Delete button that calls ondeleteresponse with it',
+    async () => {
+      const c = comment({ comment_id: 'c1' });
+      const r = response({
+        in_reply_to: 'c1',
+        body: 'WIP — needs another look.',
+        draft: true,
+      });
+      const captured: { id?: string } = {};
+      const { container } = renderThread({
+        comments: [c],
+        responses: [r],
+        ondeleteresponse: async (response) => {
+          captured.id = response.response_id;
+        },
+      });
+      const replyLi = container.querySelector('.reply.draft') as HTMLElement | null;
+      expect(replyLi).not.toBeNull();
+      const del = replyLi!.querySelector(
+        'button.reply-delete',
+      ) as HTMLButtonElement | null;
+      expect(del).not.toBeNull();
+      await fireEvent.click(del!);
+      expect(captured.id).toBe(r.response_id);
+    },
+  );
+
+  test(
+    'a draft reply WITHOUT ondeleteresponse renders no Delete button ' +
+      '(CommitsPanel call sites that pre-date the prop stay graceful)',
+    () => {
+      const c = comment({ comment_id: 'c1' });
+      const r = response({
+        in_reply_to: 'c1',
+        body: 'Mid-draft.',
+        draft: true,
+      });
+      const { container } = renderThread({
+        comments: [c],
+        responses: [r],
+        // no ondeleteresponse
+      });
+      const replyLi = container.querySelector('.reply.draft') as HTMLElement | null;
+      expect(replyLi).not.toBeNull();
+      expect(replyLi!.querySelector('button.reply-delete')).toBeNull();
+    },
+  );
 });

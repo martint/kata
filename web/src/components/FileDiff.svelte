@@ -100,6 +100,10 @@
     onreply: (input: DraftResponseInput) => Promise<void>;
     onstatus: (commentId: string, action: ResolutionAction) => Promise<void>;
     ondelete: (comment: CommentView) => Promise<void>;
+    /** Discard a draft response. Forwarded to CommentThread (file-
+     *  level, orphan, and compact) plus down through HunkLines /
+     *  HunkLinesSideBySide to the inline per-row threads. */
+    ondeleteresponse?: (response: ResponseView) => Promise<void>;
     onedit: (comment: CommentView) => void;
     onselectpatchset: (n: number, commentId?: string) => void;
     /** Whole-file view toggle. Lifted to `FileSlot` (which always stays
@@ -157,6 +161,7 @@
     onreply,
     onstatus,
     ondelete,
+    ondeleteresponse,
     onedit,
     onselectpatchset,
     wholeFile = $bindable(false),
@@ -1940,6 +1945,7 @@
         {onreply}
         {onstatus}
         {ondelete}
+        {ondeleteresponse}
         {onedit}
         {onselectpatchset}
       />
@@ -1994,6 +2000,7 @@
           {onreply}
           {onstatus}
           {ondelete}
+          {ondeleteresponse}
           {onedit}
           {onselectpatchset}
         />
@@ -2058,6 +2065,7 @@
               {onreply}
               {onstatus}
               {ondelete}
+              {ondeleteresponse}
               {onedit}
               {onselectpatchset}
             />
@@ -2186,6 +2194,7 @@
               {onreply}
               {onstatus}
               {ondelete}
+              {ondeleteresponse}
               {onedit}
               {onselectpatchset}
             />
@@ -2217,6 +2226,7 @@
               {onreply}
               {onstatus}
               {ondelete}
+              {ondeleteresponse}
               {onedit}
               {onselectpatchset}
             />

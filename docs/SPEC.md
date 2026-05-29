@@ -477,6 +477,12 @@ draft swaps in a composer pre-filled with the draft's body; the
 original draft hides while the editor is open to avoid a confusing
 "two of the same thread" appearance.
 
+Draft **responses** (replies and resolution-markers — `resolve` /
+`won't fix` / `unresolve`) get a **Delete** button on their row
+while the session is unpublished, mirroring the Delete affordance
+for draft comments. The same path covers typo'd replies and
+misclicked status flips. Published responses can't be deleted.
+
 When a file-level composer opens, the viewport scrolls so the
 composer lands just below the sticky chrome. On a long file with a
 stack of existing threads above the diff, the file-level composer

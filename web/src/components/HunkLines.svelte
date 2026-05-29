@@ -59,6 +59,10 @@
     onreply: (input: DraftResponseInput) => Promise<void>;
     onstatus: (commentId: string, action: ResolutionAction) => Promise<void>;
     ondelete: (comment: CommentView) => Promise<void>;
+    /** Discard a draft response. Forwarded to the inline
+     *  CommentThread so its per-reply Delete button reaches
+     *  ReviewViewer. */
+    ondeleteresponse?: (response: ResponseView) => Promise<void>;
     onedit: (comment: CommentView) => void;
     onselectpatchset: (n: number, commentId?: string) => void;
     /** Timestamp of the viewer's previous open. Threaded to
@@ -112,6 +116,7 @@
     onreply,
     onstatus,
     ondelete,
+    ondeleteresponse,
     onedit,
     onselectpatchset,
     lastVisitAt = null,
@@ -1008,6 +1013,7 @@
                     {onreply}
                     {onstatus}
                     {ondelete}
+                    {ondeleteresponse}
                     {onedit}
                     {onselectpatchset}
                   />

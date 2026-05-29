@@ -46,6 +46,10 @@
     onreply: (input: DraftResponseInput) => Promise<void>;
     onstatus: (commentId: string, action: ResolutionAction) => Promise<void>;
     ondelete: (comment: CommentView) => Promise<void>;
+    /** Discard a draft response (forwarded to inner CommentThreads
+     *  so the reviewer can undo a typo'd reply or a misclicked
+     *  status flip before publishing the session). */
+    ondeleteresponse?: (response: ResponseView) => Promise<void>;
     onedit: (comment: CommentView) => void;
     onselectpatchset: (n: number, commentId?: string) => void;
     /** Timestamp of the viewer's previous open; threaded to
@@ -94,6 +98,7 @@
     onreply,
     onstatus,
     ondelete,
+    ondeleteresponse,
     onedit,
     onselectpatchset,
     lastVisitAt = null,
@@ -482,6 +487,7 @@
                     {onreply}
                     {onstatus}
                     {ondelete}
+                    {ondeleteresponse}
                     {onedit}
                     {onselectpatchset}
                   />
@@ -541,6 +547,7 @@
               {onreply}
               {onstatus}
               {ondelete}
+              {ondeleteresponse}
               {onedit}
               {onselectpatchset}
             />
@@ -602,6 +609,7 @@
                   {onreply}
                   {onstatus}
                   {ondelete}
+                  {ondeleteresponse}
                   {onedit}
                   {onselectpatchset}
                 />
@@ -719,6 +727,7 @@
                     {onreply}
                     {onstatus}
                     {ondelete}
+                    {ondeleteresponse}
                     {onedit}
                     {onselectpatchset}
                   />

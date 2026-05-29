@@ -55,6 +55,10 @@
     onreply: (input: DraftResponseInput) => Promise<void>;
     onstatus: (commentId: string, action: ResolutionAction) => Promise<void>;
     ondelete: (comment: CommentView) => Promise<void>;
+    /** Discard a draft response (reply or resolution-marker) before
+     *  the session is published. Optional — call sites that don't
+     *  want the affordance (none currently) can omit it. */
+    ondeleteresponse?: (response: ResponseView) => Promise<void>;
     onedit: (comment: CommentView) => void;
     /** Switch the viewer to patchset `n`, optionally landing on
      *  comment `commentId` after the switch completes. Threaded down
@@ -107,6 +111,7 @@
     onreply,
     onstatus,
     ondelete,
+    ondeleteresponse,
     onedit,
     onselectpatchset,
     editingCommentId = null,
@@ -421,6 +426,23 @@
                     title="Copy markdown source"
                     onclick={() => copyToClipboard(r.body)}>⧉</button
                   >
+                {/if}
+                <!-- Delete affordance for drafts (own session). Covers
+                     both body-bearing replies and the empty-body
+                     resolution-markers (`resolve` / `wont-fix` /
+                     `unresolve`) — a misclicked status flip is at
+                     least as common as a typo'd reply, so the same
+                     undo path serves both. Published responses can't
+                     be deleted, hence the `r.draft` gate. -->
+                {#if r.draft && ondeleteresponse}
+                  <button
+                    type="button"
+                    class="action-button destructive reply-delete"
+                    disabled={saving}
+                    onclick={() => ondeleteresponse?.(r)}
+                  >
+                    Delete
+                  </button>
                 {/if}
               </header>
               {#if r.body.trim().length > 0}
