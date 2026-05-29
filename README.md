@@ -221,11 +221,14 @@ tracked in
 
 Tools available: `list_repos`, `list_bookmarks`, `list_reviews`,
 `get_review`, `create_review`, `refresh_review`,
-`update_review_summary`, `start_session`, `publish_session`,
-`discard_session`, `draft_line_comment`, `draft_file_comment`,
-`draft_review_comment`, `update_draft_comment`, `respond`. Workspace-
-scoped tools take a `repo` argument; call `list_repos` first to see the
-available slugs.
+`update_review_summary`, `update_review_revset`, `archive_review`,
+`unarchive_review`, `delete_review`, `start_session`,
+`publish_session`, `discard_session`, `draft_line_comment`,
+`draft_file_comment`, `draft_review_comment`, `update_draft_comment`,
+`delete_draft_comment`, `respond`, `update_response`,
+`delete_draft_response`, `add_line_annotation`, `add_file_annotation`,
+`update_annotation`, `delete_annotation`. Workspace-scoped tools take a
+`repo` argument; call `list_repos` first to see the available slugs.
 
 ## Architecture
 

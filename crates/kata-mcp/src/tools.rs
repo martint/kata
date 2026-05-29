@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use kata_core::{
     AnnotationId, Author, ChangeId, ColumnRange, CommentId, CommitId, Flag, LineRange, RepoId,
-    ResolutionAction, ReviewId, RevSet, SessionId, Side,
+    ResolutionAction, ResponseId, ReviewId, RevSet, SessionId, Side,
 };
 use kata_service::{
     AnnotationInput, CreateReviewParams, DraftCommentInput, DraftResponseInput, ReviewService,
@@ -579,6 +579,132 @@ impl ReviewMcp {
             .map_err(into_mcp)?;
         Ok(text_json(&response))
     }
+
+    #[tool(
+        description = "Edit the body or action of an existing draft response (reply) authored by the current MCP user. The reply's `in_reply_to` parent is kept; pass the new `action` and optional `body`. Fails if the response is already published or doesn't belong to the caller's open session."
+    )]
+    async fn update_response(
+        &self,
+        Parameters(args): Parameters<UpdateResponseArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let UpdateResponseArgs {
+            repo,
+            session_id,
+            response_id,
+            in_reply_to,
+            action,
+            body,
+        } = args;
+        let repo = self.resolve(&repo)?;
+        let response = self
+            .service
+            .upsert_draft_response(
+                &repo,
+                &session_id,
+                &self.author,
+                Some(response_id),
+                DraftResponseInput {
+                    in_reply_to,
+                    action,
+                    body: body.unwrap_or_default(),
+                },
+            )
+            .await
+            .map_err(into_mcp)?;
+        Ok(text_json(&response))
+    }
+
+    #[tool(
+        description = "Delete a draft comment from the caller's open session. The comment becomes invisible — useful for clearing a typo or a misfired draft before publishing. Fails for comments that aren't in a draft session the caller owns."
+    )]
+    async fn delete_draft_comment(
+        &self,
+        Parameters(args): Parameters<DeleteDraftCommentArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let DeleteDraftCommentArgs {
+            repo,
+            review_id,
+            session_id,
+            comment_id,
+        } = args;
+        let repo = self.resolve(&repo)?;
+        self.service
+            .discard_draft_comment(&repo, &review_id, &session_id, &comment_id)
+            .await
+            .map_err(into_mcp)?;
+        Ok(ok_text("deleted"))
+    }
+
+    #[tool(
+        description = "Delete a draft response (reply) from the caller's open session. The response becomes invisible — useful for undoing a typo'd reply or a misclicked resolve / wont-fix / unresolve action before publishing. Fails for responses that aren't in a draft session the caller owns."
+    )]
+    async fn delete_draft_response(
+        &self,
+        Parameters(args): Parameters<DeleteDraftResponseArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let DeleteDraftResponseArgs {
+            repo,
+            review_id,
+            session_id,
+            response_id,
+        } = args;
+        let repo = self.resolve(&repo)?;
+        self.service
+            .discard_draft_response(&repo, &review_id, &session_id, &response_id)
+            .await
+            .map_err(into_mcp)?;
+        Ok(ok_text("deleted"))
+    }
+
+    #[tool(
+        description = "Archive a review. Only the review's creator may archive it. Archived reviews are hidden from the home screen by default and reject new draft sessions; they can be brought back with `unarchive_review`. Idempotent."
+    )]
+    async fn archive_review(
+        &self,
+        Parameters(args): Parameters<ReviewArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let ReviewArgs { repo, review_id } = args;
+        let repo = self.resolve(&repo)?;
+        let manifest = self
+            .service
+            .set_review_archived(&repo, &review_id, &self.author, true)
+            .await
+            .map_err(into_mcp)?;
+        Ok(text_json(&manifest))
+    }
+
+    #[tool(
+        description = "Unarchive a previously-archived review, returning it to the active list. Only the review's creator may unarchive it. Idempotent."
+    )]
+    async fn unarchive_review(
+        &self,
+        Parameters(args): Parameters<ReviewArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let ReviewArgs { repo, review_id } = args;
+        let repo = self.resolve(&repo)?;
+        let manifest = self
+            .service
+            .set_review_archived(&repo, &review_id, &self.author, false)
+            .await
+            .map_err(into_mcp)?;
+        Ok(text_json(&manifest))
+    }
+
+    #[tool(
+        description = "Permanently delete a review and every dependent record (sessions, comments, responses, annotations, visit timestamps). Only the review's creator may delete. Idempotent — calling twice doesn't error on the second call. Prefer `archive_review` for reversible removal; reach for this only when the review really should not exist."
+    )]
+    async fn delete_review(
+        &self,
+        Parameters(args): Parameters<ReviewArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let ReviewArgs { repo, review_id } = args;
+        let repo = self.resolve(&repo)?;
+        self.service
+            .delete_review(&repo, &review_id, &self.author)
+            .await
+            .map_err(into_mcp)?;
+        Ok(ok_text("deleted"))
+    }
 }
 
 /// The review-workflow skill, served via MCP resources under
@@ -852,6 +978,52 @@ pub struct DeleteAnnotationArgs {
     pub repo: String,
     pub review_id: ReviewId,
     pub annotation_id: AnnotationId,
+}
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct UpdateResponseArgs {
+    pub repo: String,
+    /// The session that owns the draft response. Get it from
+    /// `get_review` (drafts.session.session_id) or `start_session`.
+    pub session_id: SessionId,
+    pub response_id: ResponseId,
+    /// Comment this response replies to. Kept verbatim from the
+    /// existing draft — the upsert wants the field even though the
+    /// anchor doesn't change.
+    pub in_reply_to: CommentId,
+    /// New action. May differ from the existing one (e.g. flipping
+    /// `wont-fix` to `resolve` before publish).
+    pub action: ResolutionAction,
+    /// New body. `null` (or omitting) clears it.
+    #[serde(default)]
+    pub body: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct DeleteDraftCommentArgs {
+    pub repo: String,
+    pub review_id: ReviewId,
+    /// Session that owns the draft comment.
+    pub session_id: SessionId,
+    pub comment_id: CommentId,
+}
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct DeleteDraftResponseArgs {
+    pub repo: String,
+    pub review_id: ReviewId,
+    /// Session that owns the draft response.
+    pub session_id: SessionId,
+    pub response_id: ResponseId,
+}
+
+/// Just `(repo, review_id)` — enough for archive / unarchive /
+/// delete, none of which take any additional knobs. Reused so each
+/// tool doesn't need its own one-off struct.
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct ReviewArgs {
+    pub repo: String,
+    pub review_id: ReviewId,
 }
 
 // ---- helpers -----------------------------------------------------------

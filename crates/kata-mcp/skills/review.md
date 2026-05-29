@@ -45,7 +45,9 @@ MCP server can front multiple repositories; every tool call takes a
    something). The first draft call auto-opens a session; subsequent
    drafts reuse it until you publish or discard. Revise a still-
    unpublished draft with `update_draft_comment` (pass the `comment_id`
-   plus the new `body` and `flag`); the anchor stays put.
+   plus the new `body` and `flag`); the anchor stays put. Drop a draft
+   you no longer want with `delete_draft_comment` — useful for clearing
+   a typo'd or misfired comment before publish.
 
 4. **Respond.** `respond` replies to an existing comment. The `action`
    field also changes resolution state: `comment` (no change),
@@ -53,6 +55,11 @@ MCP server can front multiple repositories; every tool call takes a
    a `question` you're answering** — whether your answer satisfies the
    author is the author's call, not yours. Use `action: comment` and
    let them resolve.
+
+   Revise a still-unpublished reply with `update_response`, or drop
+   one with `delete_draft_response` — handy for undoing a typo'd
+   reply or a misclicked resolve / wont-fix / unresolve action
+   before publishing the session.
 
 5. **Publish.** `publish_session` with the `session_id` from
    `drafts.session` makes the whole batch visible to the author. Use
@@ -107,6 +114,30 @@ If you're the review's creator, pass `summary` to `refresh_review` (or
 call `update_review_summary` separately) to set or replace the
 free-text description shown at the top of the review. Non-creators
 that try to update the summary are rejected.
+
+If the original revset stopped meaning what you intended — `jj
+abandon` on a divergent change, or wanting to track a different
+branch tip — call `update_review_revset`. The new revset is
+re-resolved and, if the endpoints moved, a new patchset is
+recorded the same way `refresh_review` would (creator-only,
+idempotent: same endpoints = no new patchset).
+
+## Lifecycle
+
+When a review is done with — landed, abandoned, or just no longer
+relevant — clean it up:
+
+- `archive_review` — hides the review from the home screen by
+  default and rejects new draft sessions. Reversible with
+  `unarchive_review`. Prefer this for reviews that "shouldn't show
+  up day-to-day" but might still be referenced.
+- `delete_review` — permanently removes the review and every
+  dependent record (sessions, comments, responses, annotations,
+  visit timestamps). Reach for this only when the review truly
+  shouldn't exist; archive is the safer default.
+
+Both are creator-only. Both are idempotent (calling twice doesn't
+error).
 
 ## Tips
 
