@@ -5,23 +5,23 @@
     "": {
       "name": "kata-web",
       "dependencies": {
-        "dompurify": "^3.4.2",
-        "marked": "^18.0.3",
-        "shiki": "^4.0.2",
+        "dompurify": "^3.4.7",
+        "marked": "^18.0.4",
+        "shiki": "^4.1.0",
       },
       "devDependencies": {
-        "@sveltejs/vite-plugin-svelte": "^5.0.3",
+        "@sveltejs/vite-plugin-svelte": "^5.1.1",
         "@testing-library/jest-dom": "^6.9.1",
         "@testing-library/svelte": "^5.3.1",
         "@testing-library/user-event": "^14.6.1",
-        "@tsconfig/svelte": "^5.0.4",
+        "@tsconfig/svelte": "^5.0.8",
         "jsdom": "^29.1.1",
         "playwright": "^1.60.0",
-        "svelte": "^5.16.0",
-        "svelte-check": "^4.1.1",
-        "typescript": "^5.7.2",
-        "vite": "^6.0.7",
-        "vitest": "^4.1.5",
+        "svelte": "^5.56.0",
+        "svelte-check": "^4.4.8",
+        "typescript": "^6.0.3",
+        "vite": "^6.4.2",
+        "vitest": "^4.1.7",
       },
     },
   },
@@ -446,7 +446,7 @@
 
     "trim-lines": ["trim-lines@3.0.1", "", {}, "sha512-kRj8B+YHZCc9kQYdWfJB2/oUl9rA99qbowYYBtr4ui4mZyAQ2JpvVBd/6U2YloATfqBhBTSMhTpgBHtU0Mf3Rg=="],
 
-    "typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
+    "typescript": ["typescript@6.0.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw=="],
 
     "undici": ["undici@7.25.0", "", {}, "sha512-xXnp4kTyor2Zq+J1FfPI6Eq3ew5h6Vl0F/8d9XU5zZQf1tX9s2Su1/3PiMmUANFULpmksxkClamIZcaUqryHsQ=="],
 
