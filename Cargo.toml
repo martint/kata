@@ -44,7 +44,7 @@ tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
 rusqlite = { version = "0.40", features = ["bundled", "chrono", "serde_json"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-rmcp = { version = "0.8", features = ["server", "transport-streamable-http-server", "macros", "schemars"] }
+rmcp = { version = "1", features = ["server", "transport-streamable-http-server", "macros", "schemars"] }
 rust-embed = { version = "8", features = ["debug-embed", "interpolate-folder-path"] }
 mime_guess = "2"
 schemars = "1"

@@ -718,45 +718,49 @@ const REVIEW_SKILL_BODY: &str = include_str!("../skills/review.md");
 #[tool_handler]
 impl ServerHandler for ReviewMcp {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            protocol_version: ProtocolVersion::V_2024_11_05,
-            capabilities: ServerCapabilities::builder()
+        // rmcp 1 made `ServerInfo` (= `InitializeResult`) non-exhaustive
+        // to leave room for new optional protocol fields. Build from
+        // the constructor that returns a forward-compatible default,
+        // then set the fields we care about.
+        let mut info = InitializeResult::new(
+            ServerCapabilities::builder()
                 .enable_tools()
                 .enable_resources()
                 .build(),
-            server_info: Implementation::from_build_env(),
-            instructions: Some(
-                "Code review tool. One server can front multiple repositories; pass `repo` \
-                 (a workspace slug from `list_repos`) on every tool call. Use `list_reviews` \
-                 and `get_review` to inspect changes; `draft_line_comment` / \
-                 `draft_file_comment` / `draft_review_comment` to leave feedback (starts a \
-                 draft session on first use); `update_draft_comment` to revise a draft \
-                 before publishing; `respond` to reply or change resolution; \
-                 `publish_session` once the round is complete. Review creators may set \
-                 a summary at `create_review` time and replace it later via \
-                 `update_review_summary` (or alongside `refresh_review`). Before doing \
-                 review work, read the resource `skill://kata/review` for the full workflow."
-                    .into(),
-            ),
-        }
+        );
+        info.protocol_version = ProtocolVersion::V_2024_11_05;
+        info.instructions = Some(
+            "Code review tool. One server can front multiple repositories; pass `repo` \
+             (a workspace slug from `list_repos`) on every tool call. Use `list_reviews` \
+             and `get_review` to inspect changes; `draft_line_comment` / \
+             `draft_file_comment` / `draft_review_comment` to leave feedback (starts a \
+             draft session on first use); `update_draft_comment` to revise a draft \
+             before publishing; `respond` to reply or change resolution; \
+             `publish_session` once the round is complete. Review creators may set \
+             a summary at `create_review` time and replace it later via \
+             `update_review_summary` (or alongside `refresh_review`). Before doing \
+             review work, read the resource `skill://kata/review` for the full workflow."
+                .into(),
+        );
+        info
     }
 
     async fn initialize(
         &self,
-        request: InitializeRequestParam,
+        request: InitializeRequestParams,
         _ctx: RequestContext<rmcp::RoleServer>,
     ) -> Result<InitializeResult, McpError> {
-        Ok(InitializeResult {
-            protocol_version: request.protocol_version,
-            capabilities: self.get_info().capabilities,
-            server_info: self.get_info().server_info,
-            instructions: self.get_info().instructions,
-        })
+        let info = self.get_info();
+        let mut result = InitializeResult::new(info.capabilities);
+        result.protocol_version = request.protocol_version;
+        result.server_info = info.server_info;
+        result.instructions = info.instructions;
+        Ok(result)
     }
 
     async fn list_resources(
         &self,
-        _request: Option<PaginatedRequestParam>,
+        _request: Option<PaginatedRequestParams>,
         _ctx: RequestContext<rmcp::RoleServer>,
     ) -> Result<ListResourcesResult, McpError> {
         let raw = RawResource {
@@ -771,27 +775,29 @@ impl ServerHandler for ReviewMcp {
             mime_type: Some("text/markdown".into()),
             size: Some(REVIEW_SKILL_BODY.len() as u32),
             icons: None,
+            meta: None,
         };
         Ok(ListResourcesResult {
             resources: vec![Annotated::new(raw, None)],
             next_cursor: None,
+            meta: None,
         })
     }
 
     async fn read_resource(
         &self,
-        request: ReadResourceRequestParam,
+        request: ReadResourceRequestParams,
         _ctx: RequestContext<rmcp::RoleServer>,
     ) -> Result<ReadResourceResult, McpError> {
         match request.uri.as_str() {
-            REVIEW_SKILL_URI => Ok(ReadResourceResult {
-                contents: vec![ResourceContents::TextResourceContents {
+            REVIEW_SKILL_URI => Ok(ReadResourceResult::new(vec![
+                ResourceContents::TextResourceContents {
                     uri: REVIEW_SKILL_URI.into(),
                     mime_type: Some("text/markdown".into()),
                     text: REVIEW_SKILL_BODY.into(),
                     meta: None,
-                }],
-            }),
+                },
+            ])),
             other => Err(McpError::resource_not_found(
                 "resource not found",
                 Some(serde_json::json!({ "uri": other })),
