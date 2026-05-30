@@ -34,28 +34,31 @@ Skip this rule only when the change is invisible to the demo
 audience (backend plumbing, dev-only tooling, internal
 refactors).
 
-## Update the README when its scope changes
+## Update the README + deployment doc when their scope changes
 
 `README.md` is the public-facing pitch and getting-started guide.
-When a change touches any of the following, update the README in
-the same commit:
+The longer team-deployment reference lives in `docs/deploying.md`.
+When a change touches any of the following, update the relevant
+file in the same commit:
 
-- The architecture table (`Crate | Purpose`) — when a crate is
-  added, removed, or its purpose meaningfully shifts.
-- The Quick Start command(s) — when CLI flags change, defaults
-  change, or new subcommands are added (e.g. the `kata demo`
-  block).
-- Build / runtime requirements — when a runtime dependency is
-  added or removed (e.g. dropping the `jj` binary requirement
-  when the libjj backend landed).
-- The Deploying-for-a-team section — when auth / TLS / proxy
-  behaviour changes.
-- The Reviewing-with-agents (MCP) section — when MCP tools are
-  added, removed, or renamed.
+- The architecture table (`Crate | Purpose`) in README — when a
+  crate is added, removed, or its purpose meaningfully shifts.
+- The Quick Start command(s) in README — when CLI flags change,
+  defaults change, or new subcommands are added (e.g. the
+  `kata demo` block).
+- Build / runtime requirements in README — when a runtime
+  dependency is added or removed (e.g. dropping the `jj` binary
+  requirement when the libjj backend landed).
+- `docs/deploying.md` — when auth / TLS / proxy / OIDC / API-token
+  behaviour changes. The README's one-paragraph "Run it for your
+  repo" pointer at the doc rarely needs touching, but verify the
+  link still reads correctly when you restructure.
+- The Reviewing-with-agents (MCP) section in README — when MCP
+  tools are added, removed, or renamed.
 
-A frontend-only UX polish typically doesn't need a README change.
-A new subcommand, a new deployment mode, a changed default, or
-a new crate does.
+A frontend-only UX polish typically doesn't need either file. A
+new subcommand, a new deployment mode, a changed default, or a
+new crate does.
 
 ## Keep the product spec consistent
 
