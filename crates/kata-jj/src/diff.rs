@@ -15,9 +15,9 @@
 //!
 //! Added / deleted files just diff against an empty side.
 
-use imara_diff::intern::InternedInput;
-use imara_diff::sink::Counter;
-use imara_diff::{Algorithm, UnifiedDiffBuilder, diff};
+use imara_diff::{
+    Algorithm, BasicLineDiffPrinter, Diff as ImaraDiff, InternedInput, UnifiedDiffConfig,
+};
 use kata_core::{
     CommitId, ConflictHunk, Diff, FileChange, FileStatus, Hunk, HunkLine, LineOrigin, LineRange,
 };
@@ -32,9 +32,10 @@ use crate::error::{Error, Result};
 /// tree enough information to render its +/- summaries.
 ///
 /// The count path runs the same blob reads and histogram as
-/// [`build_diff`], but pipes the algorithm through imara-diff's
-/// [`Counter`] sink rather than `UnifiedDiffBuilder` — so we skip
-/// materialising and parsing the unified-diff text.
+/// [`build_diff`], but reads the per-side counts off the resulting
+/// `Diff` directly rather than going through the unified-diff
+/// printer — so we skip materialising and parsing the unified-diff
+/// text.
 pub async fn build_diff_metadata<B: JjBackend + ?Sized>(
     backend: &B,
     base: &CommitId,
@@ -53,9 +54,10 @@ pub async fn build_diff_metadata<B: JjBackend + ?Sized>(
         let base_text = String::from_utf8_lossy(base_bytes);
         let tip_text = String::from_utf8_lossy(tip_bytes);
         let input = InternedInput::new(base_text.as_ref(), tip_text.as_ref());
-        let counter = diff(Algorithm::Histogram, &input, Counter::default());
-        f.added = counter.insertions;
-        f.removed = counter.removals;
+        let mut d = ImaraDiff::compute(Algorithm::Histogram, &input);
+        d.postprocess_lines(&input);
+        f.added = d.count_additions();
+        f.removed = d.count_removals();
     }
     Ok(Diff {
         base: base.clone(),
@@ -249,7 +251,15 @@ pub async fn build_diff<B: JjBackend + ?Sized>(
 /// else.
 pub(crate) fn histogram_hunks(base: &str, tip: &str, path: &str) -> Result<Vec<Hunk>> {
     let input = InternedInput::new(base, tip);
-    let unified = diff(Algorithm::Histogram, &input, UnifiedDiffBuilder::new(&input));
+    let mut d = ImaraDiff::compute(Algorithm::Histogram, &input);
+    d.postprocess_lines(&input);
+    let unified = d
+        .unified_diff(
+            &BasicLineDiffPrinter(&input.interner),
+            UnifiedDiffConfig::default(),
+            &input,
+        )
+        .to_string();
     if unified.is_empty() {
         return Ok(Vec::new());
     }

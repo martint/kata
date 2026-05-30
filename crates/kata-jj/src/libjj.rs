@@ -1366,84 +1366,66 @@ fn base_lines_as_context(text: &str) -> Vec<kata_core::HunkLine> {
 /// regions too so the rendered conflict term reads as the side's
 /// full content with what changed vs. the base highlighted in place.
 fn diff_against_base(base: &str, side: &str) -> Vec<kata_core::HunkLine> {
-    use imara_diff::{Algorithm, diff};
-    use imara_diff::intern::InternedInput;
-    use imara_diff::sink::Sink;
-    use std::ops::Range;
-
-    struct PerLineSink<'a> {
-        input: &'a InternedInput<&'a str>,
-        base_cursor: u32,
-        tip_cursor: u32,
-        out: Vec<kata_core::HunkLine>,
-    }
-
-    impl<'a> PerLineSink<'a> {
-        /// Emit Context entries from `base_cursor` up to `before_end`
-        /// (exclusive). Both cursors advance — unchanged regions
-        /// exist on both sides at the same content.
-        fn fill_context(&mut self, before_end: u32) {
-            while self.base_cursor < before_end {
-                let token = self.input.before[self.base_cursor as usize];
-                let content = format!("{}\n", self.input.interner[token]);
-                self.out.push(kata_core::HunkLine {
-                    origin: kata_core::LineOrigin::Context,
-                    base_line: Some(self.base_cursor + 1),
-                    tip_line: Some(self.tip_cursor + 1),
-                    content,
-                });
-                self.base_cursor += 1;
-                self.tip_cursor += 1;
-            }
-        }
-    }
-
-    impl<'a> Sink for PerLineSink<'a> {
-        type Out = Vec<kata_core::HunkLine>;
-
-        fn process_change(&mut self, before: Range<u32>, after: Range<u32>) {
-            self.fill_context(before.start);
-            for i in before.start..before.end {
-                let token = self.input.before[i as usize];
-                let content = format!("{}\n", self.input.interner[token]);
-                self.out.push(kata_core::HunkLine {
-                    origin: kata_core::LineOrigin::Removed,
-                    base_line: Some(i + 1),
-                    tip_line: None,
-                    content,
-                });
-            }
-            self.base_cursor = before.end;
-            for i in after.start..after.end {
-                let token = self.input.after[i as usize];
-                let content = format!("{}\n", self.input.interner[token]);
-                self.out.push(kata_core::HunkLine {
-                    origin: kata_core::LineOrigin::Added,
-                    base_line: None,
-                    tip_line: Some(i + 1),
-                    content,
-                });
-            }
-            self.tip_cursor = after.end;
-        }
-
-        fn finish(mut self) -> Self::Out {
-            // Trailing unchanged region (after the last `process_change`)
-            // — fill all the way to the end of the base file.
-            let end = self.input.before.len() as u32;
-            self.fill_context(end);
-            self.out
-        }
-    }
+    use imara_diff::{Algorithm, Diff, InternedInput};
 
     let input = InternedInput::new(base, side);
-    let sink = PerLineSink {
-        input: &input,
-        base_cursor: 0,
-        tip_cursor: 0,
-        out: Vec::new(),
+    let mut d = Diff::compute(Algorithm::Histogram, &input);
+    d.postprocess_lines(&input);
+
+    let mut out: Vec<kata_core::HunkLine> = Vec::new();
+    let mut base_cursor: u32 = 0;
+    let mut tip_cursor: u32 = 0;
+    // Emit Context entries from `base_cursor` up to `target`
+    // (exclusive). Both cursors advance — unchanged regions exist
+    // on both sides at the same content.
+    let fill_context = |out: &mut Vec<kata_core::HunkLine>,
+                        base_cursor: &mut u32,
+                        tip_cursor: &mut u32,
+                        target: u32,
+                        input: &InternedInput<&str>| {
+        while *base_cursor < target {
+            let token = input.before[*base_cursor as usize];
+            let content = format!("{}\n", input.interner[token]);
+            out.push(kata_core::HunkLine {
+                origin: kata_core::LineOrigin::Context,
+                base_line: Some(*base_cursor + 1),
+                tip_line: Some(*tip_cursor + 1),
+                content,
+            });
+            *base_cursor += 1;
+            *tip_cursor += 1;
+        }
     };
-    diff(Algorithm::Histogram, &input, sink)
+    for hunk in d.hunks() {
+        fill_context(&mut out, &mut base_cursor, &mut tip_cursor, hunk.before.start, &input);
+        for i in hunk.before.start..hunk.before.end {
+            let token = input.before[i as usize];
+            let content = format!("{}\n", input.interner[token]);
+            out.push(kata_core::HunkLine {
+                origin: kata_core::LineOrigin::Removed,
+                base_line: Some(i + 1),
+                tip_line: None,
+                content,
+            });
+        }
+        base_cursor = hunk.before.end;
+        for i in hunk.after.start..hunk.after.end {
+            let token = input.after[i as usize];
+            let content = format!("{}\n", input.interner[token]);
+            out.push(kata_core::HunkLine {
+                origin: kata_core::LineOrigin::Added,
+                base_line: None,
+                tip_line: Some(i + 1),
+                content,
+            });
+        }
+        tip_cursor = hunk.after.end;
+    }
+    // Trailing unchanged region — fill all the way to the end of
+    // the base file.
+    let end = input.before.len() as u32;
+    fill_context(&mut out, &mut base_cursor, &mut tip_cursor, end, &input);
+    out
 }
 
 /// Derive per-`add` labels for a conflict on `commit`. When the
@@ -1517,17 +1499,16 @@ fn read_file_bytes(
 }
 
 fn count_line_changes(left: &[u8], right: &[u8]) -> (bool, u32, u32) {
-    use imara_diff::intern::InternedInput;
-    use imara_diff::sink::Counter;
-    use imara_diff::{Algorithm, diff};
+    use imara_diff::{Algorithm, Diff, InternedInput};
     if looks_binary(left) || looks_binary(right) {
         return (true, 0, 0);
     }
     let left_text = String::from_utf8_lossy(left);
     let right_text = String::from_utf8_lossy(right);
     let input = InternedInput::new(left_text.as_ref(), right_text.as_ref());
-    let counter = diff(Algorithm::Histogram, &input, Counter::default());
-    (false, counter.insertions, counter.removals)
+    let mut d = Diff::compute(Algorithm::Histogram, &input);
+    d.postprocess_lines(&input);
+    (false, d.count_additions(), d.count_removals())
 }
 
 fn looks_binary(bytes: &[u8]) -> bool {
