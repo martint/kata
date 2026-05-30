@@ -83,7 +83,7 @@
       bind:this={inputEl}
       type="text"
       class="search-input"
-      placeholder="Search diff and comments…"
+      placeholder="Search diff, files, commits, comments…"
       value={query}
       oninput={(e) => onqueryInput((e.currentTarget as HTMLInputElement).value)}
       onkeydown={onKeyDown}

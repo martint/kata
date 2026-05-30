@@ -410,7 +410,7 @@
       {#if replies.length > 0}
         <ul class="replies">
           {#each replies as r (r.response_id)}
-            <li class="reply {r.draft ? 'draft' : ''}">
+            <li class="reply {r.draft ? 'draft' : ''}" data-response-id={r.response_id}>
               <header>
                 <strong>{r.author}</strong>
                 <span class="action">{actionLabel(r.action)}</span>

@@ -179,12 +179,13 @@ export const tour: TourStep[] = [
     title: 'Search the whole review',
     body:
       "Press / (or click 🔍) to open a Cmd+F-style search that runs " +
-      "across every diff line, comment body, and annotation in the " +
-      "review — including files outside the viewport, which the " +
-      "browser's own find misses because they aren't in the DOM. " +
-      "Enter walks to the next match, Shift+Enter to the previous; " +
-      "matches in code are highlighted in place, matches in " +
-      "comments tint the whole bubble.",
+      "across the whole review — file paths, every diff line, " +
+      "commit messages, comments and their replies, annotations, " +
+      "and the review's name and summary. It reaches files outside " +
+      "the viewport which the browser's own find misses because " +
+      "they aren't in the DOM. Enter walks to the next match, " +
+      "Shift+Enter to the previous; matches in code are highlighted " +
+      "in place, matches in comments tint the whole bubble.",
   },
   {
     id: 'comment-nav',

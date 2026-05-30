@@ -847,33 +847,60 @@ loading on first open: "loading…" until every text file's hunks
 have been force-fetched, so the result list is complete from the
 first keystroke rather than growing as the user scrolls.
 
-Search scope (v1):
+Search scope:
+- **File paths** — typing a filename should land the reader on
+  that file even when it's outside the viewport.
 - **Diff lines** in every loaded file's hunks (regular hunks
   only; conflict regions are out of scope for the substring
   match, but the conflict badge already surfaces them).
 - **Comment bodies** — both published and the viewer's own
   drafts, so a reviewer can find their in-progress text.
+- **Response bodies** — replies inside a thread. Pure
+  resolution-marker responses (empty body) are not indexed —
+  they have nothing to search.
 - **Annotation bodies** — author notes.
+- **Commit messages** — the one-line description for each
+  commit in the patchset's commits panel.
+- **Review name + summary** — the title in the header and the
+  prose summary above the file tree.
 
-Results are ordered by reading position: each file's diff
-matches come first, followed by comments and annotations
-anchored to that file (ordered by line). Review-wide comments
-land at the end.
+Results are ordered by reading position. Inside each file's
+bucket: the file-path match first, then diff lines, then
+comments / responses / annotations anchored to that file
+(ordered by line; responses sort under their parent comment).
+After every file: a commits bucket, then review-wide comments
+and annotations, then review-meta (name / summary) last — most
+readers searching are looking for content inside the review,
+not the title.
 
 Navigation jumps the page to the current match: the diff scrolls
 the matched line just under the sticky header, expanding the
 file's fold if collapsed; for a comment or annotation, the
-relevant thread bubble scrolls into view. Matched substrings on
-diff lines are wrapped with a subtle yellow tint, with a
-brighter outlined tint on the currently-focused match.
-Comment / annotation matches tint the entire bubble (the
-in-body markdown rendering doesn't preserve raw-text offsets
-cleanly enough for substring-precision; the wrapper tint
-conveys "this one matches" and pairs with the scroll-to-match).
+relevant thread bubble scrolls into view; a response jumps to
+its parent comment's anchor (the response renders inline
+beneath it); a file-path match scrolls the file's slot to the
+top; a commit-message match scrolls the commits panel row into
+view; a review-meta match scrolls to page top. Matched
+substrings on diff lines are wrapped with a subtle yellow
+tint, with a brighter outlined tint on the currently-focused
+match. Comment / annotation matches tint the entire bubble
+(the in-body markdown rendering doesn't preserve raw-text
+offsets cleanly enough for substring-precision; the wrapper
+tint conveys "this one matches" and pairs with the
+scroll-to-match).
 
-Out of scope for v1: regex, case-sensitive toggle, scope filter
-chips (diff vs. comments only), file-path filter, file-tree
-match-count badges.
+When the match's file is virtualised away (its `FileSlot`
+hasn't mounted its `FileDiff` yet), the navigation first brings
+the slot into the viewport so the `IntersectionObserver` mounts
+the diff, then waits for the actual match element to appear
+before parking it under the sticky header. The parking then
+stabilises across a handful of frames — as virtualised slots
+above continue to mount in and the document re-flows, the
+match would otherwise drift off-screen.
+
+Out of scope: regex, case-sensitive toggle, scope filter chips
+(diff vs. comments only), substring matching inside conflict
+regions, file-tree match-count badges.
 
 ---
 

@@ -528,10 +528,11 @@
   let searchPosition = $state(0);
 
   /** Build the search source from the resolved-via-cache file list
-   *  plus comments + annotations. Comment / annotation lists are
-   *  pre-merged published + drafts so the user finds their own
-   *  unpublished text — they're the most likely thing to look for
-   *  while drafting a follow-up reply. */
+   *  plus comments / responses / annotations / commits / review
+   *  metadata. Comment / response / annotation lists are pre-merged
+   *  published + drafts so the user finds their own unpublished
+   *  text — they're the most likely thing to look for while
+   *  drafting a follow-up reply. */
   const searchSource = $derived.by(() => {
     const resolvedFiles = current.diff.files.map((f) => {
       const key = compareWith != null
@@ -543,10 +544,21 @@
       ...current.comments,
       ...current.drafts.comments,
     ];
+    const allResponsesForSearch = [
+      ...current.responses,
+      ...current.drafts.responses,
+    ];
     return {
       files: resolvedFiles,
       comments: allComments,
+      responses: allResponsesForSearch,
       annotations: current.annotations ?? [],
+      commits: current.commits.map((c) => ({
+        change_id: c.change_id,
+        description_first_line: c.description_first_line,
+      })),
+      reviewName: current.manifest.name,
+      reviewSummary: current.manifest.summary,
     };
   });
 
@@ -601,36 +613,119 @@
     if (!m) return;
     void (async () => {
       await tick();
-      jumpToMatch(m);
+      await jumpToMatch(m);
     })();
   });
 
-  function jumpToMatch(m: SearchMatch) {
-    let el: HTMLElement | null = null;
-    if (m.kind === 'line') {
-      // Find any visible cell whose (side, line) matches; SBS
-      // emits two cells per line so we just pick the first.
-      el = document.querySelector<HTMLElement>(
-        `[data-side="${m.side}"][data-line="${m.line}"]`,
+  /** File path of the match's destination if the target lives
+   *  inside a FileSlot — which means it can be virtualised away
+   *  and we may need to bring the slot into the viewport first
+   *  so its IntersectionObserver mounts the FileDiff. Returns
+   *  `null` for matches whose target lives outside the slot
+   *  system (commits panel, header chrome, review-wide buckets). */
+  function fileForMatch(m: SearchMatch): string | null {
+    switch (m.kind) {
+      case 'line':
+      case 'file':
+        return m.file;
+      case 'comment':
+      case 'annotation':
+      case 'response':
+        return m.file;
+      case 'commit':
+      case 'review-meta':
+        return null;
+    }
+  }
+
+  /** CSS selector for the DOM element to scroll to for `m`. Stays
+   *  in sync with the data attributes the relevant renderers
+   *  apply: `data-comment-id` in CommentThread, `data-annotation-
+   *  id` on AnnotationBubble, `data-side`+`data-line` on diff
+   *  rows, `data-change-id` on the commit-row `<li>`, `data-
+   *  response-id` on the reply `<li>`, `data-file-path` on the
+   *  FileSlot wrapper. For `review-meta` we just target the top
+   *  of the page (no specific element). */
+  function selectorForMatch(m: SearchMatch): string | null {
+    switch (m.kind) {
+      case 'line':
+        return `[data-side="${m.side}"][data-line="${m.line}"]`;
+      case 'comment':
+        return `[data-comment-id="${CSS.escape(m.comment_id)}"]`;
+      case 'response':
+        // Use the parent comment's anchor — the response renders
+        // inline beneath it, so scrolling to the parent lands
+        // close enough and the in-thread highlight catches the
+        // reader's eye.
+        return `[data-comment-id="${CSS.escape(m.in_reply_to)}"]`;
+      case 'annotation':
+        return `[data-annotation-id="${CSS.escape(m.annotation_id)}"]`;
+      case 'file':
+        return `.file-slot[data-file-path="${CSS.escape(m.file)}"]`;
+      case 'commit':
+        return `[data-change-id="${CSS.escape(m.change_id)}"]`;
+      case 'review-meta':
+        return null;
+    }
+  }
+
+  async function jumpToMatch(m: SearchMatch): Promise<void> {
+    // review-meta jumps to top — no element-resolution needed.
+    if (m.kind === 'review-meta') {
+      window.scrollTo({ top: 0, behavior: 'auto' });
+      return;
+    }
+
+    const sel = selectorForMatch(m);
+    if (!sel) return;
+
+    let el = document.querySelector<HTMLElement>(sel);
+
+    // Target inside a FileSlot? If the slot is virtualised away,
+    // the data-line / data-comment-id / data-response-id node
+    // isn't in the DOM yet. Bring the slot into view so its
+    // IntersectionObserver mounts the FileDiff, then poll on
+    // rAF until the actual match element appears (or the budget
+    // runs out). Same wait shape as `scrollToLineRange`.
+    const filePath = fileForMatch(m);
+    if (!el && filePath) {
+      const slot = document.querySelector<HTMLElement>(
+        `.file-slot[data-file-path="${CSS.escape(filePath)}"]`,
       );
-    } else if (m.kind === 'comment') {
-      el = document.querySelector<HTMLElement>(
-        `[data-comment-id="${CSS.escape(m.comment_id)}"]`,
-      );
-    } else if (m.kind === 'annotation') {
-      el = document.querySelector<HTMLElement>(
-        `[data-annotation-id="${CSS.escape(m.annotation_id)}"]`,
-      );
+      if (!slot) return;
+      scrollTopOf(slot);
+      const deadline = performance.now() + 4000;
+      while (!el && performance.now() < deadline) {
+        await new Promise((r) => requestAnimationFrame(r));
+        el = document.querySelector<HTMLElement>(sel);
+      }
+      if (!el) return;
     }
     if (!el) return;
-    const rect = el.getBoundingClientRect();
-    const headerBottom =
-      document.querySelector<HTMLElement>('header.app')
-        ?.getBoundingClientRect().bottom ?? 0;
-    // Smooth scroll so the user sees the page move — "the match
-    // is over here" reads better than an instant teleport.
-    const target = rect.top + window.scrollY - headerBottom - 16;
-    window.scrollTo({ top: Math.max(0, target), behavior: 'smooth' });
+
+    // Park the match below the sticky header. Then stabilise — as
+    // virtualised slots above continue to mount in (their height
+    // estimate gets replaced with the real height), the document
+    // re-flows and the match drifts. Re-aim across a handful of
+    // frames until the position is stable. Without this loop a
+    // search hit two-thirds down the review lands off-screen
+    // (was finding #6 in the audit).
+    scrollTopOf(el);
+    let stableFrames = 0;
+    let lastTop = Number.NaN;
+    for (let i = 0; i < 30 && stableFrames < 3; i++) {
+      await new Promise((r) => requestAnimationFrame(r));
+      const cur = document.querySelector<HTMLElement>(sel);
+      if (!cur) return;
+      const top = cur.getBoundingClientRect().top;
+      if (Number.isFinite(lastTop) && Math.abs(top - lastTop) < 0.5) {
+        stableFrames++;
+      } else {
+        stableFrames = 0;
+        scrollTopOf(cur);
+      }
+      lastTop = top;
+    }
   }
 
   /** Force-load every text file's hunks so the search source has

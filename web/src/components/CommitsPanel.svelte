@@ -635,6 +635,7 @@
           <li
             class="commit {selectedChangeId === c.change_id ? 'selected' : ''}"
             data-tour="commit-row"
+            data-change-id={c.change_id}
           >
             <div class="row">
               {#if body}
