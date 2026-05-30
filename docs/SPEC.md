@@ -308,6 +308,26 @@ toggle, comment-nav) is the global commentary control surface. The
 commits panel is where the *new* comment affordances live for
 non-line-anchored feedback.
 
+### 3.4 Keyboard shortcuts
+
+The review viewer responds to a small set of single-key shortcuts.
+Every shortcut bails when the focus is inside a comment composer,
+the search field, or any other input — the letter belongs to the
+field. Modifier combinations (Ctrl / Cmd / Alt) also bail so the
+keys don't shadow browser or OS chords.
+
+| Key | Action |
+| --- | --- |
+| <code>/</code> | Open the in-review search bar. |
+| <code>j</code> / <code>k</code> | Next / previous comment (the same walk the toolbar's `< >` cluster drives). |
+| <code>n</code> / <code>p</code> | Next / previous file. |
+| <code>?</code> | Toggle the keyboard-shortcut help overlay. |
+| <code>Esc</code> | Close the search bar or the help overlay. |
+
+The help overlay (a centred modal listing the same shortcuts) is
+the discoverability hook — a first-time user pressing `?` learns
+the rest of the set without leaving the page.
+
 ---
 
 ## 4. Creating a review

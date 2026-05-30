@@ -216,8 +216,9 @@ export const tour: TourStep[] = [
     body:
       "You've seen the main moving parts: reviews, patchsets, the " +
       "diff, threads, annotations, folding, filtering, search, and " +
-      "navigation. Poke around — everything you saw is real data " +
-      "the demo wrote through the normal service APIs. Hit Done to " +
-      "leave the tour.",
+      "navigation. Press ? at any time to see the full list of " +
+      "keyboard shortcuts. Poke around — everything you saw is real " +
+      "data the demo wrote through the normal service APIs. Hit Done " +
+      "to leave the tour.",
   },
 ];

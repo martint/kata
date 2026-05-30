@@ -520,6 +520,8 @@
   let searchOpen = $state(false);
   let searchQuery = $state('');
   let searchLoading = $state(false);
+  /** Help overlay visibility. Toggled by `?` and closed by `Esc`. */
+  let helpOpen = $state(false);
   /** 1-based index of the currently-focused match. 0 means "no
    *  selection" (either no query or zero matches). The 1-based
    *  shape matches what the toolbar UI displays ("M of N") and
@@ -2268,14 +2270,20 @@
     }),
   );
 
-  /** Global keyboard shortcuts for the in-app search:
-   *  - `/` (anywhere outside an input / textarea / contenteditable)
-   *    opens the search bar and focuses its input.
-   *  - `Esc` (when the search is open) closes it.
+  /** Global keyboard shortcuts:
+   *  - `/`      opens the search bar.
+   *  - `Esc`    closes the search bar / help overlay.
+   *  - `j` / `k`  next / previous comment (in reading order, the
+   *               same walk the toolbar's `< >` cluster drives).
+   *  - `n` / `p`  next / previous file (jump to the next / previous
+   *               file in the file-tree's order).
+   *  - `?`      toggles the keyboard-shortcut help overlay.
    *
-   *  Editable-target detection keeps the `/` shortcut from
-   *  hijacking the keystroke while the user is typing inside a
-   *  comment composer or any other input. */
+   *  Every shortcut bails when the focus is inside an input,
+   *  textarea, select, or contenteditable — the user is typing
+   *  there and the bare letter belongs to that field. Modifier
+   *  combinations (Ctrl/Cmd/Alt) also bail so we don't shadow
+   *  browser / OS shortcuts. */
   onMount(() => {
     function isEditableTarget(t: EventTarget | null): boolean {
       const el = t as HTMLElement | null;
@@ -2286,22 +2294,57 @@
       return false;
     }
     function onKey(e: KeyboardEvent) {
-      if (e.key === '/' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      // All shortcuts here ignore modifier-key combinations so they
+      // don't shadow browser / OS chords like Ctrl+/, Cmd+K, etc.
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+      if (e.key === '/') {
         if (isEditableTarget(e.target)) return;
         e.preventDefault();
         openSearch();
-      } else if (e.key === 'Escape' && searchOpen) {
-        // Don't close on Esc while a composer / input is focused;
-        // that key is reserved for whatever the focused control
-        // wants to do with it.
-        if (isEditableTarget(e.target)) {
-          // …unless the focused thing is the search input itself,
-          // which is the case we DO want Esc to close from.
-          const el = e.target as HTMLElement | null;
-          if (!el?.classList?.contains?.('search-input')) return;
+        return;
+      }
+
+      if (e.key === 'Escape') {
+        if (helpOpen) {
+          e.preventDefault();
+          helpOpen = false;
+          return;
         }
+        if (searchOpen) {
+          // Don't close on Esc while a composer / input is focused;
+          // that key is reserved for whatever the focused control
+          // wants to do with it. Exception: the search input itself
+          // — `Esc` from inside the field should still dismiss the
+          // bar (matches Cmd+F behaviour in the browser).
+          if (isEditableTarget(e.target)) {
+            const el = e.target as HTMLElement | null;
+            if (!el?.classList?.contains?.('search-input')) return;
+          }
+          e.preventDefault();
+          closeSearch();
+        }
+        return;
+      }
+
+      // Letter-key shortcuts: bail when typing inside a composer.
+      if (isEditableTarget(e.target)) return;
+
+      if (e.key === '?') {
         e.preventDefault();
-        closeSearch();
+        helpOpen = !helpOpen;
+      } else if (e.key === 'j') {
+        e.preventDefault();
+        navNext();
+      } else if (e.key === 'k') {
+        e.preventDefault();
+        navPrev();
+      } else if (e.key === 'n') {
+        e.preventDefault();
+        fileNavNext();
+      } else if (e.key === 'p') {
+        e.preventDefault();
+        fileNavPrev();
       }
     }
     window.addEventListener('keydown', onKey);
@@ -3252,6 +3295,47 @@
   </div>
 </div>
 
+{#if helpOpen}
+  <!-- Keyboard-shortcut help overlay. Toggled by `?` and dismissed
+       by `Esc` (handled in onKey) or by clicking the backdrop. The
+       backdrop is a sibling click target with the same role pattern
+       Sheet uses — keep it role="presentation" so AT only sees the
+       dialog itself. -->
+  <div
+    class="help-overlay"
+    role="presentation"
+    onclick={(e) => { if (e.target === e.currentTarget) helpOpen = false; }}
+  >
+    <div class="help-panel" role="dialog" aria-label="Keyboard shortcuts">
+      <div class="help-header">
+        <h2>Keyboard shortcuts</h2>
+        <button
+          type="button"
+          class="help-close"
+          onclick={() => (helpOpen = false)}
+          aria-label="Close shortcuts"
+        >×</button>
+      </div>
+      <dl class="help-list">
+        <dt><kbd>/</kbd></dt>
+        <dd>Open search</dd>
+        <dt><kbd>j</kbd> <span class="help-sep">/</span> <kbd>k</kbd></dt>
+        <dd>Next / previous comment</dd>
+        <dt><kbd>n</kbd> <span class="help-sep">/</span> <kbd>p</kbd></dt>
+        <dd>Next / previous file</dd>
+        <dt><kbd>?</kbd></dt>
+        <dd>Toggle this help</dd>
+        <dt><kbd>Esc</kbd></dt>
+        <dd>Close search / this help</dd>
+      </dl>
+      <p class="help-footnote">
+        Letter shortcuts are inert while typing in a comment or any
+        other input.
+      </p>
+    </div>
+  </div>
+{/if}
+
 <style>
   .header {
     margin-bottom: 16px;
@@ -3694,5 +3778,94 @@
   }
   .compare-breadcrumb .back-link:hover {
     text-decoration: underline;
+  }
+
+  /* Keyboard-shortcut help overlay. Centred modal over a dim
+   * backdrop, dismissed via Esc / ?, the close button, or a
+   * backdrop click. */
+  .help-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 2000;
+    background: rgba(0, 0, 0, 0.45);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+  }
+  .help-panel {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+    width: min(420px, 100%);
+    padding: 18px 22px 20px;
+    color: var(--text);
+  }
+  .help-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 10px;
+  }
+  .help-header h2 {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 600;
+  }
+  .help-close {
+    background: transparent;
+    border: 1px solid transparent;
+    color: var(--text-muted);
+    font-size: 18px;
+    line-height: 1;
+    padding: 2px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  .help-close:hover {
+    background: var(--bg-elevated);
+    color: var(--text);
+  }
+  .help-list {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 8px 14px;
+    margin: 0;
+    font-size: 13px;
+  }
+  .help-list dt {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--text);
+  }
+  .help-list dd {
+    margin: 0;
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+  }
+  .help-list kbd {
+    display: inline-block;
+    min-width: 22px;
+    padding: 2px 6px;
+    border: 1px solid var(--border);
+    border-bottom-width: 2px;
+    border-radius: 4px;
+    background: var(--bg-elevated);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px;
+    text-align: center;
+    color: var(--text);
+  }
+  .help-list .help-sep {
+    color: var(--text-faint);
+    font-size: 11px;
+  }
+  .help-footnote {
+    margin: 14px 0 0;
+    font-size: 12px;
+    color: var(--text-muted);
   }
 </style>
