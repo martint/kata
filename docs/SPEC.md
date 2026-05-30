@@ -923,6 +923,15 @@ Hash anchors are addressable both at first load and at navigation
 time; landing on a comment that's currently in a collapsed state
 auto-expands it.
 
+A permalink to a review that no longer exists (mistyped number,
+deleted review) lands on an explicit "Review #N not found" page —
+heading, the server's error string, a hint that the URL may have
+been mistyped, and a "Back to reviews" button. The URL stays as-
+typed so the reader can edit the number in the address bar. Other
+load failures (network, server errors) drop the reader on the
+review list with an error banner, since those tend to be
+transient.
+
 ---
 
 ## 14. Archival

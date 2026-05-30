@@ -871,6 +871,46 @@ header.app .view-toggle .seg.on {
   color: var(--text);
 }
 
+/* Shown by App.svelte when openReview returns 404 — a deleted or
+ * mistyped review id. Same shape as .loading-permalink so the user's
+ * eye lands in the same place; the error tinting + explicit CTA
+ * separate it visually. */
+.not-found-page {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 48px auto;
+  padding: 20px 24px;
+  max-width: 520px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--error-border);
+  border-radius: 6px;
+}
+
+.not-found-page h2 {
+  margin: 0;
+  font-size: 18px;
+  color: var(--text);
+}
+
+.not-found-detail {
+  margin: 0;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.not-found-hint {
+  margin: 0;
+  font-size: 13px;
+}
+
+.not-found-cta {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);

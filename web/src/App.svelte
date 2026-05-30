@@ -43,6 +43,18 @@
     | { kind: 'loading'; label: string }
     | { kind: 'list' }
     | {
+        kind: 'not-found';
+        /** Repo the user asked for — shown in the message and used
+         *  for the "back to reviews" CTA. */
+        repo: string;
+        /** Review number the user asked for. Drives the title. */
+        number: number;
+        /** Server-provided error string, if any. Surfaced under the
+         *  main message so the reader can see exactly what the
+         *  backend said ("review #9999 not found", "archived…"). */
+        detail: string;
+      }
+    | {
         kind: 'review';
         repo: string;
         view: ReviewView;
@@ -334,9 +346,26 @@
         debug,
       };
     } catch (e) {
-      error = (e as Error).message;
-      screen = { kind: 'list' };
-      await loadList(targetRepo);
+      // 404 → render a dedicated not-found page rather than silently
+      // dropping to the review list. The user's URL stays intact in
+      // the URL bar so they can correct a typo'd review number, and
+      // they get an explicit "this review doesn't exist" message
+      // instead of an empty list with their bad URL hovering above.
+      // Other errors (network, 5xx) still fall back to the list with
+      // an error banner — those tend to be transient and the list is
+      // a reasonable safe haven.
+      if (e instanceof ApiError && e.status === 404) {
+        screen = {
+          kind: 'not-found',
+          repo: targetRepo,
+          number,
+          detail: e.detail,
+        };
+      } else {
+        error = (e as Error).message;
+        screen = { kind: 'list' };
+        await loadList(targetRepo);
+      }
     } finally {
       loading = false;
     }
@@ -1000,6 +1029,25 @@
       <span class="spinner" aria-hidden="true"></span>
       Loading review <code>{screen.label}</code>…
     </p>
+  {:else if screen.kind === 'not-found'}
+    {@const nf = screen}
+    <div class="not-found-page" role="alert">
+      <h2>Review #{nf.number} not found</h2>
+      <p class="not-found-detail">
+        {nf.detail || `No review with number ${nf.number} exists in “${nf.repo}”.`}
+      </p>
+      <p class="not-found-hint muted">
+        The link may have been mistyped, or the review may have been
+        deleted. Check the URL, or browse the review list to find it.
+      </p>
+      <div class="not-found-cta">
+        <button
+          type="button"
+          class="primary"
+          onclick={() => { void switchRepo(nf.repo); goHome(); }}
+        >Back to reviews</button>
+      </div>
+    </div>
   {:else if screen.kind === 'list'}
     {@const prefill = new URLSearchParams(location.search).get('prefill_revset') ?? undefined}
     <ReviewList
