@@ -473,40 +473,6 @@ header.app .tree-button {
     background: var(--bg-elevated);
   }
 
-  /* Filter button: flag glyph + label + active-count badge. The
-   * badge counts chips currently filtering something out. */
-  header.app .m-filter-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    flex: 0 0 auto;
-    height: 32px;
-    padding: 0 10px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--bg);
-    color: var(--text);
-    font-size: 12px;
-    cursor: pointer;
-  }
-  header.app .m-filter-btn.active {
-    border-color: var(--link);
-    color: var(--link);
-  }
-  header.app .m-filter-badge {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 16px;
-    height: 16px;
-    padding: 0 4px;
-    border-radius: 9999px;
-    background: var(--link);
-    color: var(--on-accent);
-    font-size: 10px;
-    font-weight: 600;
-  }
-
   /* Drafts strip: a full-width band under row 2 — draft-nav pushed
    * left, Discard / Publish on the right. Balanced, not floated
    * against an empty gap. */
@@ -535,6 +501,55 @@ header.app .tree-button {
   }
   header.app .m-toolbar .comment-nav button {
     padding: 4px 5px;
+  }
+}
+
+/* Filter button — used in two places: the mobile phone header
+ * (always visible at ≤640px) and the desktop FilterMenu popover
+ * trigger (visible at ≤1280px when the inline chip cluster folds).
+ * One shared shape so both look like the same control — the mobile
+ * branch overrides the height to 32px below; on desktop the row-2
+ * chrome is smaller so the trigger sizes down to match the
+ * surrounding buttons. */
+header.app .m-filter-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+header.app .m-filter-btn.active {
+  border-color: var(--link);
+  color: var(--link);
+}
+header.app .m-filter-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 9999px;
+  background: var(--link);
+  color: var(--on-accent);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+/* Phone-only: bump the button to a comfortable 32px tap height
+ * (desktop row-2 controls run smaller so the default 24-ish height
+ * matches them better). */
+@media (max-width: 640px) {
+  header.app .m-filter-btn {
+    height: 32px;
+    padding: 0 10px;
   }
 }
 
@@ -628,6 +643,15 @@ header.app .review-title {
   display: inline-flex;
   align-items: baseline;
   gap: 6px;
+  /* Don't shrink ahead of the other row-2 controls. The chip
+   * cluster used to wrap when the row got crowded; that left the
+   * flex spacer collapsed and forced the title — the only other
+   * shrinkable item — to ellipsis away to just `#1` even when the
+   * actual name was short. Now that chips fold into a popover at
+   * ≤1280px, the row has room at every desktop width, so the
+   * title can render at its natural width up to its `.review-name`
+   * cap below. */
+  flex-shrink: 0;
   min-width: 0;
   font-size: 13px;
 }
@@ -660,6 +684,11 @@ header.app .review-title .review-name {
   align-items: baseline;
   gap: 4px;
   font-size: 12px;
+  /* "Patchset" and "compared to" are two-word labels — keep them on
+   * one line. Without nowrap the flex layout would shrink the picker
+   * past its content's min-content width and break "compared / to"
+   * onto two lines. */
+  white-space: nowrap;
 }
 
 .ps-picker select {
@@ -702,6 +731,24 @@ header.app .review-title .archived-badge {
   height: 16px;
   background: var(--border);
   margin: 0 6px;
+}
+
+/* Inline chips vs popover trigger on row 2. The six chips fit nicely
+ * inline at wide widths; below ~1280px the row gets crowded enough
+ * that the cluster wraps onto a second (and sometimes third) sub-row,
+ * pushes the title to ellipsis, and generally feels ragged. The
+ * popover keeps the row clean at narrower widths and the chips one
+ * click away. The mobile branch (≤640px) renders an entirely
+ * different header so these rules are inert there. */
+@media (min-width: 1281px) {
+  header.app .header-row.review .filter-popover {
+    display: none;
+  }
+}
+@media (max-width: 1280px) {
+  header.app .header-row.review .filter-inline {
+    display: none;
+  }
 }
 
 .chip {

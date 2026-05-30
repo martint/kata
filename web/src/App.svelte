@@ -13,6 +13,7 @@
   import BrowseViewer from './components/BrowseViewer.svelte';
   import Bubble from './components/Bubble.svelte';
   import Chevron from './components/Chevron.svelte';
+  import FilterMenu from './components/FilterMenu.svelte';
   import ReviewList from './components/ReviewList.svelte';
   import ReviewSearch from './components/ReviewSearch.svelte';
   import ReviewViewer, { type ReviewToolbarState } from './components/ReviewViewer.svelte';
@@ -955,7 +956,23 @@
           {toolbar.filter.hiddenCount === 1 ? 'comment' : 'comments'} — show all
         </button>
       {/if}
-      {@render filterChipsUI()}
+      <!-- Two presentations of the same filter cluster, gated by a
+           CSS media query at 1280px. Wide widths keep the inline
+           chip strip (high-glance discoverability); narrower desktop
+           widths fold the six chips into a popover button so the row
+           stops wrapping onto two sub-rows. The popover is only
+           hidden visually — the data binding is identical, so a
+           viewport-width change while filters are active doesn't
+           lose state. -->
+      <span class="filter-inline">{@render filterChipsUI()}</span>
+      {#if toolbar.filter}
+        <span class="filter-popover">
+          <FilterMenu
+            filter={toolbar.filter}
+            activeCount={activeFilterCount(toolbar.filter)}
+          />
+        </span>
+      {/if}
       {@render viewToggleUI()}
     </div>
   {/if}

@@ -221,7 +221,12 @@ Row two appears only on a review and carries review-scoped state:
 - **Filter chips**: status (draft / open / resolved) and severity
   (must-do / suggestion / question), each a separate chip that
   toggles inclusion. A "Filter hides N comments — show all"
-  affordance appears when every chip in a row is off.
+  affordance appears when every chip in a row is off. At wide
+  desktop widths (≥1281px) the six chips render inline; at
+  narrower desktop widths they fold into a single **⚑ Filter**
+  button with an active-count badge that opens a popover holding
+  the same chip cluster — this keeps row 2 from wrapping onto
+  two or three sub-rows on medium-width screens.
 - **View toggle**: a three-segment control with **Both**,
   **Diffs**, **Comments** — the user picks how much chrome they
   want around the code.
