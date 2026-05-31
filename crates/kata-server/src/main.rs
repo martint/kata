@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -110,9 +111,14 @@ struct DemoArgs {
 
 #[derive(Debug, Parser)]
 struct ServeArgs {
-    /// jj working copies to serve. Pass multiple times. Each value is either
-    /// a bare path (the slug is derived from the directory name) or the
-    /// explicit form `name=path`.
+    /// jj working copies to serve. Pass multiple times. Each value is one
+    /// of:
+    ///   - `name=path` — register the repo at `path` under slug `name`.
+    ///   - `path`      — same, but derive the slug from the directory name.
+    ///   - `*=path`    — scan `path`, register every immediate subdir that
+    ///                   looks like a jj repo (slug = subdir name). Bad or
+    ///                   non-repo entries are logged and skipped, not fatal.
+    /// Forms compose freely in one invocation.
     #[arg(long = "workspace", env = "KATA_WORKSPACE", required = true, num_args = 1..)]
     workspaces: Vec<String>,
 
@@ -275,7 +281,26 @@ struct WorkspaceSpec {
     path: PathBuf,
 }
 
-fn parse_workspace(raw: &str) -> Result<WorkspaceSpec, String> {
+/// One parsed `--workspace` value. Either a single repo (`Explicit`)
+/// or a base directory to scan (`Scan`). The startup boot path keeps
+/// the two flavours separate via [`split_workspace_args`] so explicit
+/// entries can register up-front while scan bases drive a per-tick
+/// re-scan loop.
+enum WorkspaceArg {
+    Explicit(WorkspaceSpec),
+    Scan(PathBuf),
+}
+
+fn parse_workspace(raw: &str) -> Result<WorkspaceArg, String> {
+    // Scan form is recognised by its literal `*=` prefix — picked over
+    // `name=path` because `*` is not a valid slug character, so the form
+    // can't collide with an existing explicit entry the operator wrote.
+    if let Some(path) = raw.strip_prefix("*=") {
+        if path.is_empty() {
+            return Err("`*=` needs a path to scan (e.g. `*=/workspaces`)".into());
+        }
+        return Ok(WorkspaceArg::Scan(PathBuf::from(path)));
+    }
     let (name, path) = match raw.split_once('=') {
         Some((n, p)) => (n.trim().to_string(), PathBuf::from(p)),
         None => {
@@ -287,10 +312,10 @@ fn parse_workspace(raw: &str) -> Result<WorkspaceSpec, String> {
     };
     if name.is_empty() || !name.chars().all(is_slug_char) {
         return Err(format!(
-            "workspace name {name:?} is not a valid url slug (use a-z, 0-9, -, _)",
+            "workspace name {name:?} is not a valid url slug (use a-z, 0-9, -, _, .)",
         ));
     }
-    Ok(WorkspaceSpec { name, path })
+    Ok(WorkspaceArg::Explicit(WorkspaceSpec { name, path }))
 }
 
 fn derive_name(path: &Path) -> Option<String> {
@@ -299,8 +324,115 @@ fn derive_name(path: &Path) -> Option<String> {
         .map(str::to_ascii_lowercase)
 }
 
+/// URL-path-safe slug characters. Matches a useful subset of RFC 3986
+/// "unreserved" — operators commonly have repo dirs with `.` in them
+/// (`trino.multiset`, jj-style colocated worktrees) so the dot has to
+/// be allowed even though it has no special meaning to us.
 fn is_slug_char(c: char) -> bool {
-    c.is_ascii_alphanumeric() || c == '-' || c == '_'
+    c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.'
+}
+
+/// Split parsed `--workspace` args into the two flavours the boot
+/// path handles separately: explicit specs to register up-front, and
+/// scan-mode base directories to walk per tick. Returns an error if
+/// two explicit entries claim the same slug (an operator typo we want
+/// to surface at startup rather than silently drop one).
+fn split_workspace_args(
+    args: Vec<WorkspaceArg>,
+) -> Result<(Vec<WorkspaceSpec>, Vec<PathBuf>), String> {
+    let mut explicit: Vec<WorkspaceSpec> = Vec::new();
+    let mut bases: Vec<PathBuf> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for arg in args {
+        match arg {
+            WorkspaceArg::Explicit(spec) => {
+                if !seen.insert(spec.name.clone()) {
+                    return Err(format!("duplicate workspace name {:?}", spec.name));
+                }
+                explicit.push(spec);
+            }
+            WorkspaceArg::Scan(base) => bases.push(base),
+        }
+    }
+    Ok((explicit, bases))
+}
+
+/// List the jj-repo candidates inside `base`. Each immediate
+/// subdirectory that contains a `.jj` directory is a candidate; non-
+/// directory entries, dirs without `.jj`, and dirs whose name can't
+/// be coerced to a valid slug are skipped (with a `debug` / `warn`
+/// trace, depending on how surprising the skip is).
+fn scan_dir(base: &Path) -> Result<Vec<WorkspaceSpec>, String> {
+    let entries = std::fs::read_dir(base).map_err(|e| {
+        format!("cannot scan workspace base {}: {e}", base.display())
+    })?;
+    let mut out: Vec<WorkspaceSpec> = Vec::new();
+    for entry in entries {
+        let entry =
+            entry.map_err(|e| format!("scan {}: {e}", base.display()))?;
+        let path = entry.path();
+        // file_type avoids an extra stat compared to is_dir().
+        let Ok(ft) = entry.file_type() else { continue };
+        if !ft.is_dir() {
+            continue;
+        }
+        if !path.join(".jj").is_dir() {
+            tracing::debug!(path = %path.display(), "scan: skip; no .jj");
+            continue;
+        }
+        let Some(name) = derive_name(&path) else {
+            // Re-evaluated every scan tick — debug, not warn — so a
+            // single weird dir name doesn't spam the log forever.
+            tracing::debug!(
+                path = %path.display(),
+                "scan: skip; can't derive slug from dir name",
+            );
+            continue;
+        };
+        if name.is_empty() || !name.chars().all(is_slug_char) {
+            tracing::debug!(
+                path = %path.display(),
+                slug = %name,
+                "scan: skip; dir name isn't a valid slug",
+            );
+            continue;
+        }
+        out.push(WorkspaceSpec { name, path });
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(out)
+}
+
+/// Canonicalise + register one repo with the builder + ensure the
+/// storage manifest row exists. Factored out so the registration loop
+/// can call it uniformly for explicit and scanned entries; the loop
+/// itself decides whether an error here is fatal (explicit) or
+/// skippable (scan).
+async fn register_repo(
+    storage: &Arc<dyn Storage>,
+    builder: &mut kata_service::ReviewServiceBuilder,
+    name: &str,
+    path: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let canonical = jj_repo_canonical_path(path)?;
+    let repo_id = compute_repo_id(&canonical);
+    let canonical_str = canonical.to_string_lossy().into_owned();
+    tracing::info!(
+        repo = %name,
+        repo_id = %repo_id,
+        path = %canonical_str,
+        "registering repo",
+    );
+    storage
+        .ensure_repo(&RepoManifest {
+            schema_version: SCHEMA_VERSION,
+            repo_id: repo_id.clone(),
+            canonical_path: canonical_str.clone(),
+        })
+        .await?;
+    let jj = Arc::new(JjLib::new(path.to_path_buf())?);
+    builder.add_repo(name.to_owned(), repo_id, canonical_str, jj)?;
+    Ok(())
 }
 
 /// Seed the demo workspace + database under `data`, then start the
@@ -632,11 +764,14 @@ async fn serve(
     db_path: PathBuf,
     args: ServeArgs,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let workspaces = args
-        .workspaces
-        .iter()
-        .map(|raw| parse_workspace(raw))
-        .collect::<Result<Vec<_>, _>>()?;
+    let (explicit_workspaces, scan_bases) = {
+        let parsed = args
+            .workspaces
+            .iter()
+            .map(|raw| parse_workspace(raw))
+            .collect::<Result<Vec<_>, _>>()?;
+        split_workspace_args(parsed)?
+    };
 
     // Build the auth config, then run the bind/mode safety checks
     // before any I/O. We want a misconfigured deployment to die at
@@ -752,25 +887,42 @@ async fn serve(
     // agents touching the same review at once).
     let storage: Arc<dyn Storage> = Arc::new(SqliteStorage::open(&db_path).await?);
     let mut builder = ReviewService::builder(storage.clone());
-    let repo_count = workspaces.len();
 
-    for WorkspaceSpec { name, path } in workspaces {
-        let canonical = jj_repo_canonical_path(&path)?;
-        let repo_id = compute_repo_id(&canonical);
-        let canonical_str = canonical.to_string_lossy().into_owned();
-        tracing::info!(repo = %name, repo_id = %repo_id, path = %canonical_str, "registering repo");
-        storage
-            .ensure_repo(&RepoManifest {
-                schema_version: SCHEMA_VERSION,
-                repo_id: repo_id.clone(),
-                canonical_path: canonical_str.clone(),
-            })
-            .await?;
-        let jj = Arc::new(JjLib::new(path)?);
-        builder.add_repo(name, repo_id, canonical_str, jj)?;
+    // Explicit entries are operator-typed and must succeed — silently
+    // skipping them would leave the operator wondering "I configured
+    // repo X but it doesn't show up." Scan bases (handled next) are
+    // best-effort per-entry instead.
+    for WorkspaceSpec { name, path } in &explicit_workspaces {
+        register_repo(&storage, &mut builder, name, path).await?;
+    }
+
+    // Walk each scan base and register what's there now. An operator
+    // dropping a junk folder under a scan base shouldn't kill the
+    // server, so per-entry failures are logged and skipped.
+    for base in &scan_bases {
+        let specs = match scan_dir(base) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(base = %base.display(), error = %e, "scan: failed");
+                continue;
+            }
+        };
+        for spec in specs {
+            if let Err(e) =
+                register_repo(&storage, &mut builder, &spec.name, &spec.path).await
+            {
+                tracing::warn!(
+                    repo = %spec.name,
+                    path = %spec.path.display(),
+                    error = %e,
+                    "scan: skipping repo that won't register",
+                );
+            }
+        }
     }
 
     let service = Arc::new(builder.build());
+    let repo_count = service.list_repos().len();
 
     if args.branch_poll_secs > 0 {
         let interval = std::time::Duration::from_secs(args.branch_poll_secs);
@@ -1037,4 +1189,132 @@ async fn upstream_guard(
             .into_response();
     }
     next.run(req).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    /// Helper: create `dir/<name>/.jj` so `scan_dir` treats it as a jj
+    /// repo (without standing up a real workspace, which is heavy).
+    fn make_fake_repo(base: &Path, name: &str) {
+        let path = base.join(name).join(".jj");
+        fs::create_dir_all(&path).expect("mkdir .jj");
+    }
+
+    #[test]
+    fn parse_workspace_explicit_named() {
+        let arg = parse_workspace("foo=/some/path").unwrap();
+        match arg {
+            WorkspaceArg::Explicit(s) => {
+                assert_eq!(s.name, "foo");
+                assert_eq!(s.path, PathBuf::from("/some/path"));
+            }
+            _ => panic!("expected Explicit"),
+        }
+    }
+
+    #[test]
+    fn parse_workspace_bare_path_derives_slug() {
+        let arg = parse_workspace("/repos/MyRepo").unwrap();
+        match arg {
+            WorkspaceArg::Explicit(s) => {
+                assert_eq!(s.name, "myrepo"); // lowercased
+                assert_eq!(s.path, PathBuf::from("/repos/MyRepo"));
+            }
+            _ => panic!("expected Explicit"),
+        }
+    }
+
+    #[test]
+    fn parse_workspace_scan_form() {
+        let arg = parse_workspace("*=/workspaces").unwrap();
+        assert!(matches!(arg, WorkspaceArg::Scan(p) if p == PathBuf::from("/workspaces")));
+    }
+
+    #[test]
+    fn parse_workspace_empty_scan_path_errors() {
+        assert!(parse_workspace("*=").is_err());
+    }
+
+    #[test]
+    fn parse_workspace_invalid_slug_errors() {
+        // `=` separator with an empty name on the left.
+        assert!(parse_workspace("=/path").is_err());
+        // Slash inside a slug.
+        assert!(parse_workspace("a/b=/path").is_err());
+    }
+
+    #[test]
+    fn scan_dir_picks_up_jj_repos_only() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+        make_fake_repo(base, "alpha");
+        make_fake_repo(base, "beta");
+        // A subdir without .jj — should be ignored.
+        fs::create_dir_all(base.join("not-a-repo")).unwrap();
+        // A loose file — should be ignored.
+        fs::write(base.join("readme.txt"), "hi").unwrap();
+
+        let specs = scan_dir(base).unwrap();
+        let names: Vec<_> = specs.iter().map(|s| s.name.clone()).collect();
+        assert_eq!(names, vec!["alpha", "beta"]); // sorted, no junk
+    }
+
+    #[test]
+    fn scan_dir_allows_dotted_names_skips_truly_invalid_ones() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+        make_fake_repo(base, "ok");
+        // Dot is allowed — common for jj-style worktree siblings like
+        // `trino.multiset` or `trino.pivot`.
+        make_fake_repo(base, "trino.multiset");
+        // Space is not URL-path-safe; should be skipped.
+        make_fake_repo(base, "has space");
+        let specs = scan_dir(base).unwrap();
+        let names: Vec<_> = specs.iter().map(|s| s.name.clone()).collect();
+        assert_eq!(names, vec!["ok", "trino.multiset"]);
+    }
+
+    #[test]
+    fn scan_dir_errors_on_missing_base() {
+        let res = scan_dir(Path::new("/nonexistent/path/for/scan/test"));
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn split_workspace_args_partitions_explicit_and_scan() {
+        let args = vec![
+            WorkspaceArg::Explicit(WorkspaceSpec {
+                name: "a".into(),
+                path: PathBuf::from("/a"),
+            }),
+            WorkspaceArg::Scan(PathBuf::from("/workspaces")),
+            WorkspaceArg::Explicit(WorkspaceSpec {
+                name: "b".into(),
+                path: PathBuf::from("/b"),
+            }),
+        ];
+        let (explicit, bases) = split_workspace_args(args).unwrap();
+        let names: Vec<_> = explicit.iter().map(|s| s.name.clone()).collect();
+        assert_eq!(names, vec!["a", "b"]);
+        assert_eq!(bases, vec![PathBuf::from("/workspaces")]);
+    }
+
+    #[test]
+    fn split_workspace_args_rejects_duplicate_explicit_names() {
+        let args = vec![
+            WorkspaceArg::Explicit(WorkspaceSpec {
+                name: "dup".into(),
+                path: PathBuf::from("/a"),
+            }),
+            WorkspaceArg::Explicit(WorkspaceSpec {
+                name: "dup".into(),
+                path: PathBuf::from("/b"),
+            }),
+        ];
+        assert!(split_workspace_args(args).is_err());
+    }
 }

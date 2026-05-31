@@ -983,6 +983,32 @@ header carries a workspace selector when more than one workspace
 is configured, and the home page lists reviews per active
 workspace.
 
+Workspaces are registered via the repeatable `--workspace` flag.
+Three forms compose freely in one invocation:
+
+- `--workspace name=path` — explicit slug + path. The slug is
+  what the URL `/r/<name>/…` carries; the path is the on-disk jj
+  working copy.
+- `--workspace path` — explicit path, slug derived from the
+  directory's name (lowercased, only `a-z 0-9 - _`).
+- `--workspace '*=path'` — *scan mode*: treat `path` as a base
+  directory and register every immediate subdirectory that looks
+  like a jj repo (heuristic: contains a `.jj/`). The slug is
+  derived from each subdir's name.
+
+Scan mode is the registration shape for "I want to grow my repo
+fleet without touching the server config." Drop a new repo into
+the scanned base directory and (after restart) it's served — no
+flag edits required.
+
+Explicit entries take precedence over scanned ones with the same
+slug — useful for renaming or pinning the path of one specific
+repo while letting the rest auto-register. Scan-derived entries
+that fail to register (junk dirs, jj-repo opens that error,
+slug collisions) are logged and skipped; the server stays up.
+Explicit entries that fail are fatal at startup so an operator's
+typo can't silently drop a repo.
+
 There is no cross-workspace search or list. The product treats
 workspaces as independent, partly because cross-workspace IDs
 collide and partly because cross-workspace reading is an unusual
