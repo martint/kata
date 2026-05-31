@@ -283,23 +283,43 @@ pub enum DiffCommitsResult {
 
 /// Internal per-repo entry: friendly name + canonical path + a jj backend
 /// rooted at that workspace.
+#[derive(Clone)]
 struct RepoEntry {
     summary: RepoSummary,
     jj: Arc<dyn JjBackend>,
 }
 
+/// Immutable snapshot of the registered workspaces. The whole struct is
+/// what `ArcSwap` swaps atomically: readers `load()` to get a snapshot
+/// they can index without locking; writers clone the current snapshot,
+/// mutate, and `store()` the result.
+#[derive(Clone, Default)]
+struct Registry {
+    /// Per-repo state, looked up by canonical `RepoId`.
+    repos: HashMap<RepoId, RepoEntry>,
+    /// URL slug → canonical repo id. Preserves registration order so
+    /// `list_repos()` reads deterministically.
+    by_name: Vec<(String, RepoId)>,
+}
+
 #[derive(Clone)]
 pub struct ReviewService {
     storage: Arc<dyn Storage>,
-    /// Per-repo state, looked up by canonical `RepoId`.
-    repos: Arc<HashMap<RepoId, RepoEntry>>,
-    /// URL slug → canonical repo id. Preserves the order repos were
-    /// registered in for `list_repos()`.
-    by_name: Arc<Vec<(String, RepoId)>>,
+    /// Lock-free read path: every lookup `load()`s the current snapshot
+    /// and indexes into it. Writers go through `add_repo` / `remove_repo`
+    /// which take the `registry_write` mutex before `store()`-ing a new
+    /// snapshot.
+    registry: Arc<arc_swap::ArcSwap<Registry>>,
+    /// Serialises registry mutators so the "read current, clone, modify,
+    /// publish" sequence in add/remove can't race with itself. Reads
+    /// don't touch this lock at all.
+    registry_write: Arc<tokio::sync::Mutex<()>>,
     events: EventBus,
 }
 
-/// Builder used at startup to register repos before sealing the service.
+/// Builder used at startup to register the initial set of repos. After
+/// `build()` returns, further additions / removals go through the
+/// service's `add_repo` / `remove_repo` methods.
 pub struct ReviewServiceBuilder {
     storage: Arc<dyn Storage>,
     repos: HashMap<RepoId, RepoEntry>,
@@ -324,34 +344,53 @@ impl ReviewServiceBuilder {
         canonical_path: String,
         jj: Arc<dyn JjBackend>,
     ) -> ServiceResult<()> {
-        if self.by_name.iter().any(|(n, _)| n == &name) {
-            return Err(ServiceError::BadRequest(format!(
-                "duplicate repo name {name:?}",
-            )));
-        }
-        if self.repos.contains_key(&repo_id) {
-            return Err(ServiceError::BadRequest(format!(
-                "duplicate repo (canonical path {canonical_path:?} already registered)",
-            )));
-        }
-        let summary = RepoSummary {
-            name: name.clone(),
-            repo_id: repo_id.clone(),
-            canonical_path,
-        };
-        self.repos.insert(repo_id.clone(), RepoEntry { summary, jj });
-        self.by_name.push((name, repo_id));
+        let entry = build_entry(&self.by_name, &self.repos, name, repo_id, canonical_path, jj)?;
+        let (slug, id, entry) = entry;
+        self.repos.insert(id.clone(), entry);
+        self.by_name.push((slug, id));
         Ok(())
     }
 
     pub fn build(self) -> ReviewService {
         ReviewService {
             storage: self.storage,
-            repos: Arc::new(self.repos),
-            by_name: Arc::new(self.by_name),
+            registry: Arc::new(arc_swap::ArcSwap::from_pointee(Registry {
+                repos: self.repos,
+                by_name: self.by_name,
+            })),
+            registry_write: Arc::new(tokio::sync::Mutex::new(())),
             events: events::new_bus(),
         }
     }
+}
+
+/// Shared validation for builder + dynamic adds. Returns `(slug,
+/// repo_id, entry)` ready to insert, or a descriptive error if either
+/// the slug or the canonical-path-derived repo_id is already taken.
+fn build_entry(
+    by_name: &[(String, RepoId)],
+    repos: &HashMap<RepoId, RepoEntry>,
+    name: String,
+    repo_id: RepoId,
+    canonical_path: String,
+    jj: Arc<dyn JjBackend>,
+) -> ServiceResult<(String, RepoId, RepoEntry)> {
+    if by_name.iter().any(|(n, _)| n == &name) {
+        return Err(ServiceError::BadRequest(format!(
+            "duplicate repo name {name:?}",
+        )));
+    }
+    if repos.contains_key(&repo_id) {
+        return Err(ServiceError::BadRequest(format!(
+            "duplicate repo (canonical path {canonical_path:?} already registered)",
+        )));
+    }
+    let summary = RepoSummary {
+        name: name.clone(),
+        repo_id: repo_id.clone(),
+        canonical_path,
+    };
+    Ok((name, repo_id, RepoEntry { summary, jj }))
 }
 
 impl ReviewService {
@@ -405,13 +444,17 @@ impl ReviewService {
         &self,
         state: &mut HashMap<(RepoId, ReviewId), (CommitId, CommitId)>,
     ) {
-        let repos: Vec<(String, RepoId)> = self.by_name.as_ref().clone();
+        // Snapshot once per tick — a workspace registered mid-tick will
+        // be picked up on the next one; one we're partway through that
+        // gets removed stays in this tick's iteration (the jj_for call
+        // below will Err and we'll continue).
+        let repos: Vec<(String, RepoId)> = self.registry.load().by_name.clone();
         for (repo_name, repo_id) in repos {
             let Ok(summaries) = self.storage.list_reviews(&repo_id).await else {
                 continue;
             };
             let jj = match self.jj_for(&repo_id) {
-                Ok(j) => j.clone(),
+                Ok(j) => j,
                 Err(_) => continue,
             };
             for summary in summaries {
@@ -441,15 +484,17 @@ impl ReviewService {
 
     /// All registered repos, in registration order.
     pub fn list_repos(&self) -> Vec<RepoSummary> {
-        self.by_name
+        let snap = self.registry.load();
+        snap.by_name
             .iter()
-            .filter_map(|(_, id)| self.repos.get(id).map(|e| e.summary.clone()))
+            .filter_map(|(_, id)| snap.repos.get(id).map(|e| e.summary.clone()))
             .collect()
     }
 
     /// Resolve a URL-slug to its canonical [`RepoId`].
     pub fn resolve_repo(&self, name: &str) -> ServiceResult<RepoId> {
-        self.by_name
+        let snap = self.registry.load();
+        snap.by_name
             .iter()
             .find(|(n, _)| n == name)
             .map(|(_, id)| id.clone())
@@ -458,17 +503,75 @@ impl ReviewService {
 
     /// Friendly name of a registered repo (inverse of `resolve_repo`).
     pub fn repo_name(&self, repo: &RepoId) -> Option<String> {
-        self.repos.get(repo).map(|e| e.summary.name.clone())
+        self.registry
+            .load()
+            .repos
+            .get(repo)
+            .map(|e| e.summary.name.clone())
     }
 
-    fn entry(&self, repo: &RepoId) -> ServiceResult<&RepoEntry> {
-        self.repos
+    /// Snapshot lookup of a repo's full entry. Returns an owned clone
+    /// (both fields are cheap to clone: `summary` is a small struct,
+    /// `jj` is already an `Arc`) so callers can hold the result across
+    /// `.await` points without aliasing the live registry snapshot.
+    fn entry(&self, repo: &RepoId) -> ServiceResult<RepoEntry> {
+        self.registry
+            .load()
+            .repos
             .get(repo)
+            .cloned()
             .ok_or_else(|| ServiceError::NotFound(format!("repo {repo}")))
     }
 
-    fn jj_for(&self, repo: &RepoId) -> ServiceResult<&Arc<dyn JjBackend>> {
-        Ok(&self.entry(repo)?.jj)
+    fn jj_for(&self, repo: &RepoId) -> ServiceResult<Arc<dyn JjBackend>> {
+        Ok(self.entry(repo)?.jj)
+    }
+
+    /// Register a repo at runtime. Same validation as the builder:
+    /// duplicate slug or duplicate canonical-path-derived repo_id is
+    /// rejected. On success the new registry snapshot is published
+    /// atomically — concurrent readers see either the pre- or post-add
+    /// state but never a half-modified registry.
+    pub async fn add_repo(
+        &self,
+        name: String,
+        repo_id: RepoId,
+        canonical_path: String,
+        jj: Arc<dyn JjBackend>,
+    ) -> ServiceResult<()> {
+        let _w = self.registry_write.lock().await;
+        let cur = self.registry.load_full();
+        let (slug, id, entry) = build_entry(
+            &cur.by_name,
+            &cur.repos,
+            name,
+            repo_id,
+            canonical_path,
+            jj,
+        )?;
+        let mut new = (*cur).clone();
+        new.repos.insert(id.clone(), entry);
+        new.by_name.push((slug, id));
+        self.registry.store(Arc::new(new));
+        Ok(())
+    }
+
+    /// Unregister `repo`. The repo's manifests + comments stay in
+    /// storage so re-registering the same canonical path resumes
+    /// where it left off — only the in-memory registry forgets it.
+    /// Returns `Ok(false)` if the repo wasn't registered (idempotent
+    /// for a watcher that observes "removed" events twice).
+    pub async fn remove_repo(&self, repo: &RepoId) -> ServiceResult<bool> {
+        let _w = self.registry_write.lock().await;
+        let cur = self.registry.load_full();
+        if !cur.repos.contains_key(repo) {
+            return Ok(false);
+        }
+        let mut new = (*cur).clone();
+        new.repos.remove(repo);
+        new.by_name.retain(|(_, id)| id != repo);
+        self.registry.store(Arc::new(new));
+        Ok(true)
     }
 
     // ---- repo / bookmarks ----------------------------------------------
@@ -649,7 +752,7 @@ impl ReviewService {
         // the revset references a change ID that's gone divergent); we
         // fall back to "not stale" rather than failing the whole open.
         let (diff_res, commits_res, live_res, current_op_res) = tokio::join!(
-            build_diff_metadata(&**jj, diff_base, &selected.tip_commit),
+            build_diff_metadata(&*jj, diff_base, &selected.tip_commit),
             jj.list_commits(&commits_revset),
             jj.resolve_range(&manifest.revset),
             jj.current_op_id(),
@@ -657,7 +760,7 @@ impl ReviewService {
         let diff = diff_res?;
         let commits = commits_res?;
         let revset_error = match &live_res {
-            Err(e) => Some(build_revset_error(&**jj, e).await),
+            Err(e) => Some(build_revset_error(&*jj, e).await),
             Ok(_) => None,
         };
         let live_range = live_res.ok();
@@ -747,7 +850,7 @@ impl ReviewService {
                 &selected,
             ));
         }
-        cache.prefetch(&**jj, prefetch_keys).await?;
+        cache.prefetch(&*jj, prefetch_keys).await?;
         let mut comments = Vec::with_capacity(published.len());
         for c in published {
             if c.patchset > selected_n {
@@ -869,7 +972,7 @@ impl ReviewService {
                     Side::Base => &viewing.base_commit,
                 };
                 match resolve_anchor(
-                    &**jj,
+                    &*jj,
                     cache,
                     path,
                     &comment.anchor_commit_id,
@@ -917,7 +1020,7 @@ impl ReviewService {
                     Side::Base => &viewing.base_commit,
                 };
                 match resolve_anchor(
-                    &**jj,
+                    &*jj,
                     cache,
                     path,
                     &annotation.anchor_commit_id,
@@ -993,7 +1096,7 @@ impl ReviewService {
             .find(|f| f.path == path)
             .ok_or_else(|| ServiceError::NotFound(format!("file {path:?} in review")))?;
         let updated =
-            compute_one_file_hunks(&**jj, base, &selected.tip_commit, target).await?;
+            compute_one_file_hunks(&*jj, base, &selected.tip_commit, target).await?;
         Ok(updated)
     }
 
@@ -1038,7 +1141,7 @@ impl ReviewService {
             .resolve_endpoint(&format!("{tip_commit}-"))
             .await?
             .ok_or_else(|| ServiceError::NotFound(format!("parent of change {change}")))?;
-        let diff = build_diff(&**jj, &parent.commit_id, &tip_commit).await?;
+        let diff = build_diff(&*jj, &parent.commit_id, &tip_commit).await?;
         Ok(CommitDiffView {
             base_change: parent.change_id,
             base_commit: parent.commit_id,
@@ -1097,7 +1200,7 @@ impl ReviewService {
         let (from_commits_res, to_commits_res, cumulative_res) = tokio::join!(
             jj.list_commits(&from_revset),
             jj.list_commits(&to_revset),
-            build_diff_metadata(&**jj, &from_ps.tip_commit, &to_ps.tip_commit),
+            build_diff_metadata(&*jj, &from_ps.tip_commit, &to_ps.tip_commit),
         );
         let from_commits = from_commits_res?;
         let to_commits = to_commits_res?;
@@ -1110,7 +1213,7 @@ impl ReviewService {
         // (Same / Changed) skip this — they already carry both
         // endpoints. Failures leave parent_commit=None; the row falls
         // back to inert rather than the whole response erroring.
-        resolve_parents_for_one_sided(&**jj, &mut pairs).await;
+        resolve_parents_for_one_sided(&*jj, &mut pairs).await;
         // Then compute per-pair diff counts in parallel so the side
         // panel can show "3 files +7 −15" inline. Sequential after
         // parent resolution because added/removed pairs use the
@@ -1119,7 +1222,7 @@ impl ReviewService {
             .parent()
             .and_then(|p| p.parent())
             .map(|p| p.to_path_buf());
-        compute_pair_diff_counts(&**jj, workspace_path.as_deref(), &mut pairs).await;
+        compute_pair_diff_counts(&*jj, workspace_path.as_deref(), &mut pairs).await;
 
         let compare_base_mismatch = from_ps.base_commit != to_ps.base_commit;
         Ok(PatchsetCompareView {
@@ -1212,7 +1315,7 @@ impl ReviewService {
         let jj = self.jj_for(repo)?;
         match path {
             None => {
-                let diff = build_diff_metadata(&**jj, from, to).await?;
+                let diff = build_diff_metadata(&*jj, from, to).await?;
                 Ok(DiffCommitsResult::Diff(diff))
             }
             Some(p) => {
@@ -1225,7 +1328,7 @@ impl ReviewService {
                             "file {p:?} in diff {from}..{to}"
                         ))
                     })?;
-                let updated = compute_one_file_hunks(&**jj, from, to, target).await?;
+                let updated = compute_one_file_hunks(&*jj, from, to, target).await?;
                 Ok(DiffCommitsResult::File(updated))
             }
         }
@@ -1562,7 +1665,7 @@ impl ReviewService {
             .ok_or_else(|| {
                 ServiceError::NotFound(format!("parent of commit {base_anchor}"))
             })?;
-        let diff = build_diff(&**jj, &parent.commit_id, &tip.commit_id).await?;
+        let diff = build_diff(&*jj, &parent.commit_id, &tip.commit_id).await?;
         Ok(CommitDiffView {
             base_change: parent.change_id,
             base_commit: parent.commit_id,
@@ -2739,5 +2842,179 @@ mod annotation_creator_only_tests {
             err,
             kata_storage::Error::NotFound { .. },
         ));
+    }
+
+    // ---- registry mutability tests ----------------------------------
+    //
+    // The dynamic add_repo / remove_repo paths only touch the in-memory
+    // registry — no JjBackend method is invoked by list_repos /
+    // resolve_repo / repo_name. A panicking stub backend is enough to
+    // assert the registry transitions without dragging libjj into the
+    // test surface.
+
+    struct StubBackend;
+    #[async_trait::async_trait]
+    impl kata_jj::JjBackend for StubBackend {
+        fn repo_path(&self) -> &std::path::Path {
+            std::path::Path::new("/stub")
+        }
+        async fn list_bookmarks(&self) -> kata_jj::Result<Vec<kata_core::Bookmark>> {
+            unimplemented!("registry-tests don't drive the jj backend")
+        }
+        async fn change_to_commit(
+            &self,
+            _change: &kata_core::ChangeId,
+        ) -> kata_jj::Result<Option<kata_core::CommitId>> {
+            unimplemented!()
+        }
+        async fn resolve_endpoint(
+            &self,
+            _expr: &str,
+        ) -> kata_jj::Result<Option<kata_jj::Endpoint>> {
+            unimplemented!()
+        }
+        async fn read_file(
+            &self,
+            _commit: &kata_core::CommitId,
+            _path: &str,
+        ) -> kata_jj::Result<Option<Vec<u8>>> {
+            unimplemented!()
+        }
+        async fn changed_files(
+            &self,
+            _base: &kata_core::CommitId,
+            _tip: &kata_core::CommitId,
+        ) -> kata_jj::Result<Vec<kata_core::FileChange>> {
+            unimplemented!()
+        }
+        async fn resolve_range(
+            &self,
+            _revset: &kata_core::RevSet,
+        ) -> kata_jj::Result<kata_jj::ReviewRange> {
+            unimplemented!()
+        }
+        async fn list_commits(
+            &self,
+            _revset: &kata_core::RevSet,
+        ) -> kata_jj::Result<Vec<kata_core::CommitInfo>> {
+            unimplemented!()
+        }
+        async fn is_ancestor(
+            &self,
+            _ancestor: &kata_core::CommitId,
+            _descendant: &kata_core::CommitId,
+        ) -> kata_jj::Result<bool> {
+            unimplemented!()
+        }
+        async fn current_op_id(&self) -> kata_jj::Result<kata_core::OpId> {
+            unimplemented!()
+        }
+        async fn browse_log(
+            &self,
+            _revset: &kata_core::RevSet,
+            _max_rows: usize,
+        ) -> kata_jj::Result<kata_core::LogPage> {
+            unimplemented!()
+        }
+        async fn working_copy_commit_id(
+            &self,
+        ) -> kata_jj::Result<Option<kata_core::CommitId>> {
+            unimplemented!()
+        }
+    }
+
+    fn stub_jj() -> Arc<dyn kata_jj::JjBackend> {
+        Arc::new(StubBackend)
+    }
+
+    #[tokio::test]
+    async fn add_repo_makes_workspace_visible() {
+        let storage = Arc::new(SqliteStorage::open_in_memory().await.unwrap());
+        let service = service_for(storage).await;
+        let repo_id = RepoId::new("repo-a");
+        service
+            .add_repo("alpha".into(), repo_id.clone(), "/alpha".into(), stub_jj())
+            .await
+            .expect("add_repo should succeed");
+        let listed: Vec<_> =
+            service.list_repos().into_iter().map(|s| s.name).collect();
+        assert_eq!(listed, vec!["alpha"]);
+        assert_eq!(service.resolve_repo("alpha").unwrap(), repo_id);
+        assert_eq!(service.repo_name(&repo_id).as_deref(), Some("alpha"));
+    }
+
+    #[tokio::test]
+    async fn add_repo_rejects_duplicate_slug() {
+        let storage = Arc::new(SqliteStorage::open_in_memory().await.unwrap());
+        let service = service_for(storage).await;
+        service
+            .add_repo("dup".into(), RepoId::new("r1"), "/a".into(), stub_jj())
+            .await
+            .unwrap();
+        let err = service
+            .add_repo("dup".into(), RepoId::new("r2"), "/b".into(), stub_jj())
+            .await
+            .expect_err("duplicate slug must be rejected");
+        assert!(matches!(err, ServiceError::BadRequest(_)));
+    }
+
+    #[tokio::test]
+    async fn add_repo_rejects_duplicate_canonical_path() {
+        let storage = Arc::new(SqliteStorage::open_in_memory().await.unwrap());
+        let service = service_for(storage).await;
+        let id = RepoId::new("same");
+        service
+            .add_repo("first".into(), id.clone(), "/path".into(), stub_jj())
+            .await
+            .unwrap();
+        let err = service
+            .add_repo("second".into(), id, "/path".into(), stub_jj())
+            .await
+            .expect_err("duplicate canonical path must be rejected");
+        assert!(matches!(err, ServiceError::BadRequest(_)));
+    }
+
+    #[tokio::test]
+    async fn remove_repo_unregisters_and_is_idempotent() {
+        let storage = Arc::new(SqliteStorage::open_in_memory().await.unwrap());
+        let service = service_for(storage).await;
+        let id = RepoId::new("r1");
+        service
+            .add_repo("solo".into(), id.clone(), "/p".into(), stub_jj())
+            .await
+            .unwrap();
+        assert!(service.remove_repo(&id).await.unwrap(), "first remove should report removed");
+        assert!(service.list_repos().is_empty());
+        assert!(
+            !service.remove_repo(&id).await.unwrap(),
+            "second remove should be a no-op (idempotent)",
+        );
+        // Re-adding the same id is allowed — the slot is genuinely free.
+        service
+            .add_repo("solo".into(), id, "/p".into(), stub_jj())
+            .await
+            .expect("re-add after remove should succeed");
+    }
+
+    #[tokio::test]
+    async fn list_repos_reflects_registration_order() {
+        let storage = Arc::new(SqliteStorage::open_in_memory().await.unwrap());
+        let service = service_for(storage).await;
+        for (slug, id) in
+            [("b", "id-b"), ("a", "id-a"), ("c", "id-c")]
+        {
+            service
+                .add_repo(
+                    slug.into(),
+                    RepoId::new(id),
+                    format!("/p/{slug}"),
+                    stub_jj(),
+                )
+                .await
+                .unwrap();
+        }
+        let listed: Vec<_> =
+            service.list_repos().into_iter().map(|s| s.name).collect();
+        assert_eq!(listed, vec!["b", "a", "c"]); // insertion order, not sorted
     }
 }
