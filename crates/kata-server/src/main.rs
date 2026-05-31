@@ -267,6 +267,13 @@ struct ServeArgs {
     #[arg(long, env = "KATA_BRANCH_POLL_SECS", default_value = "10")]
     branch_poll_secs: u64,
 
+    /// How often (in seconds) to re-scan each `--workspace '*=PATH'`
+    /// base for added / removed repos. Set to 0 to disable live
+    /// re-scan (the initial scan still runs at startup either way).
+    /// Has no effect when no scan-mode workspaces are configured.
+    #[arg(long, env = "KATA_WORKSPACE_SCAN_INTERVAL", default_value = "10")]
+    workspace_scan_interval: u64,
+
     /// Origin to allow on `/mcp` for browser-based MCP clients (e.g. the
     /// MCP inspector). Pass multiple times to allow several origins.
     /// Without this flag, `/mcp` returns no CORS headers and browsers
@@ -403,26 +410,20 @@ fn scan_dir(base: &Path) -> Result<Vec<WorkspaceSpec>, String> {
     Ok(out)
 }
 
-/// Canonicalise + register one repo with the builder + ensure the
-/// storage manifest row exists. Factored out so the registration loop
-/// can call it uniformly for explicit and scanned entries; the loop
-/// itself decides whether an error here is fatal (explicit) or
-/// skippable (scan).
-async fn register_repo(
+/// Prepare a repo for registration: canonicalise its path, derive the
+/// repo_id, ensure the storage manifest row exists, and open the
+/// jj-lib backend. Returns the pieces both the startup builder path
+/// (`register_repo`) and the dynamic scanner path
+/// (`register_repo_dynamic`) need to call their respective
+/// `add_repo`. Shared so the two paths can't drift in how they
+/// validate / ensure / open a repo.
+async fn open_repo_for_registration(
     storage: &Arc<dyn Storage>,
-    builder: &mut kata_service::ReviewServiceBuilder,
-    name: &str,
     path: &Path,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(kata_core::RepoId, String, Arc<dyn kata_jj::JjBackend>), Box<dyn std::error::Error>> {
     let canonical = jj_repo_canonical_path(path)?;
     let repo_id = compute_repo_id(&canonical);
     let canonical_str = canonical.to_string_lossy().into_owned();
-    tracing::info!(
-        repo = %name,
-        repo_id = %repo_id,
-        path = %canonical_str,
-        "registering repo",
-    );
     storage
         .ensure_repo(&RepoManifest {
             schema_version: SCHEMA_VERSION,
@@ -430,9 +431,187 @@ async fn register_repo(
             canonical_path: canonical_str.clone(),
         })
         .await?;
-    let jj = Arc::new(JjLib::new(path.to_path_buf())?);
+    let jj: Arc<dyn kata_jj::JjBackend> = Arc::new(JjLib::new(path.to_path_buf())?);
+    Ok((repo_id, canonical_str, jj))
+}
+
+/// Register one repo on the startup builder. Used for the explicit
+/// `--workspace name=path` entries before the service is built.
+async fn register_repo(
+    storage: &Arc<dyn Storage>,
+    builder: &mut kata_service::ReviewServiceBuilder,
+    name: &str,
+    path: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (repo_id, canonical_str, jj) = open_repo_for_registration(storage, path).await?;
+    tracing::info!(
+        repo = %name,
+        repo_id = %repo_id,
+        path = %canonical_str,
+        "registering repo",
+    );
     builder.add_repo(name.to_owned(), repo_id, canonical_str, jj)?;
     Ok(())
+}
+
+/// Register one repo against the running service. Used by the
+/// workspace scanner when a new candidate appears under a `*=PATH`
+/// base. Returns the `RepoId` so the caller can remember which
+/// scan-derived slug maps to which id, in case it later needs to
+/// remove it (the dir went away).
+async fn register_repo_dynamic(
+    storage: &Arc<dyn Storage>,
+    service: &Arc<ReviewService>,
+    name: &str,
+    path: &Path,
+) -> Result<kata_core::RepoId, Box<dyn std::error::Error>> {
+    let (repo_id, canonical_str, jj) = open_repo_for_registration(storage, path).await?;
+    tracing::info!(
+        repo = %name,
+        repo_id = %repo_id,
+        path = %canonical_str,
+        "scan: registering repo",
+    );
+    service
+        .add_repo(name.to_owned(), repo_id.clone(), canonical_str, jj)
+        .await?;
+    Ok(repo_id)
+}
+
+/// One re-scan pass over `base`: scan_dir → diff against `tracked` →
+/// add new entries via `register_repo_dynamic`, remove gone entries
+/// via `service.remove_repo`. Failures (scan_dir errs, jj refuses to
+/// open a candidate, storage hiccup) are logged and skipped — the
+/// next tick will retry. `tracked` mutates in place to reflect the
+/// scanner's own view of which slugs it owns under this base; explicit
+/// workspaces never appear here, so they can't be touched by mistake.
+async fn workspace_scan_tick(
+    storage: &Arc<dyn Storage>,
+    service: &Arc<ReviewService>,
+    base: &Path,
+    tracked: &mut std::collections::HashMap<String, kata_core::RepoId>,
+) {
+    let specs = match scan_dir(base) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(base = %base.display(), error = %e, "scan: failed");
+            return;
+        }
+    };
+    let live: HashSet<String> =
+        specs.iter().map(|s| s.name.clone()).collect();
+
+    // Removals first so a rename (delete + add of the same slug, rare)
+    // round-trips through unregister-then-register rather than colliding.
+    let gone: Vec<String> = tracked
+        .keys()
+        .filter(|k| !live.contains(k.as_str()))
+        .cloned()
+        .collect();
+    for slug in gone {
+        if let Some(id) = tracked.remove(&slug) {
+            match service.remove_repo(&id).await {
+                Ok(true) => {
+                    tracing::info!(repo = %slug, "scan: unregistered (dir gone)");
+                }
+                Ok(false) => { /* already absent; idempotent */ }
+                Err(e) => {
+                    tracing::warn!(repo = %slug, error = %e, "scan: remove failed");
+                }
+            }
+        }
+    }
+
+    for spec in specs {
+        if tracked.contains_key(&spec.name) {
+            continue;
+        }
+        // Co-located worktree shortcut: jj's worktree model lets
+        // several workspace directories share one backing repo
+        // (`.jj/repo`), and kata's repo_id is the SHA-256 of that
+        // backing path — so two workspace dirs that resolve to the
+        // same `.jj/repo` end up with the same repo_id. The first
+        // one wins; the rest would be rejected as "duplicate" by
+        // service.add_repo. Detect that here and skip silently
+        // instead of letting the rejection surface as a per-tick
+        // warning for every alternate worktree.
+        if let Ok(canonical) = jj_repo_canonical_path(&spec.path) {
+            let candidate_id = compute_repo_id(&canonical);
+            if service.repo_name(&candidate_id).is_some() {
+                tracing::debug!(
+                    repo = %spec.name,
+                    path = %spec.path.display(),
+                    "scan: skip; co-located worktree of an already-registered repo",
+                );
+                continue;
+            }
+        }
+        match register_repo_dynamic(storage, service, &spec.name, &spec.path).await {
+            Ok(repo_id) => {
+                tracked.insert(spec.name, repo_id);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    repo = %spec.name,
+                    path = %spec.path.display(),
+                    error = %e,
+                    "scan: skipping repo that won't register",
+                );
+            }
+        }
+    }
+}
+
+/// Run the initial scan over every `*=PATH` base and, if `interval` is
+/// non-zero, spawn a background task that re-scans on that cadence.
+/// The initial pass is awaited inline so the HTTP server doesn't start
+/// accepting requests before scanned repos are visible in
+/// `list_repos`. The spawned loop drops detected adds / removes
+/// through `service.add_repo` / `remove_repo`; failures inside a tick
+/// are logged and the loop keeps going (we never tear down the
+/// scanner because of a transient filesystem hiccup).
+async fn run_workspace_scanner(
+    storage: Arc<dyn Storage>,
+    service: Arc<ReviewService>,
+    bases: Vec<PathBuf>,
+    interval: std::time::Duration,
+) {
+    use std::collections::HashMap;
+    // Per-base map of "slugs this scanner registered". Explicit
+    // entries — registered by serve() before the scanner ran — never
+    // appear here, so the scanner can't accidentally remove them.
+    let mut tracked: HashMap<PathBuf, HashMap<String, kata_core::RepoId>> = bases
+        .iter()
+        .map(|b| (b.clone(), HashMap::new()))
+        .collect();
+
+    // Initial pass — register everything we can find now.
+    for base in &bases {
+        let entry = tracked.get_mut(base).expect("base present in tracked");
+        workspace_scan_tick(&storage, &service, base, entry).await;
+    }
+
+    if interval.is_zero() {
+        tracing::info!("workspace re-scan disabled (--workspace-scan-interval=0)");
+        return;
+    }
+
+    tracing::info!(?interval, bases = bases.len(), "starting workspace scanner");
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(interval);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // tokio::time::interval fires immediately on the first tick;
+        // swallow it so the cadence reads as "every interval after the
+        // initial pass" rather than "double-tick at startup".
+        ticker.tick().await;
+        loop {
+            ticker.tick().await;
+            for base in &bases {
+                let entry = tracked.get_mut(base).expect("base present in tracked");
+                workspace_scan_tick(&storage, &service, base, entry).await;
+            }
+        }
+    });
 }
 
 /// Seed the demo workspace + database under `data`, then start the
@@ -471,6 +650,9 @@ async fn run_demo(
         // Demo runs locally; no point polling jj for branch
         // movement on a workspace nobody else touches.
         branch_poll_secs: 0,
+        // Demo registers exactly one explicit workspace; there's
+        // nothing for the scanner to do.
+        workspace_scan_interval: 0,
         mcp_cors_origins: Vec::new(),
         // The demo is single-user on the same host; the historical
         // client-supplied identity model is the right default.
@@ -890,38 +1072,27 @@ async fn serve(
 
     // Explicit entries are operator-typed and must succeed — silently
     // skipping them would leave the operator wondering "I configured
-    // repo X but it doesn't show up." Scan bases (handled next) are
-    // best-effort per-entry instead.
+    // repo X but it doesn't show up." Scan bases (handled below by
+    // the scanner) are best-effort per-entry instead.
     for WorkspaceSpec { name, path } in &explicit_workspaces {
         register_repo(&storage, &mut builder, name, path).await?;
     }
 
-    // Walk each scan base and register what's there now. An operator
-    // dropping a junk folder under a scan base shouldn't kill the
-    // server, so per-entry failures are logged and skipped.
-    for base in &scan_bases {
-        let specs = match scan_dir(base) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::warn!(base = %base.display(), error = %e, "scan: failed");
-                continue;
-            }
-        };
-        for spec in specs {
-            if let Err(e) =
-                register_repo(&storage, &mut builder, &spec.name, &spec.path).await
-            {
-                tracing::warn!(
-                    repo = %spec.name,
-                    path = %spec.path.display(),
-                    error = %e,
-                    "scan: skipping repo that won't register",
-                );
-            }
-        }
-    }
-
     let service = Arc::new(builder.build());
+
+    // Initial scan + spawn the watcher. The initial pass is awaited
+    // inline so the HTTP listener doesn't start accepting before
+    // scanned repos are visible in list_repos.
+    if !scan_bases.is_empty() {
+        let interval = std::time::Duration::from_secs(args.workspace_scan_interval);
+        run_workspace_scanner(
+            storage.clone(),
+            service.clone(),
+            scan_bases,
+            interval,
+        )
+        .await;
+    }
     let repo_count = service.list_repos().len();
 
     if args.branch_poll_secs > 0 {
