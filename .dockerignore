@@ -1,0 +1,24 @@
+# Build outputs — every stage rebuilds these from sources.
+target/
+web/dist/
+web/node_modules/
+
+# Local dev / editor / VCS state that doesn't belong in the build context.
+.git/
+.jj/
+.vscode/
+.idea/
+.claude/
+
+# Container files themselves — not needed inside the build context.
+Dockerfile*
+.dockerignore
+docker-compose*.yml
+
+# Misc local files.
+*.log
+.env
+.env.*
+
+# Demo data dirs sometimes left over from ad-hoc runs.
+/tmp/kata-*

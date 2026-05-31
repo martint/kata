@@ -10,3 +10,10 @@ dist/
 
 # Local agent / editor state.
 .claude/
+
+# Operator-local docker-compose config. The `.env.example` and
+# `docker-compose.yml.example` files in the repo are the checked-in
+# templates; the populated `.env` and any local `docker-compose.yml`
+# customisations are per-host.
+.env
+docker-compose.yml

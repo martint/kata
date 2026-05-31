@@ -37,6 +37,18 @@ Open the URL it prints; append `?demo=1` for a guided tour through
 the core features. The demo seeds a self-contained `jj` workspace +
 database with a small review and points the server at it.
 
+Or, with Docker (no local toolchain needed):
+
+```sh
+docker compose --profile demo up --build
+```
+
+Builds the image on demand and serves the same guided tour at
+`http://localhost:7878`. Drop the `--build` to pull the published
+image from `ghcr.io/martint/kata:latest` instead. The default
+service (without `--profile demo`) serves real workspaces — see
+[`docs/deploying.md`](docs/deploying.md).
+
 ## Run it for your repo
 
 ```sh
