@@ -17,6 +17,8 @@ ipnet = { workspace = true }
 clap = { workspace = true }
 futures = { workspace = true }
 mime_guess = { workspace = true }
+notify = { workspace = true }
+notify-debouncer-mini = { workspace = true }
 kata-core = { workspace = true }
 kata-demo = { workspace = true }
 kata-jj = { workspace = true }

@@ -267,11 +267,15 @@ struct ServeArgs {
     #[arg(long, env = "KATA_BRANCH_POLL_SECS", default_value = "10")]
     branch_poll_secs: u64,
 
-    /// How often (in seconds) to re-scan each `--workspace '*=PATH'`
-    /// base for added / removed repos. Set to 0 to disable live
-    /// re-scan (the initial scan still runs at startup either way).
-    /// Has no effect when no scan-mode workspaces are configured.
-    #[arg(long, env = "KATA_WORKSPACE_SCAN_INTERVAL", default_value = "10")]
+    /// Fallback re-scan period (in seconds) for each
+    /// `--workspace '*=PATH'` base. Filesystem-event notifications
+    /// (inotify on Linux, FSEvents on macOS, equivalents elsewhere)
+    /// drive the primary scan; this periodic poll reconciles any
+    /// missed events (NFS shares, debounce-window overflows, the
+    /// notify backend silently dropping). Set to 0 to disable the
+    /// fallback entirely. Has no effect when no scan-mode workspaces
+    /// are configured.
+    #[arg(long, env = "KATA_WORKSPACE_SCAN_INTERVAL", default_value = "30")]
     workspace_scan_interval: u64,
 
     /// Origin to allow on `/mcp` for browser-based MCP clients (e.g. the
@@ -570,13 +574,25 @@ async fn workspace_scan_tick(
 /// through `service.add_repo` / `remove_repo`; failures inside a tick
 /// are logged and the loop keeps going (we never tear down the
 /// scanner because of a transient filesystem hiccup).
+/// Run the initial scan over every `*=PATH` base inline, then spawn:
+///   1. an inotify-backed watcher that re-scans only the base whose
+///      subdirectory list changed (debounced 200 ms so a `git clone`
+///      or `rsync` burst collapses into one tick);
+///   2. a periodic poll that re-queues every base on
+///      `fallback_interval` — reconciles anything inotify silently
+///      dropped (NFS, debounce overflow, etc.).
+///
+/// The initial pass is awaited inline so the HTTP listener doesn't
+/// start accepting before scanned repos are visible in `list_repos`.
+/// If inotify can't be set up (rare — bad fs, missing kernel
+/// support), only the periodic fallback drives subsequent scans.
 async fn run_workspace_scanner(
     storage: Arc<dyn Storage>,
     service: Arc<ReviewService>,
     bases: Vec<PathBuf>,
-    interval: std::time::Duration,
+    fallback_interval: std::time::Duration,
 ) {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     // Per-base map of "slugs this scanner registered". Explicit
     // entries — registered by serve() before the scanner ran — never
     // appear here, so the scanner can't accidentally remove them.
@@ -591,24 +607,124 @@ async fn run_workspace_scanner(
         workspace_scan_tick(&storage, &service, base, entry).await;
     }
 
-    if interval.is_zero() {
-        tracing::info!("workspace re-scan disabled (--workspace-scan-interval=0)");
-        return;
+    // Channel: notify thread + fallback timer → scanner task. Each
+    // item is the base path whose subdir list may have changed.
+    // Unbounded because the scanner thread can be slow under load
+    // (a busy storage tier on remove_repo) and we'd rather coalesce
+    // than drop wakeups.
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<PathBuf>();
+    let bases_set: HashSet<PathBuf> = bases.iter().cloned().collect();
+
+    // notify-debouncer-mini runs its callback on a dedicated std
+    // thread. ~200 ms collapses a burst of writes (clone, rsync,
+    // multiple touches inside the new dir) into one event per base.
+    let debouncer = match notify_debouncer_mini::new_debouncer(
+        std::time::Duration::from_millis(200),
+        {
+            let tx = tx.clone();
+            let bases_set = bases_set.clone();
+            move |res: notify_debouncer_mini::DebounceEventResult| match res {
+                Ok(events) => {
+                    for ev in events {
+                        // We watch each base RecursiveMode::NonRecursive,
+                        // so notify hands us events whose path is the
+                        // changed subentry (`/base/new-repo`). The
+                        // base itself is the parent.
+                        if let Some(base) = ev.path.parent()
+                            && bases_set.contains(base)
+                        {
+                            let _ = tx.send(base.to_path_buf());
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = ?e, "scan: notify error");
+                }
+            }
+        },
+    ) {
+        Ok(mut d) => {
+            let mut watched_any = false;
+            for base in &bases {
+                match d
+                    .watcher()
+                    .watch(base, notify::RecursiveMode::NonRecursive)
+                {
+                    Ok(()) => {
+                        watched_any = true;
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            base = %base.display(),
+                            error = ?e,
+                            "scan: cannot watch base; falling back to poll only for it",
+                        );
+                    }
+                }
+            }
+            if watched_any { Some(d) } else { None }
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = ?e,
+                "scan: cannot start notify; falling back to poll only",
+            );
+            None
+        }
+    };
+
+    // Periodic fallback: re-queue every base on the interval. Pushes
+    // through the same channel so the main loop's coalescing applies
+    // — a notify wakeup that landed just before the poll tick won't
+    // produce two back-to-back scans for the same base.
+    if !fallback_interval.is_zero() {
+        let bases_for_poll = bases.clone();
+        let tx_poll = tx.clone();
+        tokio::spawn(async move {
+            let mut t = tokio::time::interval(fallback_interval);
+            t.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            // tokio::time::interval fires immediately on the first
+            // tick; swallow it so the initial pass we already did
+            // doesn't get duplicated.
+            t.tick().await;
+            loop {
+                t.tick().await;
+                for base in &bases_for_poll {
+                    let _ = tx_poll.send(base.clone());
+                }
+            }
+        });
     }
 
-    tracing::info!(?interval, bases = bases.len(), "starting workspace scanner");
+    // Drop our local sender so the channel closes if both watcher +
+    // fallback are gone (degenerate config). The main loop's
+    // rx.recv() will then return None and the task ends cleanly.
+    drop(tx);
+
+    tracing::info!(
+        bases = bases.len(),
+        fallback_interval_secs = fallback_interval.as_secs(),
+        notify_active = debouncer.is_some(),
+        "starting workspace scanner",
+    );
+
+    // Hold the debouncer in the spawned task so its watcher thread
+    // stays alive for the program's lifetime. Coalesce bursts by
+    // draining the channel between each scan_tick — a single
+    // operator action that produces multiple events (e.g. `mv` of a
+    // dir generating Remove+Create) collapses into one tick per
+    // affected base.
     tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(interval);
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        // tokio::time::interval fires immediately on the first tick;
-        // swallow it so the cadence reads as "every interval after the
-        // initial pass" rather than "double-tick at startup".
-        ticker.tick().await;
-        loop {
-            ticker.tick().await;
-            for base in &bases {
-                let entry = tracked.get_mut(base).expect("base present in tracked");
-                workspace_scan_tick(&storage, &service, base, entry).await;
+        let _keep_alive = debouncer;
+        while let Some(first) = rx.recv().await {
+            let mut dirty: HashSet<PathBuf> = HashSet::from([first]);
+            while let Ok(more) = rx.try_recv() {
+                dirty.insert(more);
+            }
+            for base in dirty {
+                if let Some(entry) = tracked.get_mut(&base) {
+                    workspace_scan_tick(&storage, &service, &base, entry).await;
+                }
             }
         }
     });
