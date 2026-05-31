@@ -44,6 +44,18 @@ pub enum Event {
         review_id: ReviewId,
         session_id: SessionId,
     },
+    /// A workspace was just registered (operator dropped a repo into
+    /// a scanned base, or a dynamic `add_repo` call). The repo list
+    /// in any open tab should refresh so the new slug is selectable.
+    WorkspaceRegistered {
+        repo: String,
+    },
+    /// A registered workspace was unregistered (scanned dir gone, or
+    /// a dynamic `remove_repo` call). Open tabs viewing that repo
+    /// should drop back to the home / list screen.
+    WorkspaceUnregistered {
+        repo: String,
+    },
 }
 
 pub type EventBus = broadcast::Sender<Event>;

@@ -543,6 +543,32 @@
         screen = { kind: 'list' };
         void loadList(repo);
       }
+      // Workspace appeared or vanished — refresh the workspace
+      // selector. When it's the *current* repo that vanished, also
+      // drop the user back to the home screen (the viewer would
+      // otherwise sit on a stale 'repo' that no longer exists, and
+      // every subsequent fetch would 404).
+      if (
+        event.kind === 'workspace-registered' ||
+        event.kind === 'workspace-unregistered'
+      ) {
+        void (async () => {
+          try {
+            repos = await api.listRepos();
+          } catch {
+            // Network blip — the next ensureConnected() reconnect
+            // will retry; nothing actionable to surface.
+            return;
+          }
+          if (event.kind === 'workspace-unregistered' && event.repo === repo) {
+            history.replaceState({}, '', '/');
+            rememberNavUrl();
+            repo = repos[0]?.name ?? '';
+            screen = { kind: 'list' };
+            if (repo) await loadList(repo);
+          }
+        })();
+      }
     });
     window.addEventListener('popstate', async () => {
       // A popstate whose pathname+search still match what `screen` was

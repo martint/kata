@@ -2252,6 +2252,16 @@
    *  changed; we just want the Refresh affordance to surface. */
   onMount(() =>
     subscribeEvents((event) => {
+      // Workspace-level events (workspace-registered / unregistered)
+      // are review-shell concerns handled in App.svelte; they have
+      // no review_id to filter against, so bail before the field
+      // narrowing below would discriminate the union.
+      if (
+        event.kind === 'workspace-registered' ||
+        event.kind === 'workspace-unregistered'
+      ) {
+        return;
+      }
       if (
         event.repo !== repo ||
         event.review_id !== current.manifest.review_id

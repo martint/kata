@@ -24,7 +24,15 @@ export type ServerEvent =
       repo: string;
       review_id: ReviewId;
       session_id: SessionId;
-    };
+    }
+  /** A new workspace was registered (operator dropped a repo into a
+   *  scanned base, or a dynamic add_repo). Open tabs should re-fetch
+   *  /api/repos so the workspace selector picks up the new slug. */
+  | { kind: 'workspace-registered'; repo: string }
+  /** A workspace was unregistered (scanned dir gone, or a dynamic
+   *  remove_repo). Open tabs viewing that repo should drop back to
+   *  home. */
+  | { kind: 'workspace-unregistered'; repo: string };
 
 type Listener = (event: ServerEvent) => void;
 

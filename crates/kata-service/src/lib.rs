@@ -551,8 +551,9 @@ impl ReviewService {
         )?;
         let mut new = (*cur).clone();
         new.repos.insert(id.clone(), entry);
-        new.by_name.push((slug, id));
+        new.by_name.push((slug.clone(), id));
         self.registry.store(Arc::new(new));
+        self.emit(Event::WorkspaceRegistered { repo: slug });
         Ok(())
     }
 
@@ -564,13 +565,15 @@ impl ReviewService {
     pub async fn remove_repo(&self, repo: &RepoId) -> ServiceResult<bool> {
         let _w = self.registry_write.lock().await;
         let cur = self.registry.load_full();
-        if !cur.repos.contains_key(repo) {
+        let Some(entry) = cur.repos.get(repo) else {
             return Ok(false);
-        }
+        };
+        let slug = entry.summary.name.clone();
         let mut new = (*cur).clone();
         new.repos.remove(repo);
         new.by_name.retain(|(_, id)| id != repo);
         self.registry.store(Arc::new(new));
+        self.emit(Event::WorkspaceUnregistered { repo: slug });
         Ok(true)
     }
 
