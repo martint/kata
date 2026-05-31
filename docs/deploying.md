@@ -20,6 +20,59 @@ operations model you already have.
    covers TLS termination when you want a single-binary deployment.
    Pair with one of the auth modes above; TLS alone is not auth.
 
+## Container images
+
+Every `vX.Y.Z` tag on `main` publishes a multi-arch (linux/amd64 +
+linux/arm64) image to `ghcr.io/martint/kata:<version>` and
+`ghcr.io/martint/kata:latest`. The binary's only runtime dep is
+glibc (sqlite is bundled, TLS uses rustls, the frontend is
+embedded); the release image is debian-slim + the binary, ~80 MB.
+
+Use [`docker-compose.yml.example`](../docker-compose.yml.example)
+at the repo root as the deployment template — same file works
+whether you pull the published image or rebuild from your working
+copy:
+
+```sh
+# Copy the templates and fill in your config.
+cp docker-compose.yml.example docker-compose.yml
+cp .env.example .env       # then edit: set KATA_WORKSPACES_DIR
+
+# Pull + run the published image.
+docker compose pull
+docker compose up -d
+
+# Build from your working copy instead (useful while iterating on
+# kata's code, or to run a fork).
+docker compose up --build
+```
+
+Both `docker-compose.yml` and `.env` are gitignored so per-host
+customisation (extra bind mounts, OIDC secrets in `.env`, etc.)
+stays out of the upstream repo.
+
+The compose file requires one piece of operator config —
+`KATA_WORKSPACES_DIR`, a host directory holding your jj repos — and
+ships sensible defaults for everything else (listens on
+`127.0.0.1:7878`, writes to a named volume at `/data`, scans
+`/workspaces` live so dropping a repo into the host dir
+registers it without a restart).
+
+The defaults are tuned for **local development with agents** —
+loopback-only bind + trust-client auth so Claude Code via MCP works
+on the same host without token-minting ceremony. For any shared
+deployment, set `KATA_LISTEN_ADDR=0.0.0.0` **and** a real
+`KATA_AUTH_MODE` (plus TLS / OIDC params) in `.env`. The auth modes
+are covered below; every CLI flag has a `KATA_*` env var, so the
+recipes that follow translate directly to lines in `.env`.
+
+A `--profile demo` service in the same compose ships the seeded
+guided tour for a zero-config kata test drive:
+
+```sh
+docker compose --profile demo up
+```
+
 ## 1. Behind a reverse proxy (recommended)
 
 Terminate TLS and authenticate the user upstream
