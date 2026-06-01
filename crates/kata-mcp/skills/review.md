@@ -19,10 +19,20 @@ MCP server can front multiple repositories; every tool call takes a
 
 2. **Open.** `get_review` with the `review_id` returns:
    - `manifest` — metadata and patchset history.
-   - `diff.files[]` — per-file hunks. Each hunk line has a `side`
-     (`base` or `tip`) and a 1-based line number.
+   - `diff.files[]` — per-file **metadata only**: `path`, `status`
+     (added / modified / deleted / renamed), `added` / `removed`
+     line counts, and `binary`. Hunks are **not** inlined, to keep
+     the response small for big reviews.
    - `comments` / `responses` — already-published feedback.
    - `drafts` — your unpublished work in the open session.
+
+   Call `read_file_diff` (with the same `review_id` plus the `path`
+   from `diff.files[]`) to fetch the hunks for one file. Each hunk
+   line carries a `side` (`base` or `tip`) and a 1-based line
+   number on that side — the same coordinates you anchor comments
+   with. Pull only the files you actually need to read; for a big
+   refactor the full diff is often much larger than your context
+   budget.
 
 3. **Comment.** Anchor every comment with the tip patchset's IDs:
    `manifest.patchsets[last].tip_change` and `tip_commit`. Pick the

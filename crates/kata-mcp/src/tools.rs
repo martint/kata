@@ -74,7 +74,7 @@ impl ReviewMcp {
     }
 
     #[tool(
-        description = "Open a review and return its manifest, diff, published comments/responses, and the agent's own drafts. Pass `patchset` to view an earlier round; omit for the latest."
+        description = "Open a review and return its manifest, file-level diff metadata (paths, +/- counts, status), published comments/responses, and the agent's own drafts. Hunks are not inlined — fetch them per file with `read_file_diff`. Pass `patchset` to view an earlier round; omit for the latest."
     )]
     async fn get_review(
         &self,
@@ -87,6 +87,29 @@ impl ReviewMcp {
             .await
             .map_err(into_mcp)?;
         Ok(text_json(&view))
+    }
+
+    #[tool(
+        description = "Return the per-line hunks for one file in a review. `get_review` ships metadata only (path + +/- counts) so the response stays small; this is the lazy fetch that fills in the actual diff content for a file the agent wants to read. Each hunk line carries a `side` (`base` or `tip`) and a 1-based line number on that side. Pass `patchset` to read an earlier round (defaults to the current one); pass `compare` to diff one patchset against another instead of base..tip."
+    )]
+    async fn read_file_diff(
+        &self,
+        Parameters(args): Parameters<ReadFileDiffArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let ReadFileDiffArgs {
+            repo,
+            review_id,
+            path,
+            patchset,
+            compare,
+        } = args;
+        let repo = self.resolve(&repo)?;
+        let file = self
+            .service
+            .file_diff(&repo, &review_id, &path, patchset, compare)
+            .await
+            .map_err(into_mcp)?;
+        Ok(text_json(&file))
     }
 
     // ---- review lifecycle ----------------------------------------------
@@ -732,7 +755,8 @@ impl ServerHandler for ReviewMcp {
         info.instructions = Some(
             "Code review tool. One server can front multiple repositories; pass `repo` \
              (a workspace slug from `list_repos`) on every tool call. Use `list_reviews` \
-             and `get_review` to inspect changes; `draft_line_comment` / \
+             and `get_review` to inspect changes; `read_file_diff` to fetch the hunks \
+             for a specific file (get_review ships metadata only); `draft_line_comment` / \
              `draft_file_comment` / `draft_review_comment` to leave feedback (starts a \
              draft session on first use); `update_draft_comment` to revise a draft \
              before publishing; `respond` to reply or change resolution; \
@@ -822,6 +846,23 @@ pub struct GetReviewArgs {
     pub review_id: ReviewId,
     #[serde(default)]
     pub patchset: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct ReadFileDiffArgs {
+    pub repo: String,
+    pub review_id: ReviewId,
+    /// File path within the review's tip (or, for a renamed file, the
+    /// new name). Match the `path` value `get_review` returned for the
+    /// file in `diff.files[]`.
+    pub path: String,
+    /// Patchset round to read. Defaults to the current one.
+    #[serde(default)]
+    pub patchset: Option<u32>,
+    /// When set, diff `patchset` against this other patchset instead
+    /// of base..tip. Mirrors the SPA's "compared to" mode.
+    #[serde(default)]
+    pub compare: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]

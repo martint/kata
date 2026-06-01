@@ -1025,12 +1025,15 @@ APIs as a human reviewer.
 Two pieces:
 
 - **Tools.** `list_repos`, `list_bookmarks`, `list_reviews`,
-  `get_review`, `create_review`, `refresh_review`,
+  `get_review`, `read_file_diff`, `create_review`, `refresh_review`,
   `update_review_summary`, `start_session`, `publish_session`,
   `discard_session`, `draft_line_comment`, `draft_file_comment`,
   `draft_review_comment`, `update_draft_comment`, `respond`. Tools
   are scoped per workspace; `list_repos` returns the slugs the
-  agent should pass as `repo`.
+  agent should pass as `repo`. `get_review` returns file-level
+  metadata only; `read_file_diff` fetches the hunks for one file,
+  matching the SPA's lazy-per-file fetch pattern so an agent
+  doesn't have to inhale the whole diff up front.
 - **The `kata-review` skill** is exposed as an MCP resource at
   `skill://kata/review` — pre-built guidance for an agent doing a
   code review (how to structure feedback, when to use which
