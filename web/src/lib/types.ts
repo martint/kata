@@ -27,6 +27,18 @@ export interface Bookmark {
   commit_timestamp: string;
 }
 
+/** One file touched by a commit, with its line-count summary against
+ *  the commit's first parent. The shape mirrors what `read_commit_diff`
+ *  reports for the same commit — same imara-diff histogram pass under
+ *  the hood — so a reviewer's triage signal ("commit 2 is +1/-1") and
+ *  the actual per-commit diff always agree. */
+export interface ChangedFile {
+  path: string;
+  added: number;
+  removed: number;
+  binary?: boolean;
+}
+
 export interface CommitInfo {
   change_id: ChangeId;
   commit_id: CommitId;
@@ -35,8 +47,9 @@ export interface CommitInfo {
   description_first_line: string;
   /** Full commit description; may contain newlines or be empty. */
   description: string;
-  /** Files this commit modified, added, deleted, or renamed (parent..@). */
-  changed_files: string[];
+  /** Files this commit modified, added, deleted, or renamed (parent..@),
+   *  with per-file +/- counts. */
+  changed_files: ChangedFile[];
   /** Paths whose content at this commit is a conflict (jj keeps
    *  conflicts as live tree values). Empty for clean commits; the
    *  UI uses this to surface a ⚠ badge in the commits panel. */

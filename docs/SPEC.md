@@ -1037,7 +1037,11 @@ Two pieces:
   fetch pattern). `read_commit_diff` isolates one commit's
   contribution to the stack — required for any per-commit claim,
   since the cumulative diff cannot tell which commit introduced
-  which lines.
+  which lines. `manifest.commits[].changed_files[]` carries a
+  `{path, added, removed, binary}` entry per file (not just the
+  path), so the per-commit shape is visible in the manifest
+  itself and an agent can triage which commits in a stack carry
+  substantive changes without a second fetch.
 - **The `kata-review` skill** is exposed as an MCP resource at
   `skill://kata/review` — pre-built guidance for an agent doing a
   code review (how to structure feedback, when to use which

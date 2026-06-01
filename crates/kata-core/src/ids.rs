@@ -80,6 +80,23 @@ pub struct RepoSummary {
     pub canonical_path: String,
 }
 
+/// A single file touched by a commit, with the line counts of the
+/// diff between the commit and its first parent. `binary` is `true`
+/// for files where line counts don't apply (in which case `added` /
+/// `removed` are `0`); otherwise the counts come from the same
+/// histogram pass as the full diff, so the numbers match what a
+/// reviewer would see if they pulled the per-commit diff via
+/// `read_commit_diff`.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ChangedFile {
+    pub path: String,
+    pub added: u32,
+    pub removed: u32,
+    #[serde(default)]
+    pub binary: bool,
+}
+
 /// Per-commit metadata returned for the commits panel.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -93,9 +110,15 @@ pub struct CommitInfo {
     pub description_first_line: String,
     /// Full commit description (may be empty, may contain newlines).
     pub description: String,
-    /// Files this commit modified, added, deleted, or renamed (parent..@).
-    /// Used by the UI to bucket comments per commit.
-    pub changed_files: Vec<String>,
+    /// Files this commit modified, added, deleted, or renamed (parent..@),
+    /// each with its `added` / `removed` line counts. The counts let an
+    /// MCP reviewer triage which commits in a multi-commit stack
+    /// actually carry substantive changes — a 13-commit feature stack
+    /// with one rename-only commit and twelve content commits is
+    /// obvious from the +/- shape, where the bare path list invites
+    /// false-positive commit-hygiene accusations against the rename.
+    /// The UI uses the path set to bucket comments per commit.
+    pub changed_files: Vec<ChangedFile>,
     /// Paths whose content at this commit is a conflict (jj keeps
     /// conflicts as live tree values rather than the broken
     /// working-copy state git resorts to). Empty for clean commits,

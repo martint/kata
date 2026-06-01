@@ -18,8 +18,8 @@ pub use documents::{
     ReviewManifest, SCHEMA_VERSION, Session, SessionStatus,
 };
 pub use ids::{
-    AnnotationId, ApiTokenId, Author, Bookmark, ChangeId, ColumnRange, CommentId, CommitId,
-    CommitInfo, LineRange, LineRangeParseError, OpId, RepoId, RepoSummary, ResponseId, ReviewId,
-    RevSet, SessionId, Side,
+    AnnotationId, ApiTokenId, Author, Bookmark, ChangedFile, ChangeId, ColumnRange, CommentId,
+    CommitId, CommitInfo, LineRange, LineRangeParseError, OpId, RepoId, RepoSummary, ResponseId,
+    ReviewId, RevSet, SessionId, Side,
 };
 pub use log_graph::{LogCoord, LogLine, LogPage, LogRow};

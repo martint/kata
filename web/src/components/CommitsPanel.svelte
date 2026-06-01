@@ -165,7 +165,7 @@
   const countByCommit = $derived.by(() => {
     const counts = new Map<string, number>();
     for (const c of commits) {
-      const files = new Set(c.changed_files);
+      const files = new Set(c.changed_files.map((f) => f.path));
       let n = 0;
       for (const cm of comments) {
         if (cm.file && files.has(cm.file)) n++;

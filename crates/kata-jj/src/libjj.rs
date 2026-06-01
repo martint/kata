@@ -777,8 +777,10 @@ impl JjBackend for JjLib {
                     .unwrap_or("")
                     .to_string();
                 // changed_files = files touched relative to first
-                // parent; mirrors what JjCli pulls from the
-                // `diff.files()` template fragment.
+                // parent, each with its line counts. Same imara-diff
+                // histogram path as `build_diff_metadata` so the
+                // counts agree byte-for-byte with what a per-commit
+                // diff fetch would show.
                 let changed_files = if let Some(parent_id) = commit.parent_ids().first() {
                     let parent = store.get_commit(parent_id).map_err(|e| {
                         Error::Parse(format!("libjj get_commit (parent): {e}"))
@@ -787,7 +789,45 @@ impl JjBackend for JjLib {
                     let mut stream = parent.tree().diff_stream(&commit.tree(), &matcher);
                     let mut files = Vec::new();
                     while let Some(entry) = futures::executor::block_on(stream.next()) {
-                        files.push(entry.path.as_internal_file_string().to_string());
+                        let path = entry.path.clone();
+                        let path_str = path.as_internal_file_string().to_string();
+                        let values = entry
+                            .values
+                            .map_err(|e| Error::Parse(format!("libjj diff entry: {e}")))?;
+                        let left_id = values
+                            .before
+                            .as_resolved()
+                            .and_then(|opt| opt.as_ref())
+                            .and_then(|tv| match tv {
+                                jj_lib::backend::TreeValue::File { id, .. } => Some(id.clone()),
+                                _ => None,
+                            });
+                        let right_id = values
+                            .after
+                            .as_resolved()
+                            .and_then(|opt| opt.as_ref())
+                            .and_then(|tv| match tv {
+                                jj_lib::backend::TreeValue::File { id, .. } => Some(id.clone()),
+                                _ => None,
+                            });
+                        let left_bytes = if let Some(id) = &left_id {
+                            read_file_bytes(store, &path, id)?
+                        } else {
+                            Vec::new()
+                        };
+                        let right_bytes = if let Some(id) = &right_id {
+                            read_file_bytes(store, &path, id)?
+                        } else {
+                            Vec::new()
+                        };
+                        let (binary, added, removed) =
+                            count_line_changes(&left_bytes, &right_bytes);
+                        files.push(kata_core::ChangedFile {
+                            path: path_str,
+                            added,
+                            removed,
+                            binary,
+                        });
                     }
                     files
                 } else {
@@ -928,7 +968,45 @@ impl JjBackend for JjLib {
                     while let Some(entry) =
                         futures::executor::block_on(futures::StreamExt::next(&mut stream))
                     {
-                        files.push(entry.path.as_internal_file_string().to_string());
+                        let path = entry.path.clone();
+                        let path_str = path.as_internal_file_string().to_string();
+                        let values = entry
+                            .values
+                            .map_err(|e| Error::Parse(format!("libjj diff entry: {e}")))?;
+                        let left_id = values
+                            .before
+                            .as_resolved()
+                            .and_then(|opt| opt.as_ref())
+                            .and_then(|tv| match tv {
+                                jj_lib::backend::TreeValue::File { id, .. } => Some(id.clone()),
+                                _ => None,
+                            });
+                        let right_id = values
+                            .after
+                            .as_resolved()
+                            .and_then(|opt| opt.as_ref())
+                            .and_then(|tv| match tv {
+                                jj_lib::backend::TreeValue::File { id, .. } => Some(id.clone()),
+                                _ => None,
+                            });
+                        let left_bytes = if let Some(id) = &left_id {
+                            read_file_bytes(store, &path, id)?
+                        } else {
+                            Vec::new()
+                        };
+                        let right_bytes = if let Some(id) = &right_id {
+                            read_file_bytes(store, &path, id)?
+                        } else {
+                            Vec::new()
+                        };
+                        let (binary, added, removed) =
+                            count_line_changes(&left_bytes, &right_bytes);
+                        files.push(kata_core::ChangedFile {
+                            path: path_str,
+                            added,
+                            removed,
+                            binary,
+                        });
                     }
                     files
                 } else {

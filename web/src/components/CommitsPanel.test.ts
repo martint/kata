@@ -18,7 +18,7 @@ function commit(over: Partial<CommitInfo> = {}): CommitInfo {
     author_timestamp: '2026-05-15T10:00:00Z',
     description_first_line: 'tweak the thing',
     description: 'tweak the thing',
-    changed_files: ['a.txt'],
+    changed_files: [{ path: 'a.txt', added: 1, removed: 0 }],
     ...over,
   };
 }
@@ -106,7 +106,7 @@ describe('CommitsPanel', () => {
   });
 
   test('shows a comment-count badge on commits whose touched files have comments', () => {
-    const c = commit({ change_id: 'ch-abc', changed_files: ['a.txt'] });
+    const c = commit({ change_id: 'ch-abc', changed_files: [{ path: 'a.txt', added: 1, removed: 0 }] });
     // A line comment on a.txt — counted against this commit because
     // it touched a.txt.
     const cm = comment({
@@ -121,7 +121,7 @@ describe('CommitsPanel', () => {
   });
 
   test("doesn't count file-level comments on files this commit didn't touch", () => {
-    const c = commit({ change_id: 'ch-abc', changed_files: ['a.txt'] });
+    const c = commit({ change_id: 'ch-abc', changed_files: [{ path: 'a.txt', added: 1, removed: 0 }] });
     const cm = comment({
       file: 'unrelated.txt',
       side: 'tip',
