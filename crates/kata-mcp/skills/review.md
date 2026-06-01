@@ -40,6 +40,22 @@ MCP server can front multiple repositories; every tool call takes a
    `read_file_diff` returns. Default `false` — opting in for a
    200-file refactor will blow your context budget.
 
+   **`read_file_diff` and `get_review` show the cumulative
+   `base..tip` diff** — every commit in the stack folded together.
+   That's the right shape for "does the review as a whole do what
+   the author claims," but it cannot tell you which commit in a
+   multi-commit stack introduced which lines. For any per-commit
+   reasoning — commit hygiene (one commit one thing), "did commit
+   N change file X behaviorally vs. just rename it," attributing
+   a line to the commit that introduced it — fetch
+   `read_commit_diff(change_id, path?)` instead. `manifest.commits[]`
+   lists every commit in the stack with its `change_id`; pass the
+   one you want to isolate. **Never infer which commit changed
+   what from the cumulative diff** — it conflates them and will
+   produce confident but wrong claims (e.g. accusing a pure-rename
+   commit of smuggling in feature code that actually lives in a
+   later commit on the same file).
+
 3. **Comment.** Anchor every comment with the tip patchset's IDs:
    `manifest.patchsets[last].tip_change` and `tip_commit`. Pick the
    granularity that fits:

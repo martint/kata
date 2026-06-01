@@ -97,7 +97,7 @@ impl ReviewMcp {
     }
 
     #[tool(
-        description = "Return the per-line hunks for one file in a review. `get_review` ships metadata only (path + +/- counts) so the response stays small; this is the lazy fetch that fills in the actual diff content for a file the agent wants to read. Each hunk line carries a `side` (`base` or `tip`) and a 1-based line number on that side. Pass `patchset` to read an earlier round (defaults to the current one); pass `compare` to diff one patchset against another instead of base..tip."
+        description = "Return the per-line hunks for one file in a review. `get_review` ships metadata only (path + +/- counts) so the response stays small; this is the lazy fetch that fills in the actual diff content for a file the agent wants to read. Each hunk line carries a `side` (`base` or `tip`) and a 1-based line number on that side. The diff is **cumulative base..tip** for the review (or the selected patchset) — for a multi-commit stack it folds every commit's changes to this file together. To see what a single commit did, use `read_commit_diff` instead. Pass `patchset` to read an earlier round (defaults to the current one); pass `compare` to diff one patchset against another instead of base..tip."
     )]
     async fn read_file_diff(
         &self,
@@ -117,6 +117,36 @@ impl ReviewMcp {
             .await
             .map_err(into_mcp)?;
         Ok(text_json(&file))
+    }
+
+    #[tool(
+        description = "Return the diff of a single commit within a review's stack — hunks for `parent(commit)..commit`. Use this for any per-commit reasoning (commit-hygiene checks, \"did commit N change file X behaviorally\", attributing a change to the right commit). The cumulative `read_file_diff` folds every commit's edits to a file together, which makes it impossible to tell which commit introduced which lines on a multi-commit stack; `read_commit_diff` isolates one commit. `change_id` is a value from `manifest.commits[].change_id`. Pass `path` to scope the response to a single file (cheaper for many-file commits); omit to get every file the commit touched. Returns a `CommitDiffView` with full hunks (each line tagged `side` + 1-based line number) and the resolved base/tip change + commit IDs."
+    )]
+    async fn read_commit_diff(
+        &self,
+        Parameters(args): Parameters<ReadCommitDiffArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let ReadCommitDiffArgs {
+            repo,
+            change_id,
+            path,
+        } = args;
+        let repo = self.resolve(&repo)?;
+        let mut view = self
+            .service
+            .commit_diff(&repo, &change_id)
+            .await
+            .map_err(into_mcp)?;
+        if let Some(path) = path.as_deref() {
+            view.files.retain(|f| f.path == path);
+            if view.files.is_empty() {
+                return Err(McpError::resource_not_found(
+                    format!("file {path:?} not changed by commit {change_id}"),
+                    None,
+                ));
+            }
+        }
+        Ok(text_json(&view))
     }
 
     // ---- review lifecycle ----------------------------------------------
@@ -762,8 +792,11 @@ impl ServerHandler for ReviewMcp {
         info.instructions = Some(
             "Code review tool. One server can front multiple repositories; pass `repo` \
              (a workspace slug from `list_repos`) on every tool call. Use `list_reviews` \
-             and `get_review` to inspect changes; `read_file_diff` to fetch the hunks \
-             for a specific file (get_review ships metadata only); `draft_line_comment` / \
+             and `get_review` to inspect changes; `read_file_diff` to fetch the cumulative \
+             base..tip hunks for a specific file; `read_commit_diff` to isolate what one \
+             commit did (required for per-commit reasoning on multi-commit stacks — the \
+             cumulative diff cannot tell you which commit introduced which lines); \
+             `draft_line_comment` / \
              `draft_file_comment` / `draft_review_comment` to leave feedback (starts a \
              draft session on first use); `update_draft_comment` to revise a draft \
              before publishing; `respond` to reply or change resolution; \
@@ -860,6 +893,20 @@ pub struct GetReviewArgs {
     /// file via `read_file_diff` instead.
     #[serde(default)]
     pub include_hunks: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct ReadCommitDiffArgs {
+    pub repo: String,
+    /// Change ID of the commit to diff. Get it from
+    /// `manifest.commits[].change_id` on `get_review`.
+    pub change_id: ChangeId,
+    /// Optional file-scope filter. When set, the response includes
+    /// only that one file's hunks; when omitted, every file the
+    /// commit touched. Useful for many-file commits where you only
+    /// want to see what was done to one specific path.
+    #[serde(default)]
+    pub path: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
