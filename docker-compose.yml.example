@@ -4,12 +4,18 @@
 # `image:` and `build:` lines below cover both flows from one file.
 #
 # Defaults are tuned for local development with agents:
-#   - the host port binds to 127.0.0.1 (only this machine reaches kata)
+#   - compose publishes the container's port on 127.0.0.1 only
+#     (so only this host can reach kata; KATA_PUBLISH_ADDR below)
 #   - the binary's default auth mode (trust-client) honours
 #     X-Review-Author / ?as= so Claude Code via MCP works out of the
 #     box on the same host
 #
-# For a deployment beyond a single user, set KATA_LISTEN_ADDR=0.0.0.0
+# Naming note: KATA_PUBLISH_ADDR / KATA_PUBLISH_PORT fill the host
+# side of compose's HOST_IP:HOST_PORT:CONTAINER_PORT port-forward
+# mapping. The container itself always binds 0.0.0.0:7878 inside,
+# set by KATA_BIND in the Dockerfile — the two are independent.
+#
+# For a deployment beyond a single user, set KATA_PUBLISH_ADDR=0.0.0.0
 # **and** a real KATA_AUTH_MODE in .env (plus TLS / OIDC params as
 # needed). See docs/deploying.md for the full menu.
 #
@@ -28,7 +34,7 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "${KATA_LISTEN_ADDR:-127.0.0.1}:${KATA_PORT:-7878}:7878"
+      - "${KATA_PUBLISH_ADDR:-127.0.0.1}:${KATA_PUBLISH_PORT:-7878}:7878"
     volumes:
       # Bare token = the named volume below; a path = bind mount.
       # Unset → managed `kata-data` volume (production default). Set
@@ -52,7 +58,7 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "${KATA_LISTEN_ADDR:-127.0.0.1}:${KATA_PORT:-7878}:7878"
+      - "${KATA_PUBLISH_ADDR:-127.0.0.1}:${KATA_PUBLISH_PORT:-7878}:7878"
     volumes:
       - kata-demo-data:/data
     command: ["demo"]

@@ -59,12 +59,16 @@ ships sensible defaults for everything else (listens on
 registers it without a restart).
 
 The defaults are tuned for **local development with agents** —
-loopback-only bind + trust-client auth so Claude Code via MCP works
-on the same host without token-minting ceremony. For any shared
-deployment, set `KATA_LISTEN_ADDR=0.0.0.0` **and** a real
-`KATA_AUTH_MODE` (plus TLS / OIDC params) in `.env`. The auth modes
-are covered below; every CLI flag has a `KATA_*` env var, so the
-recipes that follow translate directly to lines in `.env`.
+compose publishes the port on `127.0.0.1` only + trust-client auth
+so Claude Code via MCP works on the same host without
+token-minting ceremony. For any shared deployment, set
+`KATA_PUBLISH_ADDR=0.0.0.0` **and** a real `KATA_AUTH_MODE` (plus
+TLS / OIDC params) in `.env`. (`KATA_PUBLISH_ADDR` is the host
+interface compose forwards the port on; the container itself
+always binds `0.0.0.0:7878` internally — `KATA_BIND` in the
+Dockerfile.) The auth modes are covered below; every CLI flag has
+a `KATA_*` env var, so the recipes that follow translate directly
+to lines in `.env`.
 
 A `--profile demo` service in the same compose ships the seeded
 guided tour for a zero-config kata test drive:

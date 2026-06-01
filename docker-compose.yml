@@ -9,9 +9,11 @@
 #     X-Review-Author / ?as= so Claude Code via MCP works out of the
 #     box on the same host
 #
-# For a deployment beyond a single user, set KATA_LISTEN_ADDR=0.0.0.0
+# For a deployment beyond a single user, set KATA_PUBLISH_ADDR=0.0.0.0
 # **and** a real KATA_AUTH_MODE in .env (plus TLS / OIDC params as
-# needed). See docs/deploying.md for the full menu.
+# needed). See docs/deploying.md for the full menu. (KATA_PUBLISH_ADDR
+# fills the host side of compose's port-publish; the container's own
+# bind stays 0.0.0.0:7878 via KATA_BIND.)
 #
 # Required env: KATA_WORKSPACES_DIR (host dir of jj repos to serve).
 # All other knobs are optional — see .env.example.
@@ -59,7 +61,7 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "${KATA_LISTEN_ADDR:-127.0.0.1}:${KATA_PORT:-7878}:7878"
+      - "${KATA_PUBLISH_ADDR:-127.0.0.1}:${KATA_PUBLISH_PORT:-7878}:7878"
     volumes:
       - kata-demo-data:/data
     command: ["demo"]
