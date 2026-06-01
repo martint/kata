@@ -27,8 +27,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    ports:
-      - "${KATA_LISTEN_ADDR:-127.0.0.1}:${KATA_PORT:-7878}:7878"
     volumes:
       # Bare token = the named volume below; a path = bind mount.
       # Unset → managed `kata-data` volume (production default). Set
@@ -40,8 +38,17 @@ services:
       - path: .env
         required: false
     environment:
-      KATA_AUTHOR: ${KATA_AUTHOR:-dev@localhost}
       RUST_LOG: ${RUST_LOG:-info}
+    networks:
+      traefik:      
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.kata.rule=Host(`kata.home.weakref.org`)"
+      - "traefik.http.routers.kata.entrypoints=websecure"
+      - "traefik.http.routers.kata.tls=true"
+      - "traefik.http.routers.kata.tls.certresolver=cloudflare"
+      - "traefik.http.services.kata.loadbalancer.server.port=7878"      
+      - "traefik.http.routers.kata.middlewares=authelia@docker"
 
   # `docker compose --profile demo up` — seeded workspace + ?demo=1
   # guided tour at http://localhost:7878. No host repo dir needed.
@@ -60,3 +67,7 @@ services:
 volumes:
   kata-data:
   kata-demo-data:
+
+networks:
+  traefik:
+    external: true

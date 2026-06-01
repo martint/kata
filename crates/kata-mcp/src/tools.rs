@@ -1185,11 +1185,20 @@ mod tests {
 pub fn mcp_service(
     service: Arc<ReviewService>,
     author: Author,
+    extra_allowed_hosts: Vec<String>,
 ) -> StreamableHttpService<ReviewMcp, LocalSessionManager> {
     let kata_mcp = ReviewMcp::new(service, author);
+    // rmcp's StreamableHttpServerConfig defaults to allowing only
+    // localhost/127.0.0.1/::1 as Host header values (DNS-rebinding
+    // guard). Anything reaching the server with a different Host
+    // gets rejected at the transport layer. Operators behind a
+    // reverse proxy at a public hostname extend the allowlist via
+    // the `--mcp-allowed-host` flag on `kata serve`.
+    let mut cfg = StreamableHttpServerConfig::default();
+    cfg.allowed_hosts.extend(extra_allowed_hosts);
     StreamableHttpService::new(
         move || Ok(kata_mcp.clone()),
         LocalSessionManager::default().into(),
-        StreamableHttpServerConfig::default(),
+        cfg,
     )
 }

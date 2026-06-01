@@ -285,6 +285,15 @@ struct ServeArgs {
     /// the MCP endpoint is unauthenticated.
     #[arg(long = "mcp-cors-origin", env = "KATA_MCP_CORS_ORIGIN")]
     mcp_cors_origins: Vec<String>,
+
+    /// Hostname to add to MCP's `Host`-header allowlist
+    /// (DNS-rebinding guard). The defaults already cover same-host
+    /// clients (`localhost`, `127.0.0.1`, `::1`); add your public
+    /// hostname here when kata sits behind a reverse proxy at e.g.
+    /// `kata.example.com`. Pass multiple times for several hosts.
+    /// Bare `host` or `host:port` form, per rmcp's semantics.
+    #[arg(long = "mcp-allowed-host", env = "KATA_MCP_ALLOWED_HOST")]
+    mcp_allowed_hosts: Vec<String>,
 }
 
 struct WorkspaceSpec {
@@ -770,6 +779,7 @@ async fn run_demo(
         // nothing for the scanner to do.
         workspace_scan_interval: 0,
         mcp_cors_origins: Vec::new(),
+        mcp_allowed_hosts: Vec::new(),
         // The demo is single-user on the same host; the historical
         // client-supplied identity model is the right default.
         auth_mode: AuthMode::TrustClient,
@@ -1259,7 +1269,11 @@ async fn serve(
         repos = repo_count,
         "mounting MCP at /mcp",
     );
-    let dispatcher = kata_mcp::McpDispatcher::new(service.clone(), default_mcp_author);
+    let dispatcher = kata_mcp::McpDispatcher::new(
+        service.clone(),
+        default_mcp_author,
+        args.mcp_allowed_hosts.clone(),
+    );
     let mcp_state = McpState {
         dispatcher,
         auth: cfg.auth.clone(),

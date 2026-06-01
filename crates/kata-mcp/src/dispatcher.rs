@@ -34,15 +34,24 @@ pub struct McpDispatcher {
 struct Inner {
     service: Arc<ReviewService>,
     default_author: Author,
+    /// Extra entries appended to rmcp's Host-header allowlist on
+    /// every per-author MCP instance the dispatcher creates. The
+    /// defaults (localhost, 127.0.0.1, ::1) are still included.
+    extra_allowed_hosts: Vec<String>,
     instances: Mutex<HashMap<String, Instance>>,
 }
 
 impl McpDispatcher {
-    pub fn new(service: Arc<ReviewService>, default_author: Author) -> Self {
+    pub fn new(
+        service: Arc<ReviewService>,
+        default_author: Author,
+        extra_allowed_hosts: Vec<String>,
+    ) -> Self {
         Self {
             inner: Arc::new(Inner {
                 service,
                 default_author,
+                extra_allowed_hosts,
                 instances: Mutex::new(HashMap::new()),
             }),
         }
@@ -58,7 +67,13 @@ impl McpDispatcher {
     pub fn for_author(&self, raw: &str) -> Instance {
         let mut map = self.inner.instances.lock().expect("mcp dispatcher lock poisoned");
         map.entry(raw.to_owned())
-            .or_insert_with(|| mcp_service(self.inner.service.clone(), Author::new(raw)))
+            .or_insert_with(|| {
+                mcp_service(
+                    self.inner.service.clone(),
+                    Author::new(raw),
+                    self.inner.extra_allowed_hosts.clone(),
+                )
+            })
             .clone()
     }
 }
