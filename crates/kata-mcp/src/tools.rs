@@ -74,7 +74,7 @@ impl ReviewMcp {
     }
 
     #[tool(
-        description = "Open a review and return its manifest, file-level diff metadata (paths, +/- counts, status), published comments/responses, and the agent's own drafts. Hunks are not inlined — fetch them per file with `read_file_diff`. Pass `patchset` to view an earlier round; omit for the latest."
+        description = "Open a review and return its manifest, file-level diff metadata (paths, +/- counts, status), published comments/responses, and the agent's own drafts. Hunks are not inlined by default — fetch them per file with `read_file_diff`, or pass `include_hunks: true` to get every file's hunks inline in one round-trip (expensive for big reviews; prefer the per-file fetch when context budget matters). Pass `patchset` to view an earlier round; omit for the latest."
     )]
     async fn get_review(
         &self,
@@ -83,7 +83,14 @@ impl ReviewMcp {
         let repo = self.resolve(&args.repo)?;
         let view = self
             .service
-            .open_review(&repo, &args.review_id, &self.author, args.patchset, None)
+            .open_review(
+                &repo,
+                &args.review_id,
+                &self.author,
+                args.patchset,
+                None,
+                args.include_hunks,
+            )
             .await
             .map_err(into_mcp)?;
         Ok(text_json(&view))
@@ -516,7 +523,7 @@ impl ReviewMcp {
         // `list_annotations` underneath.
         let view = self
             .service
-            .open_review(&repo, &review_id, &self.author, None, None)
+            .open_review(&repo, &review_id, &self.author, None, None, false)
             .await
             .map_err(into_mcp)?;
         let existing = view
@@ -846,6 +853,13 @@ pub struct GetReviewArgs {
     pub review_id: ReviewId,
     #[serde(default)]
     pub patchset: Option<u32>,
+    /// When `true`, every file in `diff.files[]` arrives with its
+    /// `hunks` already populated. Convenient for a small review;
+    /// wasteful for a large one (the response can balloon past most
+    /// agents' context budget). Default `false` — fetch hunks per
+    /// file via `read_file_diff` instead.
+    #[serde(default)]
+    pub include_hunks: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]

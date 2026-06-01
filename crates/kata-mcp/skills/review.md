@@ -34,6 +34,12 @@ MCP server can front multiple repositories; every tool call takes a
    refactor the full diff is often much larger than your context
    budget.
 
+   For a small review where pulling every file is cheaper than the
+   per-file round-trips, pass `include_hunks: true` to `get_review`
+   to inline every file's hunks in one call. Same hunk shape as
+   `read_file_diff` returns. Default `false` — opting in for a
+   200-file refactor will blow your context budget.
+
 3. **Comment.** Anchor every comment with the tip patchset's IDs:
    `manifest.patchsets[last].tip_change` and `tip_commit`. Pick the
    granularity that fits:

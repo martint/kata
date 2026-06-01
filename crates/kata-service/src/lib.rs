@@ -702,6 +702,7 @@ impl ReviewService {
         viewer: &Author,
         patchset: Option<u32>,
         compare: Option<u32>,
+        include_hunks: bool,
     ) -> ServiceResult<ReviewView> {
         let jj = self.jj_for(repo)?;
         let manifest = self.storage.open_review(repo, review).await?;
@@ -746,16 +747,26 @@ impl ReviewService {
         // would advance the latest patchset (the "is_stale" flag below).
         // We resolve here, in parallel with the diff/commit work, to avoid
         // paying for a separate round-trip.
-        // Metadata only — hunks ship lazily, one file at a time, via
-        // `/file-diff`. Keeps the open_review JSON tiny so the
-        // browser's `JSON.parse` stays under ~10 ms instead of the
-        // ~1 s it took when the whole diff was inlined.
+        //
+        // Default is metadata-only — hunks ship lazily, one file at a
+        // time, via `/file-diff`. Keeps the open_review JSON tiny so
+        // the browser's `JSON.parse` stays under ~10 ms instead of the
+        // ~1 s it took when the whole diff was inlined. MCP agents
+        // that want the whole diff in one round-trip opt in via
+        // `include_hunks = true`.
         //
         // `live_range` uses the live revset and is allowed to fail (e.g.
         // the revset references a change ID that's gone divergent); we
         // fall back to "not stale" rather than failing the whole open.
+        let diff_fut = async {
+            if include_hunks {
+                build_diff(&*jj, diff_base, &selected.tip_commit).await
+            } else {
+                build_diff_metadata(&*jj, diff_base, &selected.tip_commit).await
+            }
+        };
         let (diff_res, commits_res, live_res, current_op_res) = tokio::join!(
-            build_diff_metadata(&*jj, diff_base, &selected.tip_commit),
+            diff_fut,
             jj.list_commits(&commits_revset),
             jj.resolve_range(&manifest.revset),
             jj.current_op_id(),

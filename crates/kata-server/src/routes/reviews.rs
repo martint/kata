@@ -95,7 +95,7 @@ pub async fn open_review(
     Ok(Json(
         state
             .service
-            .open_review(&repo, &review_id, &viewer, q.patchset, q.compare)
+            .open_review(&repo, &review_id, &viewer, q.patchset, q.compare, false)
             .await?,
     ))
 }
