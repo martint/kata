@@ -155,6 +155,55 @@ subsequent request.
 MCP agents in OIDC mode authenticate via API tokens (see below);
 session cookies are browser-only.
 
+## Admins (global)
+
+By default the only person who can edit a review's revset or summary,
+archive/delete it, or write author annotations is its **creator**. A
+global **admin** passes every one of those gates on *every* review —
+exactly as if they were its creator. Actions stay attributed to the
+admin's own identity (an admin-written annotation shows the admin, not
+the original creator); this is a permissions grant, not impersonation.
+
+Admin status is decided from the identity Kata already resolved, so it
+works in **every auth mode** (and for API-token callers). There are two
+sources, OR'd together:
+
+**By email** — a static allowlist, valid in all modes. Repeat the flag
+or pass a comma-separated env var; matched case-insensitively after
+trimming:
+
+```sh
+kata serve … \
+  --admin-email alice@example.com \
+  --admin-email ops@example.com
+# or: KATA_ADMIN_EMAILS="alice@example.com,ops@example.com"
+```
+
+**By proxy group** — in `trust-forwarded-header` mode, membership in a
+named group from a proxy-supplied groups header (e.g. Authelia's
+`Remote-Groups`). The groups header is trusted on the same basis as the
+email header — i.e. only because the request came through the proxy your
+`--auth-trust-upstream` allowlist vouches for:
+
+```sh
+kata serve … \
+  --auth-mode trust-forwarded-header \
+  --auth-trusted-header Remote-Email \
+  --auth-trust-upstream 10.0.0.5/32 \
+  --admin-group kata-admins \
+  --auth-groups-header Remote-Groups   # this is the default
+```
+
+Group names are matched exactly (groups are case-sensitive on most
+IdPs). The group source is consulted only in `trust-forwarded-header`
+mode; in OIDC and `trust-client` modes use the email allowlist. MCP
+admins are recognised by the email allowlist (so an API token whose
+author is listed acts as an admin); the per-request group header is
+HTTP-only.
+
+With no `--admin-email` / `--admin-group` configured there are no
+admins and every gate behaves exactly as before.
+
 ## TLS termination
 
 The reverse-proxy recipe above already covers TLS upstream. If

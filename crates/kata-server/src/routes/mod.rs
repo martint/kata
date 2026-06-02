@@ -16,7 +16,7 @@ mod responses;
 mod reviews;
 mod sessions;
 
-pub use author::ViewerAuthor;
+pub use author::{Actor, ViewerAuthor};
 
 pub fn router(state: AppState) -> Router {
     attach_oidc_routes(api_routes(), &state)

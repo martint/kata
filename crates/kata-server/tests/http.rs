@@ -33,6 +33,9 @@ impl Harness {
             trusted_header: "X-Forwarded-Email".into(),
             upstream_allowlist: Vec::new(),
             oidc: None,
+            admins: Vec::new(),
+            admin_group: None,
+            groups_header: "Remote-Groups".into(),
         })
         .await
     }
@@ -423,6 +426,123 @@ async fn archive_round_trip_and_blocks_new_sessions() {
     assert!(restored["archived_at"].is_null());
     let (status, _) = h.json("POST", &format!("{review_url}/sessions"), None).await;
     assert_eq!(status, StatusCode::OK);
+}
+
+/// A global admin (by email allowlist) passes a creator gate on a
+/// review they didn't create; a non-admin non-creator still can't.
+/// Exercises the whole chain: `Actor` extractor → handler → service.
+#[tokio::test]
+async fn admin_by_email_bypasses_creator_gate_over_http() {
+    let h = Harness::with_auth(kata_server::auth::AuthConfig {
+        mode: kata_server::auth::AuthMode::TrustClient,
+        trusted_header: "X-Forwarded-Email".into(),
+        upstream_allowlist: Vec::new(),
+        oidc: None,
+        admins: vec![kata_core::Author::new("Admin@Example.com")],
+        admin_group: None,
+        groups_header: "Remote-Groups".into(),
+    })
+    .await;
+    let (_, created) = h
+        .json(
+            "POST",
+            "/api/repos/main/reviews",
+            Some(json!({
+                "name": "feature",
+                "revset": "@-..feature",
+                "bookmark": "feature",
+                "created_by": "alice@example.com",
+            })),
+        )
+        .await;
+    let review_url = format!(
+        "/api/repos/main/reviews/{}",
+        created["number"].as_u64().unwrap()
+    );
+
+    // Admin (different identity, case-insensitive match) archives.
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("{review_url}/archive"))
+        .header("x-review-author", "admin@example.com")
+        .body(Body::empty())
+        .unwrap();
+    let resp = h.router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "admin should pass the gate");
+
+    // A non-admin non-creator still can't.
+    let req = Request::builder()
+        .method("DELETE")
+        .uri(format!("{review_url}/archive"))
+        .header("x-review-author", "carol@example.com")
+        .body(Body::empty())
+        .unwrap();
+    let resp = h.router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+/// Admin via a proxy-supplied groups header (Authelia-style) in
+/// trust-forwarded-header mode: membership in the configured group
+/// confers admin; the same user without the group does not.
+#[tokio::test]
+async fn admin_by_proxy_group_header_bypasses_creator_gate() {
+    let h = Harness::with_auth(kata_server::auth::AuthConfig {
+        mode: kata_server::auth::AuthMode::TrustForwardedHeader,
+        trusted_header: "X-Forwarded-Email".into(),
+        upstream_allowlist: Vec::new(),
+        oidc: None,
+        admins: Vec::new(),
+        admin_group: Some("kata-admins".into()),
+        groups_header: "Remote-Groups".into(),
+    })
+    .await;
+    // Create as alice (identity comes from the trusted header; the
+    // loopback bind means the upstream allowlist isn't enforced).
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/repos/main/reviews")
+        .header("x-forwarded-email", "alice@example.com")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&json!({
+                "name": "feature",
+                "revset": "@-..feature",
+                "bookmark": "feature",
+                "created_by": "alice@example.com",
+            }))
+            .unwrap(),
+        ))
+        .unwrap();
+    let resp = h.router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let created: Value =
+        serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let review_url = format!(
+        "/api/repos/main/reviews/{}",
+        created["number"].as_u64().unwrap()
+    );
+
+    // dave isn't the creator, but the proxy says he's in kata-admins.
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("{review_url}/archive"))
+        .header("x-forwarded-email", "dave@example.com")
+        .header("Remote-Groups", "users,kata-admins,dev")
+        .body(Body::empty())
+        .unwrap();
+    let resp = h.router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "group admin should pass");
+
+    // Same dave, no admin group ⇒ rejected.
+    let req = Request::builder()
+        .method("DELETE")
+        .uri(format!("{review_url}/archive"))
+        .header("x-forwarded-email", "dave@example.com")
+        .header("Remote-Groups", "users,dev")
+        .body(Body::empty())
+        .unwrap();
+    let resp = h.router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
 /// `refresh_review` should record the moved bookmark as a new patchset
@@ -1636,6 +1756,9 @@ async fn trust_forwarded_header_reads_configured_header() {
         trusted_header: "X-Forwarded-Email".into(),
         upstream_allowlist: Vec::new(),
         oidc: None,
+            admins: Vec::new(),
+            admin_group: None,
+            groups_header: "Remote-Groups".into(),
     })
     .await;
     let req = Request::builder()
@@ -1664,6 +1787,9 @@ async fn trust_forwarded_header_rejects_missing_header() {
         trusted_header: "X-Forwarded-Email".into(),
         upstream_allowlist: Vec::new(),
         oidc: None,
+            admins: Vec::new(),
+            admin_group: None,
+            groups_header: "Remote-Groups".into(),
     })
     .await;
     let (status, _) = h.json("GET", "/api/whoami", None).await;
@@ -1679,6 +1805,9 @@ async fn trust_forwarded_header_rejects_empty_header() {
         trusted_header: "X-Forwarded-Email".into(),
         upstream_allowlist: Vec::new(),
         oidc: None,
+            admins: Vec::new(),
+            admin_group: None,
+            groups_header: "Remote-Groups".into(),
     })
     .await;
     let req = Request::builder()
@@ -1845,6 +1974,9 @@ async fn bearer_token_works_under_trust_forwarded_header_mode() {
         trusted_header: "X-Forwarded-Email".into(),
         upstream_allowlist: Vec::new(),
         oidc: None,
+            admins: Vec::new(),
+            admin_group: None,
+            groups_header: "Remote-Groups".into(),
     })
     .await;
     let (plaintext, _) = mint_and_store(&h, "bob@example.com", "ci").await;

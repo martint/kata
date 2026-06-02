@@ -20,6 +20,6 @@ pub use documents::{
 pub use ids::{
     AnnotationId, ApiTokenId, Author, Bookmark, ChangedFile, ChangeId, ColumnRange, CommentId,
     CommitId, CommitInfo, LineRange, LineRangeParseError, OpId, RepoId, RepoSummary, ResponseId,
-    ReviewId, RevSet, SessionId, Side,
+    ReviewId, RevSet, SessionId, Side, is_listed_admin, normalize_author,
 };
 pub use log_graph::{LogCoord, LogLine, LogPage, LogRow};

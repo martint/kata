@@ -7,17 +7,26 @@ use kata_storage::ReviewSummary;
 use serde::{Deserialize, Serialize};
 
 use crate::error::AppResult;
-use crate::routes::author::ViewerAuthor;
+use crate::routes::author::{Actor, ViewerAuthor};
 use crate::service::{CommitDiffView, CreateReviewParams, DiffCommitsResult, ReviewView};
 use crate::state::AppState;
 
 #[derive(Debug, Serialize)]
 pub struct WhoAmI {
     pub author: Author,
+    /// Whether the server resolved this caller as a global admin
+    /// (creator-equivalent on every review). Surfaced so operators can
+    /// verify their `--admin-email` / `--admin-group` wiring — `curl`
+    /// `/api/whoami` through the proxy and check this flag — and so the
+    /// SPA can show admin-only affordances.
+    pub is_admin: bool,
 }
 
-pub async fn whoami(ViewerAuthor(author): ViewerAuthor) -> Json<WhoAmI> {
-    Json(WhoAmI { author })
+pub async fn whoami(actor: Actor) -> Json<WhoAmI> {
+    Json(WhoAmI {
+        author: actor.author,
+        is_admin: actor.is_admin,
+    })
 }
 
 pub async fn list_repos(State(state): State<AppState>) -> Json<Vec<RepoSummary>> {
@@ -111,7 +120,7 @@ pub struct RefreshReviewBody {
 
 pub async fn refresh_review(
     State(state): State<AppState>,
-    ViewerAuthor(actor): ViewerAuthor,
+    actor: Actor,
     Path((repo_name, review_number)): Path<(String, u32)>,
     body: Option<Json<RefreshReviewBody>>,
 ) -> AppResult<Json<ReviewManifest>> {
@@ -121,7 +130,7 @@ pub async fn refresh_review(
     Ok(Json(
         state
             .service
-            .refresh_review(&repo, &review_id, &actor, new_summary)
+            .refresh_review(&repo, &review_id, &actor.author, actor.is_admin, new_summary)
             .await?,
     ))
 }
@@ -134,7 +143,7 @@ pub struct UpdateSummaryBody {
 
 pub async fn update_summary(
     State(state): State<AppState>,
-    ViewerAuthor(actor): ViewerAuthor,
+    actor: Actor,
     Path((repo_name, review_number)): Path<(String, u32)>,
     Json(body): Json<UpdateSummaryBody>,
 ) -> AppResult<Json<ReviewManifest>> {
@@ -143,7 +152,7 @@ pub async fn update_summary(
     Ok(Json(
         state
             .service
-            .update_review_summary(&repo, &review_id, &actor, body.summary)
+            .update_review_summary(&repo, &review_id, &actor.author, actor.is_admin, body.summary)
             .await?,
     ))
 }
@@ -155,7 +164,7 @@ pub struct UpdateRevsetBody {
 
 pub async fn update_revset(
     State(state): State<AppState>,
-    ViewerAuthor(actor): ViewerAuthor,
+    actor: Actor,
     Path((repo_name, review_number)): Path<(String, u32)>,
     Json(body): Json<UpdateRevsetBody>,
 ) -> AppResult<Json<ReviewManifest>> {
@@ -164,14 +173,14 @@ pub async fn update_revset(
     Ok(Json(
         state
             .service
-            .update_review_revset(&repo, &review_id, &actor, kata_core::RevSet::new(body.revset))
+            .update_review_revset(&repo, &review_id, &actor.author, actor.is_admin, kata_core::RevSet::new(body.revset))
             .await?,
     ))
 }
 
 pub async fn archive_review(
     State(state): State<AppState>,
-    ViewerAuthor(actor): ViewerAuthor,
+    actor: Actor,
     Path((repo_name, review_number)): Path<(String, u32)>,
 ) -> AppResult<Json<ReviewManifest>> {
     let repo = state.service.resolve_repo(&repo_name)?;
@@ -179,14 +188,14 @@ pub async fn archive_review(
     Ok(Json(
         state
             .service
-            .set_review_archived(&repo, &review_id, &actor, true)
+            .set_review_archived(&repo, &review_id, &actor.author, actor.is_admin, true)
             .await?,
     ))
 }
 
 pub async fn unarchive_review(
     State(state): State<AppState>,
-    ViewerAuthor(actor): ViewerAuthor,
+    actor: Actor,
     Path((repo_name, review_number)): Path<(String, u32)>,
 ) -> AppResult<Json<ReviewManifest>> {
     let repo = state.service.resolve_repo(&repo_name)?;
@@ -194,21 +203,21 @@ pub async fn unarchive_review(
     Ok(Json(
         state
             .service
-            .set_review_archived(&repo, &review_id, &actor, false)
+            .set_review_archived(&repo, &review_id, &actor.author, actor.is_admin, false)
             .await?,
     ))
 }
 
 pub async fn delete_review(
     State(state): State<AppState>,
-    ViewerAuthor(actor): ViewerAuthor,
+    actor: Actor,
     Path((repo_name, review_number)): Path<(String, u32)>,
 ) -> AppResult<axum::http::StatusCode> {
     let repo = state.service.resolve_repo(&repo_name)?;
     let review_id = state.service.resolve_review_number(&repo, review_number).await?;
     state
         .service
-        .delete_review(&repo, &review_id, &actor)
+        .delete_review(&repo, &review_id, &actor.author, actor.is_admin)
         .await?;
     Ok(axum::http::StatusCode::NO_CONTENT)
 }

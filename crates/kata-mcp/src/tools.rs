@@ -27,15 +27,21 @@ use serde::{Deserialize, Serialize};
 pub struct ReviewMcp {
     service: Arc<ReviewService>,
     author: Author,
+    /// Whether this author is a global admin (creator-equivalent on
+    /// every review). For MCP this is decided from the static email
+    /// allowlist — token callers and `?as=` identities alike are
+    /// matched against it. The proxy-group source is HTTP-only.
+    is_admin: bool,
     tool_router: ToolRouter<ReviewMcp>,
 }
 
 #[tool_router]
 impl ReviewMcp {
-    pub fn new(service: Arc<ReviewService>, author: Author) -> Self {
+    pub fn new(service: Arc<ReviewService>, author: Author, is_admin: bool) -> Self {
         Self {
             service,
             author,
+            is_admin,
             tool_router: Self::tool_router(),
         }
     }
@@ -197,7 +203,7 @@ impl ReviewMcp {
         let repo = self.resolve(&args.repo)?;
         let manifest = self
             .service
-            .refresh_review(&repo, &args.review_id, &self.author, args.summary)
+            .refresh_review(&repo, &args.review_id, &self.author, self.is_admin, args.summary)
             .await
             .map_err(into_mcp)?;
         Ok(text_json(&manifest))
@@ -213,7 +219,7 @@ impl ReviewMcp {
         let repo = self.resolve(&args.repo)?;
         let manifest = self
             .service
-            .update_review_summary(&repo, &args.review_id, &self.author, args.summary)
+            .update_review_summary(&repo, &args.review_id, &self.author, self.is_admin, args.summary)
             .await
             .map_err(into_mcp)?;
         Ok(text_json(&manifest))
@@ -233,6 +239,7 @@ impl ReviewMcp {
                 &repo,
                 &args.review_id,
                 &self.author,
+                self.is_admin,
                 kata_core::RevSet::new(args.revset),
             )
             .await
@@ -495,7 +502,7 @@ impl ReviewMcp {
         };
         let annotation = self
             .service
-            .upsert_annotation(&repo, &review_id, &self.author, None, input)
+            .upsert_annotation(&repo, &review_id, &self.author, self.is_admin, None, input)
             .await
             .map_err(into_mcp)?;
         Ok(text_json(&annotation))
@@ -527,7 +534,7 @@ impl ReviewMcp {
         };
         let annotation = self
             .service
-            .upsert_annotation(&repo, &review_id, &self.author, None, input)
+            .upsert_annotation(&repo, &review_id, &self.author, self.is_admin, None, input)
             .await
             .map_err(into_mcp)?;
         Ok(text_json(&annotation))
@@ -576,7 +583,7 @@ impl ReviewMcp {
         };
         let annotation = self
             .service
-            .upsert_annotation(&repo, &review_id, &self.author, Some(annotation_id), input)
+            .upsert_annotation(&repo, &review_id, &self.author, self.is_admin, Some(annotation_id), input)
             .await
             .map_err(into_mcp)?;
         Ok(text_json(&annotation))
@@ -596,7 +603,7 @@ impl ReviewMcp {
         } = args;
         let repo = self.resolve(&repo)?;
         self.service
-            .delete_annotation(&repo, &review_id, &self.author, &annotation_id)
+            .delete_annotation(&repo, &review_id, &self.author, self.is_admin, &annotation_id)
             .await
             .map_err(into_mcp)?;
         Ok(ok_text("deleted"))
@@ -727,7 +734,7 @@ impl ReviewMcp {
         let repo = self.resolve(&repo)?;
         let manifest = self
             .service
-            .set_review_archived(&repo, &review_id, &self.author, true)
+            .set_review_archived(&repo, &review_id, &self.author, self.is_admin, true)
             .await
             .map_err(into_mcp)?;
         Ok(text_json(&manifest))
@@ -744,7 +751,7 @@ impl ReviewMcp {
         let repo = self.resolve(&repo)?;
         let manifest = self
             .service
-            .set_review_archived(&repo, &review_id, &self.author, false)
+            .set_review_archived(&repo, &review_id, &self.author, self.is_admin, false)
             .await
             .map_err(into_mcp)?;
         Ok(text_json(&manifest))
@@ -760,7 +767,7 @@ impl ReviewMcp {
         let ReviewArgs { repo, review_id } = args;
         let repo = self.resolve(&repo)?;
         self.service
-            .delete_review(&repo, &review_id, &self.author)
+            .delete_review(&repo, &review_id, &self.author, self.is_admin)
             .await
             .map_err(into_mcp)?;
         Ok(ok_text("deleted"))
@@ -1287,9 +1294,10 @@ mod tests {
 pub fn mcp_service(
     service: Arc<ReviewService>,
     author: Author,
+    is_admin: bool,
     extra_allowed_hosts: Vec<String>,
 ) -> StreamableHttpService<ReviewMcp, LocalSessionManager> {
-    let kata_mcp = ReviewMcp::new(service, author);
+    let kata_mcp = ReviewMcp::new(service, author, is_admin);
     // rmcp's StreamableHttpServerConfig defaults to allowing only
     // localhost/127.0.0.1/::1 as Host header values (DNS-rebinding
     // guard). Anything reaching the server with a different Host

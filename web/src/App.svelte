@@ -1099,6 +1099,7 @@
       summaries={summaries}
       loading={loading}
       createdBy={whoami?.author ?? ''}
+      isAdmin={whoami?.is_admin ?? false}
       prefillRevset={prefill}
       onchangerepo={switchRepo}
       onopen={openReview}
@@ -1140,6 +1141,7 @@
         repo={screen.repo}
         view={screen.view}
         viewer={whoami?.author ?? ''}
+        isAdmin={whoami?.is_admin ?? false}
         initialPatchset={screen.initialPatchset}
         initialCompareWith={screen.initialCompareWith}
         initialCommit={screen.initialCommit}

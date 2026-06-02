@@ -169,8 +169,11 @@ comment, and it never silently relocates one to the wrong place.
 An *annotation* is the author's counterpart to a comment: a note
 they leave on their own change. Annotations are author-only —
 nobody else can write them — and have no thread, no replies, no
-resolution. They are context the reviewer needs *before* reading
-the diff:
+resolution. (A deployment may designate global **admins** who pass
+every creator-only gate, annotations included, on any review — a
+permissions grant, not impersonation; see `docs/deploying.md`. The
+default is no admins.) They are context the reviewer needs *before*
+reading the diff:
 
 > "Note: kept `formatName` as its own export so we can reuse it
 > for `Person.displayName` in a follow-up PR."

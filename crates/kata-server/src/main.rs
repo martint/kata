@@ -162,6 +162,30 @@ struct ServeArgs {
     #[arg(long = "auth-trust-upstream", env = "KATA_AUTH_TRUST_UPSTREAM", value_parser = parse_upstream_cidr)]
     auth_trust_upstream: Vec<ipnet::IpNet>,
 
+    /// Global admin by email. An admin passes every review-creator
+    /// gate (annotations, revset/summary edits, archive, delete) on
+    /// every review, as if they were its creator — actions stay
+    /// attributed to the admin's own identity. Works in all auth modes
+    /// (the resolved author is matched here). Repeat the flag for
+    /// several admins, or pass a comma-separated list via the env var.
+    /// Matched case-insensitively after trimming.
+    #[arg(long = "admin-email", env = "KATA_ADMIN_EMAILS", value_delimiter = ',')]
+    admin_email: Vec<String>,
+
+    /// Group name that grants admin when present in the proxy-supplied
+    /// groups header (see `--auth-groups-header`). Only consulted in
+    /// `--auth-mode trust-forwarded-header`, where the upstream
+    /// allowlist already vouches for the proxy (e.g. Authelia's
+    /// `Remote-Groups`). Unset ⇒ group-based admin is off.
+    #[arg(long = "admin-group", env = "KATA_ADMIN_GROUP")]
+    admin_group: Option<String>,
+
+    /// Header carrying the caller's groups for `--admin-group`,
+    /// comma/space/`;`-separated. Defaults to Authelia's `Remote-
+    /// Groups`. Header names are case-insensitive.
+    #[arg(long = "auth-groups-header", env = "KATA_AUTH_GROUPS_HEADER", default_value = "Remote-Groups")]
+    auth_groups_header: String,
+
     /// Path to a PEM-encoded TLS certificate chain. Pair with
     /// `--tls-key`. When both are set, the listener terminates TLS
     /// in-process via rustls. Omit both to serve plain HTTP and
@@ -785,6 +809,9 @@ async fn run_demo(
         auth_mode: AuthMode::TrustClient,
         auth_trusted_header: "X-Forwarded-Email".into(),
         auth_trust_upstream: Vec::new(),
+        admin_email: Vec::new(),
+        admin_group: None,
+        auth_groups_header: "Remote-Groups".into(),
         tls_cert: None,
         tls_key: None,
         tls_acme: None,
@@ -1140,11 +1167,21 @@ async fn serve(
         }
         None
     };
+    let admins: Vec<kata_core::Author> = args
+        .admin_email
+        .iter()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(kata_core::Author::new)
+        .collect();
     let auth = AuthConfig {
         mode: args.auth_mode,
         trusted_header: args.auth_trusted_header.clone(),
         upstream_allowlist: args.auth_trust_upstream.clone(),
         oidc: oidc_cfg,
+        admins: admins.clone(),
+        admin_group: args.admin_group.clone().filter(|s| !s.trim().is_empty()),
+        groups_header: args.auth_groups_header.clone(),
     };
     // Three TLS shapes, mutually exclusive: PEM file pair, ACME
     // auto-issuance, or plain HTTP (terminate TLS upstream). clap's
@@ -1272,6 +1309,7 @@ async fn serve(
     let dispatcher = kata_mcp::McpDispatcher::new(
         service.clone(),
         default_mcp_author,
+        cfg.auth.admins.clone(),
         args.mcp_allowed_hosts.clone(),
     );
     let mcp_state = McpState {

@@ -56,6 +56,29 @@ string_newtype!(Author);
 string_newtype!(OpId);
 string_newtype!(ApiTokenId);
 
+/// Canonical form for comparing an author identity against an admin
+/// allowlist: trimmed and ASCII-lowercased. Identity providers and
+/// auth proxies differ on casing/whitespace, and a silently-non-
+/// matching admin entry is a bad failure mode — so both sides of the
+/// comparison are normalised the same way.
+pub fn normalize_author(s: &str) -> String {
+    s.trim().to_ascii_lowercase()
+}
+
+/// Whether `author` appears in an admin allowlist, comparing under
+/// [`normalize_author`]. Empty list ⇒ never an admin (the default —
+/// no behaviour change until an operator opts in). Shared by the HTTP
+/// auth config and the MCP dispatcher so they agree byte-for-byte.
+pub fn is_listed_admin(admins: &[Author], author: &Author) -> bool {
+    if admins.is_empty() {
+        return false;
+    }
+    let target = normalize_author(author.as_str());
+    admins
+        .iter()
+        .any(|a| normalize_author(a.as_str()) == target)
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Bookmark {

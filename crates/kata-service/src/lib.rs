@@ -1378,14 +1378,13 @@ impl ReviewService {
         repo: &RepoId,
         review: &ReviewId,
         actor: &Author,
+        is_admin: bool,
         new_summary: Option<String>,
     ) -> ServiceResult<ReviewManifest> {
         let jj = self.jj_for(repo)?;
         let mut manifest = self.storage.open_review(repo, review).await?;
-        if new_summary.is_some() && actor != &manifest.created_by {
-            return Err(ServiceError::BadRequest(
-                "only the review's creator can update its summary".into(),
-            ));
+        if new_summary.is_some() {
+            ensure_creator_or_admin(actor, is_admin, &manifest, "update its summary")?;
         }
         let range = jj.resolve_range(&manifest.revset).await?;
         let current = manifest.current().clone();
@@ -1455,15 +1454,12 @@ impl ReviewService {
         repo: &RepoId,
         review: &ReviewId,
         actor: &Author,
+        is_admin: bool,
         new_revset: RevSet,
     ) -> ServiceResult<ReviewManifest> {
         let jj = self.jj_for(repo)?;
         let mut manifest = self.storage.open_review(repo, review).await?;
-        if actor != &manifest.created_by {
-            return Err(ServiceError::BadRequest(
-                "only the review's creator can update its revset".into(),
-            ));
-        }
+        ensure_creator_or_admin(actor, is_admin, &manifest, "update its revset")?;
         let range = jj.resolve_range(&new_revset).await?;
         let current = manifest.current().clone();
         let endpoints_moved = range.tip.commit_id != current.tip_commit
@@ -1511,14 +1507,11 @@ impl ReviewService {
         repo: &RepoId,
         review: &ReviewId,
         actor: &Author,
+        is_admin: bool,
         summary: Option<String>,
     ) -> ServiceResult<ReviewManifest> {
         let mut manifest = self.storage.open_review(repo, review).await?;
-        if actor != &manifest.created_by {
-            return Err(ServiceError::BadRequest(
-                "only the review's creator can update its summary".into(),
-            ));
-        }
+        ensure_creator_or_admin(actor, is_admin, &manifest, "update its summary")?;
         manifest.summary = summary.filter(|s| !s.is_empty());
         self.storage.update_review(repo, &manifest).await?;
         let repo_name = self.repo_name(repo).unwrap_or_default();
@@ -1539,14 +1532,11 @@ impl ReviewService {
         repo: &RepoId,
         review: &ReviewId,
         actor: &Author,
+        is_admin: bool,
         archived: bool,
     ) -> ServiceResult<ReviewManifest> {
         let mut manifest = self.storage.open_review(repo, review).await?;
-        if actor != &manifest.created_by {
-            return Err(ServiceError::BadRequest(
-                "only the review's creator can archive or unarchive it".into(),
-            ));
-        }
+        ensure_creator_or_admin(actor, is_admin, &manifest, "archive or unarchive it")?;
         let already = manifest.archived_at.is_some();
         if already == archived {
             return Ok(manifest);
@@ -1571,13 +1561,10 @@ impl ReviewService {
         repo: &RepoId,
         review: &ReviewId,
         actor: &Author,
+        is_admin: bool,
     ) -> ServiceResult<()> {
         let manifest = self.storage.open_review(repo, review).await?;
-        if actor != &manifest.created_by {
-            return Err(ServiceError::BadRequest(
-                "only the review's creator can delete it".into(),
-            ));
-        }
+        ensure_creator_or_admin(actor, is_admin, &manifest, "delete it")?;
         self.storage.delete_review(repo, review).await?;
         let repo_name = self.repo_name(repo).unwrap_or_default();
         self.emit(Event::ReviewDeleted {
@@ -1961,16 +1948,13 @@ impl ReviewService {
         repo: &RepoId,
         review: &ReviewId,
         actor: &Author,
+        is_admin: bool,
         annotation_id: Option<AnnotationId>,
         input: AnnotationInput,
     ) -> ServiceResult<Annotation> {
         validate_annotation_anchor(&input)?;
         let manifest = self.storage.open_review(repo, review).await?;
-        if actor != &manifest.created_by {
-            return Err(ServiceError::BadRequest(
-                "only the review's creator can write annotations".into(),
-            ));
-        }
+        ensure_creator_or_admin(actor, is_admin, &manifest, "write annotations")?;
         if manifest.archived_at.is_some() {
             return Err(ServiceError::BadRequest(
                 "review is archived; unarchive before editing annotations".into(),
@@ -2019,14 +2003,11 @@ impl ReviewService {
         repo: &RepoId,
         review: &ReviewId,
         actor: &Author,
+        is_admin: bool,
         annotation_id: &AnnotationId,
     ) -> ServiceResult<()> {
         let manifest = self.storage.open_review(repo, review).await?;
-        if actor != &manifest.created_by {
-            return Err(ServiceError::BadRequest(
-                "only the review's creator can delete annotations".into(),
-            ));
-        }
+        ensure_creator_or_admin(actor, is_admin, &manifest, "delete annotations")?;
         self.storage
             .delete_annotation(repo, review, annotation_id)
             .await?;
@@ -2144,6 +2125,26 @@ pub struct UnreadSummary {
 
 fn is_zero_u32(n: &u32) -> bool {
     *n == 0
+}
+
+/// Gate an action that only a review's creator may perform, with a
+/// global admin able to act in the creator's stead. `is_admin` is
+/// decided up at the transport's auth boundary (it can depend on
+/// request headers, e.g. a proxy-supplied group), so the service just
+/// trusts the flag. `action` completes "only the review's creator
+/// can …" for the rejection message a non-admin non-creator sees.
+fn ensure_creator_or_admin(
+    actor: &Author,
+    is_admin: bool,
+    manifest: &ReviewManifest,
+    action: &str,
+) -> ServiceResult<()> {
+    if is_admin || actor == &manifest.created_by {
+        return Ok(());
+    }
+    Err(ServiceError::BadRequest(format!(
+        "only the review's creator can {action}"
+    )))
 }
 
 impl UnreadSummary {
@@ -2768,7 +2769,7 @@ mod annotation_creator_only_tests {
         let (repo, manifest, creator) = seed(storage.clone()).await;
         let service = service_for(storage).await;
         let annotation = service
-            .upsert_annotation(&repo, &manifest.review_id, &creator, None, line_input())
+            .upsert_annotation(&repo, &manifest.review_id, &creator, false, None, line_input())
             .await
             .expect("creator should be allowed");
         assert_eq!(annotation.author, creator);
@@ -2782,7 +2783,7 @@ mod annotation_creator_only_tests {
         let service = service_for(storage).await;
         let bob = Author::new("bob@example.com");
         let err = service
-            .upsert_annotation(&repo, &manifest.review_id, &bob, None, line_input())
+            .upsert_annotation(&repo, &manifest.review_id, &bob, false, None, line_input())
             .await
             .expect_err("non-creator must be rejected");
         match err {
@@ -2805,12 +2806,12 @@ mod annotation_creator_only_tests {
         let (repo, manifest, creator) = seed(storage.clone()).await;
         let service = service_for(storage).await;
         let annotation = service
-            .upsert_annotation(&repo, &manifest.review_id, &creator, None, line_input())
+            .upsert_annotation(&repo, &manifest.review_id, &creator, false, None, line_input())
             .await
             .unwrap();
         let bob = Author::new("bob@example.com");
         let err = service
-            .delete_annotation(&repo, &manifest.review_id, &bob, &annotation.annotation_id)
+            .delete_annotation(&repo, &manifest.review_id, &bob, false, &annotation.annotation_id)
             .await
             .expect_err("non-creator must be rejected from delete too");
         assert!(matches!(err, ServiceError::BadRequest(_)));
@@ -2824,11 +2825,11 @@ mod annotation_creator_only_tests {
         let (repo, manifest, creator) = seed(storage.clone()).await;
         let service = service_for(storage).await;
         let annotation = service
-            .upsert_annotation(&repo, &manifest.review_id, &creator, None, line_input())
+            .upsert_annotation(&repo, &manifest.review_id, &creator, false, None, line_input())
             .await
             .unwrap();
         service
-            .delete_annotation(&repo, &manifest.review_id, &creator, &annotation.annotation_id)
+            .delete_annotation(&repo, &manifest.review_id, &creator, false, &annotation.annotation_id)
             .await
             .expect("creator should be able to delete");
     }
@@ -2840,7 +2841,7 @@ mod annotation_creator_only_tests {
         let service = service_for(storage.clone()).await;
         let bob = Author::new("bob@example.com");
         let err = service
-            .delete_review(&repo, &manifest.review_id, &bob)
+            .delete_review(&repo, &manifest.review_id, &bob, false)
             .await
             .expect_err("non-creator must be rejected");
         match err {
@@ -2865,7 +2866,7 @@ mod annotation_creator_only_tests {
         let (repo, manifest, creator) = seed(storage.clone()).await;
         let service = service_for(storage.clone()).await;
         service
-            .delete_review(&repo, &manifest.review_id, &creator)
+            .delete_review(&repo, &manifest.review_id, &creator, false)
             .await
             .expect("creator should be able to delete");
         let err = storage
@@ -2876,6 +2877,45 @@ mod annotation_creator_only_tests {
             err,
             kata_storage::Error::NotFound { .. },
         ));
+    }
+
+    #[tokio::test]
+    async fn admin_can_act_as_creator_on_gated_actions() {
+        // A non-creator with the admin flag passes every creator gate —
+        // writes are still attributed to the admin's own identity.
+        let storage = Arc::new(SqliteStorage::open_in_memory().await.unwrap());
+        let (repo, manifest, _creator) = seed(storage.clone()).await;
+        let service = service_for(storage.clone()).await;
+        let admin = Author::new("admin@example.com");
+
+        // Admin writes an annotation (attributed to the admin).
+        let annotation = service
+            .upsert_annotation(&repo, &manifest.review_id, &admin, true, None, line_input())
+            .await
+            .expect("admin should pass the creator gate");
+        assert_eq!(annotation.author, admin, "attribution stays the admin's");
+
+        // Admin deletes it.
+        service
+            .delete_annotation(
+                &repo,
+                &manifest.review_id,
+                &admin,
+                true,
+                &annotation.annotation_id,
+            )
+            .await
+            .expect("admin should be able to delete");
+
+        // Admin deletes the whole review.
+        service
+            .delete_review(&repo, &manifest.review_id, &admin, true)
+            .await
+            .expect("admin should be able to delete the review");
+        storage
+            .open_review(&repo, &manifest.review_id)
+            .await
+            .expect_err("review must be gone after admin delete");
     }
 
     // ---- registry mutability tests ----------------------------------

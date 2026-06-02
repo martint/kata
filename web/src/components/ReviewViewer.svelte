@@ -173,10 +173,15 @@
   interface Props {
     repo: string;
     view: ReviewView;
-    /** Currently signed-in viewer's author identity. Used to gate
-     *  "Edit summary" affordances to the review's creator only. Empty
-     *  string before whoami has resolved (treated as not-creator). */
+    /** Currently signed-in viewer's author identity. Used (with
+     *  `isAdmin`) to gate creator-only affordances. Empty string
+     *  before whoami has resolved (treated as not-creator). */
     viewer: string;
+    /** Whether the viewer is a global admin — passes every
+     *  creator-only gate (archive/delete, edit summary/revset,
+     *  annotations) exactly as the creator would. The server enforces
+     *  the same; this only mirrors it so the controls are offered. */
+    isAdmin?: boolean;
     /** Patchset to start on. Undefined means "the latest". */
     initialPatchset?: number;
     /** Patchset-compare to start on: when set, the viewer opens in
@@ -220,6 +225,7 @@
     repo,
     view,
     viewer,
+    isAdmin = false,
     initialPatchset,
     initialCompareWith,
     initialCommit,
@@ -2178,7 +2184,7 @@
    *  the review's creator. Empty `viewer` (whoami hasn't resolved yet)
    *  hides the affordance. */
   const canArchive = $derived(
-    !!viewer && viewer === current.manifest.created_by,
+    (!!viewer && viewer === current.manifest.created_by) || isAdmin,
   );
   /** True while an archive / delete request is in flight. Disables
    *  the menu items so a double-click can't fire two requests. */
@@ -2251,7 +2257,7 @@
   let revsetError: string | null = $state(null);
   let revsetInputEl: HTMLInputElement | undefined = $state();
   const canEditRevset = $derived(
-    !!viewer && viewer === current.manifest.created_by,
+    (!!viewer && viewer === current.manifest.created_by) || isAdmin,
   );
   async function startEditRevset() {
     revsetDraft = current.manifest.revset;
@@ -2794,7 +2800,7 @@
    *  affordances stay hidden for non-creators; the server enforces
    *  the same rule, so this is purely a UX gate. */
   const canAnnotate = $derived(
-    !!viewer && viewer === current.manifest.created_by,
+    (!!viewer && viewer === current.manifest.created_by) || isAdmin,
   );
 
   function startAnnotate(target: AnnotationComposerTarget) {
@@ -3311,7 +3317,7 @@
 
 <ReviewSummary
   summary={current.manifest.summary}
-  editable={!!viewer && viewer === current.manifest.created_by}
+  editable={(!!viewer && viewer === current.manifest.created_by) || isAdmin}
   {saving}
   onsave={saveSummary}
 />

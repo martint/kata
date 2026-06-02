@@ -510,6 +510,10 @@ export interface AnnotationInput {
 
 export interface WhoAmI {
   author: Author;
+  /** True when the server resolved this caller as a global admin
+   *  (creator-equivalent on every review). Defaults to `false` for
+   *  older servers that don't send the field. */
+  is_admin?: boolean;
 }
 
 /** What level of comment the composer is targeting. Line targets carry

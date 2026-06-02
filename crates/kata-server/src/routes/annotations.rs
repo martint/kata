@@ -12,13 +12,13 @@ use axum::http::StatusCode;
 use kata_core::{Annotation, AnnotationId};
 
 use crate::error::AppResult;
-use crate::routes::author::ViewerAuthor;
+use crate::routes::author::Actor;
 use crate::service::AnnotationInput;
 use crate::state::AppState;
 
 pub async fn create_annotation(
     State(state): State<AppState>,
-    ViewerAuthor(author): ViewerAuthor,
+    actor: Actor,
     Path((repo_name, review_number)): Path<(String, u32)>,
     Json(input): Json<AnnotationInput>,
 ) -> AppResult<(StatusCode, Json<Annotation>)> {
@@ -29,14 +29,14 @@ pub async fn create_annotation(
         .await?;
     let annotation = state
         .service
-        .upsert_annotation(&repo, &review_id, &author, None, input)
+        .upsert_annotation(&repo, &review_id, &actor.author, actor.is_admin, None, input)
         .await?;
     Ok((StatusCode::CREATED, Json(annotation)))
 }
 
 pub async fn update_annotation(
     State(state): State<AppState>,
-    ViewerAuthor(author): ViewerAuthor,
+    actor: Actor,
     Path((repo_name, review_number, annotation_id)): Path<(String, u32, AnnotationId)>,
     Json(input): Json<AnnotationInput>,
 ) -> AppResult<Json<Annotation>> {
@@ -47,14 +47,21 @@ pub async fn update_annotation(
         .await?;
     let annotation = state
         .service
-        .upsert_annotation(&repo, &review_id, &author, Some(annotation_id), input)
+        .upsert_annotation(
+            &repo,
+            &review_id,
+            &actor.author,
+            actor.is_admin,
+            Some(annotation_id),
+            input,
+        )
         .await?;
     Ok(Json(annotation))
 }
 
 pub async fn delete_annotation(
     State(state): State<AppState>,
-    ViewerAuthor(author): ViewerAuthor,
+    actor: Actor,
     Path((repo_name, review_number, annotation_id)): Path<(String, u32, AnnotationId)>,
 ) -> AppResult<StatusCode> {
     let repo = state.service.resolve_repo(&repo_name)?;
@@ -64,7 +71,7 @@ pub async fn delete_annotation(
         .await?;
     state
         .service
-        .delete_annotation(&repo, &review_id, &author, &annotation_id)
+        .delete_annotation(&repo, &review_id, &actor.author, actor.is_admin, &annotation_id)
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }

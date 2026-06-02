@@ -295,6 +295,7 @@ async fn seed_reviews(
             repo_id,
             &review_id,
             alice,
+            false,
             None,
             AnnotationInput {
                 anchor_change_id: ps1.tip_change.clone(),
@@ -319,7 +320,7 @@ async fn seed_reviews(
     // follows after a review round.
     add_patchset(workspace_path, alice)?;
     service
-        .refresh_review(repo_id, &review_id, alice, None)
+        .refresh_review(repo_id, &review_id, alice, false, None)
         .await
         .map_err(|e| Error::Setup(format!("refresh_review (PS2): {e}")))?;
 

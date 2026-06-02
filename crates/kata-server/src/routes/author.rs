@@ -8,8 +8,49 @@ use crate::error::AppError;
 use crate::state::AppState;
 use crate::tokens;
 
-/// Extracts the author identity from the request. Lookups happen in
-/// this order:
+/// Extractor yielding just the acting author — for handlers that only
+/// attribute writes and don't gate on review-creator privileges. The
+/// per-mode resolution order lives in [`resolve_author`].
+pub struct ViewerAuthor(pub Author);
+
+impl FromRequestParts<AppState> for ViewerAuthor {
+    type Rejection = AppError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(ViewerAuthor(resolve_author(parts, state).await?))
+    }
+}
+
+/// The acting identity plus whether it carries global-admin
+/// privileges (creator-equivalent on every review). Used by handlers
+/// that gate on review-creator. `is_admin` is decided here — the one
+/// point where identity is resolved — so it's uniform across every
+/// auth mode, folding together the per-mode admin sources: the static
+/// email allowlist (all modes) and, in `trust-forwarded-header` mode,
+/// a proxy-supplied group header.
+pub struct Actor {
+    pub author: Author,
+    pub is_admin: bool,
+}
+
+impl FromRequestParts<AppState> for Actor {
+    type Rejection = AppError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let author = resolve_author(parts, state).await?;
+        let is_admin = compute_is_admin(parts, state, &author);
+        Ok(Actor { author, is_admin })
+    }
+}
+
+/// Resolve the request's author identity. Lookups happen in this
+/// order:
 ///
 /// 1. `Authorization: Bearer <token>` — if present and the token
 ///    matches an unrevoked row in `api_tokens`, the bound author
@@ -24,75 +65,86 @@ use crate::tokens;
 ///    - **`TrustForwardedHeader`**: the configured trusted header
 ///      (default `X-Forwarded-Email`) is the only source. Missing
 ///      header is a 401.
-pub struct ViewerAuthor(pub Author);
-
-impl FromRequestParts<AppState> for ViewerAuthor {
-    type Rejection = AppError;
-
-    async fn from_request_parts(
-        parts: &mut Parts,
-        state: &AppState,
-    ) -> Result<Self, Self::Rejection> {
-        if let Some(author) = try_authenticate_token(parts, state).await? {
-            return Ok(ViewerAuthor(author));
-        }
-        match state.auth.mode {
-            AuthMode::TrustClient => {
-                if let Some(value) = parts.headers.get("x-review-author") {
-                    let s = value.to_str().map_err(|_| {
-                        AppError::from(kata_service::ServiceError::BadRequest(
-                            "x-review-author header is not valid utf-8".into(),
-                        ))
-                    })?;
-                    return Ok(ViewerAuthor(Author::new(s.to_owned())));
-                }
-                Ok(ViewerAuthor(state.default_author.clone()))
-            }
-            AuthMode::TrustForwardedHeader => {
-                let header = &state.auth.trusted_header;
-                let value = parts.headers.get(header.as_str()).ok_or_else(|| {
-                    AppError::from(kata_service::ServiceError::Unauthorized(format!(
-                        "missing {header} header (auth-mode=trust-forwarded-header)",
-                    )))
-                })?;
+async fn resolve_author(parts: &Parts, state: &AppState) -> Result<Author, AppError> {
+    if let Some(author) = try_authenticate_token(parts, state).await? {
+        return Ok(author);
+    }
+    match state.auth.mode {
+        AuthMode::TrustClient => {
+            if let Some(value) = parts.headers.get("x-review-author") {
                 let s = value.to_str().map_err(|_| {
-                    AppError::from(kata_service::ServiceError::BadRequest(format!(
-                        "{header} header is not valid utf-8",
-                    )))
-                })?;
-                let trimmed = s.trim();
-                if trimmed.is_empty() {
-                    return Err(AppError::from(kata_service::ServiceError::Unauthorized(
-                        format!("{header} header is empty"),
-                    )));
-                }
-                Ok(ViewerAuthor(Author::new(trimmed.to_owned())))
-            }
-            AuthMode::Oidc => {
-                let rt = state.oidc.as_ref().ok_or_else(|| {
-                    AppError::from(kata_service::ServiceError::Internal(
-                        "auth-mode=oidc but no OIDC runtime is configured".into(),
+                    AppError::from(kata_service::ServiceError::BadRequest(
+                        "x-review-author header is not valid utf-8".into(),
                     ))
                 })?;
-                let cookie_value = extract_cookie(parts, SESSION_COOKIE).ok_or_else(|| {
-                    AppError::from(kata_service::ServiceError::Unauthorized(
-                        "no session cookie — log in at /auth/login".into(),
-                    ))
-                })?;
-                let payload = verify_cookie(
-                    &rt.config.session_secret,
-                    &cookie_value,
-                    chrono::Utc::now(),
-                )
-                .map_err(|e| {
-                    AppError::from(kata_service::ServiceError::Unauthorized(format!(
-                        "invalid session cookie: {e} — log in at /auth/login",
-                    )))
-                })?;
-                Ok(ViewerAuthor(Author::new(payload.author)))
+                return Ok(Author::new(s.to_owned()));
             }
+            Ok(state.default_author.clone())
+        }
+        AuthMode::TrustForwardedHeader => {
+            let header = &state.auth.trusted_header;
+            let value = parts.headers.get(header.as_str()).ok_or_else(|| {
+                AppError::from(kata_service::ServiceError::Unauthorized(format!(
+                    "missing {header} header (auth-mode=trust-forwarded-header)",
+                )))
+            })?;
+            let s = value.to_str().map_err(|_| {
+                AppError::from(kata_service::ServiceError::BadRequest(format!(
+                    "{header} header is not valid utf-8",
+                )))
+            })?;
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                return Err(AppError::from(kata_service::ServiceError::Unauthorized(
+                    format!("{header} header is empty"),
+                )));
+            }
+            Ok(Author::new(trimmed.to_owned()))
+        }
+        AuthMode::Oidc => {
+            let rt = state.oidc.as_ref().ok_or_else(|| {
+                AppError::from(kata_service::ServiceError::Internal(
+                    "auth-mode=oidc but no OIDC runtime is configured".into(),
+                ))
+            })?;
+            let cookie_value = extract_cookie(parts, SESSION_COOKIE).ok_or_else(|| {
+                AppError::from(kata_service::ServiceError::Unauthorized(
+                    "no session cookie — log in at /auth/login".into(),
+                ))
+            })?;
+            let payload = verify_cookie(
+                &rt.config.session_secret,
+                &cookie_value,
+                chrono::Utc::now(),
+            )
+            .map_err(|e| {
+                AppError::from(kata_service::ServiceError::Unauthorized(format!(
+                    "invalid session cookie: {e} — log in at /auth/login",
+                )))
+            })?;
+            Ok(Author::new(payload.author))
         }
     }
+}
+
+/// Whether the resolved `author` acts with global-admin privileges.
+/// Admin-by-email ([`AuthConfig::is_admin_email`]) applies in every
+/// mode. Admin-by-group reads the proxy groups header and only applies
+/// in `trust-forwarded-header` mode, where the upstream-IP allowlist
+/// middleware has already vouched for the proxy that set it — so the
+/// groups header is exactly as trustworthy as the email header beside
+/// it. A non-UTF-8 groups header is treated as "no groups".
+fn compute_is_admin(parts: &Parts, state: &AppState, author: &Author) -> bool {
+    if state.auth.is_admin_email(author) {
+        return true;
+    }
+    if state.auth.mode == AuthMode::TrustForwardedHeader
+        && let Some(value) = parts.headers.get(state.auth.groups_header.as_str())
+        && let Ok(s) = value.to_str()
+    {
+        return state.auth.is_admin_group(s);
+    }
+    false
 }
 
 fn extract_cookie(parts: &Parts, name: &str) -> Option<String> {

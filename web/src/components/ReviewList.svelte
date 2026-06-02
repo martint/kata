@@ -10,6 +10,10 @@
     summaries: ReviewSummary[] | null;
     loading: boolean;
     createdBy: string;
+    /** Whether the viewer is a global admin — can manage (archive /
+     *  delete) any review, not just ones they created. Mirrors the
+     *  server's admin gate so the row menu offers the actions. */
+    isAdmin?: boolean;
     /** Pre-fills the new-review form's revset. Set by the browse
      *  pane's "Create review from this commit" handoff via the
      *  `?prefill_revset=` URL parameter. */
@@ -23,6 +27,7 @@
     summaries,
     loading,
     createdBy,
+    isAdmin = false,
     prefillRevset,
     onchangerepo,
     onopen,
@@ -254,7 +259,7 @@
    *  Mirrors the server-side check; hides actions the server would
    *  reject anyway so non-creators don't see a useless menu. */
   function canManage(s: ReviewSummary): boolean {
-    return !!createdBy && createdBy === s.manifest.created_by;
+    return isAdmin || (!!createdBy && createdBy === s.manifest.created_by);
   }
 
   function enterSelectMode() {

@@ -34,6 +34,13 @@ pub struct McpDispatcher {
 struct Inner {
     service: Arc<ReviewService>,
     default_author: Author,
+    /// Global-admin email allowlist. An MCP caller (token- or
+    /// `?as=`-identified) whose author is listed acts as a creator-
+    /// equivalent admin on every review. Deterministic from the
+    /// author, so it's safe to fix on the cached per-author instance.
+    /// (The proxy-group admin source is HTTP-only — it's per-request
+    /// and doesn't fit the per-author instance cache.)
+    admins: Vec<Author>,
     /// Extra entries appended to rmcp's Host-header allowlist on
     /// every per-author MCP instance the dispatcher creates. The
     /// defaults (localhost, 127.0.0.1, ::1) are still included.
@@ -45,12 +52,14 @@ impl McpDispatcher {
     pub fn new(
         service: Arc<ReviewService>,
         default_author: Author,
+        admins: Vec<Author>,
         extra_allowed_hosts: Vec<String>,
     ) -> Self {
         Self {
             inner: Arc::new(Inner {
                 service,
                 default_author,
+                admins,
                 extra_allowed_hosts,
                 instances: Mutex::new(HashMap::new()),
             }),
@@ -68,9 +77,12 @@ impl McpDispatcher {
         let mut map = self.inner.instances.lock().expect("mcp dispatcher lock poisoned");
         map.entry(raw.to_owned())
             .or_insert_with(|| {
+                let author = Author::new(raw);
+                let is_admin = kata_core::is_listed_admin(&self.inner.admins, &author);
                 mcp_service(
                     self.inner.service.clone(),
-                    Author::new(raw),
+                    author,
+                    is_admin,
                     self.inner.extra_allowed_hosts.clone(),
                 )
             })
