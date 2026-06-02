@@ -804,6 +804,34 @@ within a file, with review-wide and commit-level threads
 prefixed). The position counter is always live; the keyboard
 shortcuts `[` and `]` advance.
 
+Navigation never changes fold state — including for comments with
+no anchor in the current patchset. Stepping to a folded comment
+leaves it folded and parks it under the sticky bar; a brief cue
+shows which comment the jump landed on without the thread
+expanding under them. (A reader walking a filtered list of
+resolved threads wants to *locate* each one, not re-read every
+body.) The reader expands it themselves if they want the detail.
+
+The cue depends on what the comment has on screen, best first:
+- If the comment's **body is visible** — its thread is expanded (or
+  force-expanded by an unread reply) — the box around the comment
+  flashes an outline. The reader is already looking right at it, so
+  the box itself is the clearest "this one".
+- Otherwise, if its **anchored line is rendered**, its gutter marker
+  (§12.4) pulses — the marker is in the DOM whether the thread is
+  folded or not. This includes an *outdated* comment whose original
+  line is still on screen: it keeps a marker there, so it pulses
+  like any other rather than being treated as off-diff.
+- Otherwise the comment shows only as a **bubble header** (file-
+  level, review-wide, comments-only view, or a folded thread that
+  still renders a header) and that header's outline flashes.
+- A comment whose anchored line isn't in any rendered hunk (common
+  for outdated anchors) lives in the file's "anchored outside the
+  diff" group; the jump scrolls that group into view and flashes
+  it. The whole group can be collapsed, in which case the flash
+  lands on the group header rather than the individual comment —
+  but the comment still does not unfold.
+
 This is where the value of filtering compounds: filter out
 *resolved*, and the comment navigator becomes a focused tour of
 "things still asking for my attention."

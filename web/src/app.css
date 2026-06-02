@@ -1307,3 +1307,63 @@ body.dragging-in-diff .file-header .path {
     outline-color: rgba(255, 150, 0, 0.8);
   }
 }
+
+/* Comment prev/next landing cue. Navigation never unfolds a thread —
+ * instead the gutter marker for the comment the jump landed on pulses
+ * once, so the reader can spot it while it stays folded. The keyframes
+ * preserve the marker's base `translateY(50%)` (it's pinned to the row
+ * boundary) and layer a scale-up + accent glow that settles back.
+ * Applied imperatively from ReviewViewer, so it lives here rather than
+ * in either diff renderer's scoped styles. */
+@keyframes kata-nav-pulse {
+  0% {
+    transform: translateY(50%) scale(1);
+    filter: none;
+  }
+  30% {
+    transform: translateY(50%) scale(1.7);
+    filter: drop-shadow(0 0 5px var(--link));
+  }
+  100% {
+    transform: translateY(50%) scale(1);
+    filter: none;
+  }
+}
+.thread-marker.nav-pulse {
+  animation: kata-nav-pulse 1.1s ease-out;
+}
+
+/* Outline cue for a comment shown without a gutter marker to pulse —
+ * a visible (expanded) comment box, a folded bubble's header, or the
+ * "anchored outside the diff" orphan group. An accent outline fades
+ * out: non-disruptive (no layout shift, doesn't disturb the element's
+ * own background) and reads clearly as "the box around this comment".
+ * No `border-radius` here so the outline follows whatever corner
+ * radius the target already has rather than squaring it off. */
+@keyframes kata-nav-flash {
+  0%,
+  12% {
+    outline-color: var(--link);
+  }
+  100% {
+    outline-color: transparent;
+  }
+}
+.nav-flash {
+  outline: 2px solid transparent;
+  outline-offset: 2px;
+  animation: kata-nav-flash 1.3s ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* No movement for motion-sensitive readers — hold a brief static
+   * cue instead (cleared on the same timer that removes the class). */
+  .thread-marker.nav-pulse {
+    animation: none;
+    filter: drop-shadow(0 0 5px var(--link));
+  }
+  .nav-flash {
+    animation: none;
+    outline-color: var(--link);
+  }
+}

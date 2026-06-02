@@ -1078,8 +1078,94 @@
     window.scrollTo({ top: clamped, behavior: 'auto' });
   }
 
+  /** The (side, line) of a comment's anchor row in the diff. Mirrors
+   *  the gutter-marker placement in HunkLines (`threadsFor` /
+   *  `entriesAt`): moved/drifted anchors sit at their new line,
+   *  everything else — valid *and* outdated — at the original
+   *  `c.lines.end`. An outdated comment whose original line is still
+   *  rendered DOES carry a marker, so it must resolve here too;
+   *  whether the row is actually on screen is decided later by the
+   *  DOM lookup (which falls back to the orphan group when it isn't).
+   *  `null` only for comments with no line anchor at all (file-level /
+   *  review-wide). */
+  function commentAnchorRow(
+    c: CommentView,
+  ): { side: 'base' | 'tip'; line: number } | null {
+    if (!c.side) return null;
+    const eff =
+      c.anchor.kind === 'moved' || c.anchor.kind === 'drifted'
+        ? c.anchor.new_lines
+        : c.lines;
+    if (!eff) return null;
+    return { side: c.side, line: eff.end };
+  }
+
+  /** One transient nav indicator at a time. A prev/next jump marks the
+   *  comment it landed on so the reader can spot it without the thread
+   *  having to be unfolded; a rapid second jump cancels the prior mark
+   *  and restarts on the new one. Two visuals: `nav-pulse` scales the
+   *  gutter marker (for line-anchored comments), `nav-flash` outlines
+   *  an element (for comments shown as a bubble — orphan / file-level /
+   *  review-wide / comments-only mode). */
+  let navIndicatorEl: HTMLElement | null = null;
+  let navIndicatorTimer: ReturnType<typeof setTimeout> | null = null;
+  function applyNavIndicator(el: HTMLElement | null, cls: 'nav-pulse' | 'nav-flash') {
+    if (navIndicatorEl) {
+      navIndicatorEl.classList.remove('nav-pulse', 'nav-flash');
+    }
+    if (navIndicatorTimer) clearTimeout(navIndicatorTimer);
+    navIndicatorEl = null;
+    navIndicatorTimer = null;
+    if (!el) return;
+    // Restart the CSS animation even on the same element: drop the
+    // class, force a reflow, re-add.
+    el.classList.remove(cls);
+    void el.offsetWidth;
+    el.classList.add(cls);
+    navIndicatorEl = el;
+    navIndicatorTimer = setTimeout(() => {
+      el.classList.remove(cls);
+      navIndicatorEl = null;
+      navIndicatorTimer = null;
+    }, 1300);
+  }
+
+  /** Pulse the gutter marker for the comment at (side, line). Scoped to
+   *  the file slot so a repeated line number in another file can't
+   *  steal the pulse. */
+  function pulseMarker(file: string | null, side: 'base' | 'tip', line: number) {
+    const root: ParentNode =
+      (file && document.querySelector(`[data-file-path="${CSS.escape(file)}"]`)) ||
+      document;
+    const cell = root.querySelector<HTMLElement>(
+      `[data-side="${side}"][data-line="${line}"]`,
+    );
+    const marker = cell
+      ?.closest('tr')
+      ?.querySelector<HTMLElement>('.thread-marker');
+    applyNavIndicator(marker ?? null, 'nav-pulse');
+  }
+
+  /** Flash an element that stands in for a comment with no gutter marker
+   *  (a folded bubble's header, or the file's "anchored outside the
+   *  diff" orphan group). */
+  function flashElement(el: HTMLElement) {
+    const target = el.classList.contains('orphan-threads')
+      ? (el.querySelector<HTMLElement>('.orphan-header') ?? el)
+      : el;
+    applyNavIndicator(target, 'nav-flash');
+  }
+
   /** Scroll a comment into view, mounting its file's slot if it's been
    *  virtualized away.
+   *
+   *  Navigation never changes fold state. When the diff is visible and
+   *  the comment has a line anchor, we park its anchor *row* (always
+   *  in the DOM) and pulse the gutter marker — a folded thread stays
+   *  folded, and the pulse shows where the jump landed. Only the
+   *  fallback path (comments-only mode, or file-level / review-wide /
+   *  outdated comments with no diff row) targets the thread bubble,
+   *  which it unfolds so the body is reachable.
    *
    *  In normal (diff-visible) mode an already-visible target stays
    *  put so prev/next doesn't shake the page when two consecutive
@@ -1093,15 +1179,63 @@
     const superseded = () => myGen !== navGeneration;
     navigating = true;
     try {
-      // Unfold the target before scrolling. A folded thread doesn't
-      // render its thread-row at all, so `data-comment-id` is absent
-      // from the DOM and the retry loop below would time out chasing
-      // an element that never appears. The user explicitly navigated
-      // here, so honour that intent over their prior fold state —
-      // they can re-fold via the gutter marker if they want.
-      foldStore.set('comment', commentId, false);
-      foldVersion++;
-      const sel = `[data-comment-id="${CSS.escape(commentId)}"]`;
+      // Prefer the comment's anchor row (its gutter marker is in the
+      // DOM regardless of fold state) so navigation can leave a folded
+      // thread folded. The bubble fallback is for comments with no
+      // diff row, or comments-only mode where the rows aren't rendered
+      // — that path still needs the thread mounted, so it unfolds.
+      const comment = [
+        ...current.comments,
+        ...current.drafts.comments,
+      ].find((c) => c.comment_id === commentId);
+      const anchor =
+        showDiffs && comment ? commentAnchorRow(comment) : null;
+      const slotSel = file
+        ? `[data-file-path="${CSS.escape(file)}"]`
+        : null;
+      // Resolve where to park, and how to mark it, each time it's
+      // needed (the DOM comes and goes as slots mount). Navigation
+      // never unfolds the target — a folded thread stays folded.
+      // Tiers, best first:
+      //
+      //   1. `box` — the comment's own body is on screen (expanded
+      //      thread). Highlight the box itself: it's the clearest
+      //      "this one", and the reader is already looking right at it.
+      //   2. `marker` — the comment is folded but its anchored line is
+      //      rendered, so it carries a gutter marker. Pulse that.
+      //      Scoped to the file slot since line numbers repeat across
+      //      files. An outdated comment whose original line is still
+      //      rendered resolves here too.
+      //   3. `flash` — a folded bubble header (file-level / review-wide
+      //      / comments-only), or the file's orphan group when a
+      //      comment anchored outside the hunks is fully collapsed.
+      //      Outline that element.
+      //
+      // No whole-file-slot fallback: outlining the entire file read as
+      // a bug, and every real comment resolves to a tier above.
+      type NavTarget = { el: HTMLElement; kind: 'box' | 'marker' | 'flash' };
+      function findTarget(): NavTarget | null {
+        const slot = slotSel
+          ? document.querySelector<HTMLElement>(slotSel)
+          : null;
+        const root: ParentNode = slot ?? document;
+        const box = document.querySelector<HTMLElement>(
+          `[data-comment-id="${CSS.escape(commentId)}"]:not(.collapsed)`,
+        );
+        if (box) return { el: box, kind: 'box' };
+        if (anchor) {
+          const row = root.querySelector<HTMLElement>(
+            `[data-side="${anchor.side}"][data-line="${anchor.line}"]`,
+          );
+          if (row) return { el: row, kind: 'marker' };
+        }
+        const header = document.querySelector<HTMLElement>(
+          `[data-comment-id="${CSS.escape(commentId)}"]`,
+        );
+        if (header) return { el: header, kind: 'flash' };
+        const orphan = slot?.querySelector<HTMLElement>('.orphan-threads');
+        return orphan ? { el: orphan, kind: 'flash' } : null;
+      }
       // Unified time budget for the whole operation. Cross-file nav
       // from a fresh page can have many intermediate slots to mount
       // before the target is reachable, and each mount triggers a
@@ -1113,29 +1247,29 @@
       const startTime = performance.now();
       const remaining = () => performance.now() - startTime < TOTAL_TIME_MS;
 
-      let el = document.querySelector<HTMLElement>(sel);
-      if (!el) {
-        // Element isn't in the DOM yet — its FileSlot is virtualized
+      let target = findTarget();
+      if (!target) {
+        // Target isn't in the DOM yet — its FileSlot is virtualized
         // away. Bring the slot into the viewport so the
         // IntersectionObserver mounts the file, then wait for the
-        // comment row to appear.
-        if (file) {
-          const slot = document.querySelector<HTMLElement>(
-            `[data-file-path="${CSS.escape(file)}"]`,
-          );
+        // box / row / group to appear.
+        if (slotSel) {
+          const slot = document.querySelector<HTMLElement>(slotSel);
           if (slot) scrollTopOf(slot);
         }
-        while (!el && remaining() && !superseded()) {
+        while (!target && remaining() && !superseded()) {
           await new Promise((r) => requestAnimationFrame(r));
-          el = document.querySelector<HTMLElement>(sel);
+          target = findTarget();
         }
-        if (!el || superseded()) return;
+        if (!target || superseded()) return;
       }
       // Park the comment. Loop until the page settles against
       // placeholder slots above the target whose heights change as
       // they mount in. Re-parking every frame keeps the comment at
       // the right offset even mid-settle; exit once we get ~320ms of
-      // true stability, otherwise ride out the remaining budget.
+      // true stability, otherwise ride out the remaining budget. Re-
+      // resolve each frame so a row→box transition (the thread mounts
+      // expanded as its file does) is tracked.
       let stableFrames = 0;
       let lastTop = Number.NaN;
       const STABLE_REQUIRED = 20;
@@ -1144,17 +1278,28 @@
         remaining() &&
         !superseded()
       ) {
-        bringCommentIntoView(el);
+        bringCommentIntoView(target.el);
         await new Promise((r) => requestAnimationFrame(r));
-        const cur = document.querySelector<HTMLElement>(sel);
+        const cur = findTarget();
         if (!cur) return;
-        const top = cur.getBoundingClientRect().top;
+        target = cur;
+        const top = cur.el.getBoundingClientRect().top;
         if (Number.isFinite(lastTop) && Math.abs(top - lastTop) < 0.5) {
           stableFrames++;
         } else {
           stableFrames = 0;
         }
         lastTop = top;
+      }
+      // Mark where the jump landed so the reader can see which comment
+      // is selected. A visible box or a bubble/orphan element flashes
+      // its outline; a folded line comment pulses its gutter marker.
+      if (!superseded()) {
+        if (target.kind === 'marker' && anchor) {
+          pulseMarker(file, anchor.side, anchor.line);
+        } else {
+          flashElement(target.el);
+        }
       }
     } finally {
       // Only release the flag if we're still the latest scrollToComment
