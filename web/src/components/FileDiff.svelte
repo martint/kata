@@ -534,6 +534,14 @@
     void expansions;
     void wholeFile;
     void collapsed;
+    // Re-run when the side-by-side divider moves. Dragging it reflows
+    // the text under the panes, so every column-anchored overlay's
+    // measured geometry goes stale — without this dep a word / partial-
+    // line highlight stays painted at its pre-drag position. `sbsSplit`
+    // updates reactively on each pointermove, and Svelte runs this
+    // effect after the new flex-basis has been applied, so the re-
+    // measure below reads the post-reflow rects.
+    void sbsSplit;
     /** Compute the per-line overlay rectangles for one (side, lines,
      *  cols) range, with the inter-line gap filled by stretching
      *  each rect's bottom to meet the next. Returns an empty array
@@ -578,10 +586,29 @@
         }
         const rect = subRange.getBoundingClientRect();
         if (rect.width === 0 || rect.height === 0) continue;
+        // Clip the overlay to its line's own horizontal scroll
+        // viewport. The overlays are siblings of the scroll
+        // container(s), so `overflow-x` doesn't clip them on its own:
+        // a partial-line anchor near the end of a long line in a
+        // narrow pane measures a rect that runs past the visible edge,
+        // and without this clamp the tint paints out over the right
+        // margin. In SBS each side scrolls independently (`.sbs-side`),
+        // so a base-side anchor must clip at the divider, not the file
+        // edge; in unified mode the scroll viewport is `.hunks`.
+        const clipEl =
+          (pre.closest('.sbs-side') as HTMLElement | null) ?? hunksEl;
+        const clipRect = clipEl?.getBoundingClientRect();
+        const clipLeft = clipRect ? clipRect.left - wrapperRect.left : -Infinity;
+        const clipRight = clipRect
+          ? clipRect.right - wrapperRect.left
+          : Infinity;
+        const left = Math.max(rect.left - wrapperRect.left, clipLeft);
+        const right = Math.min(rect.right - wrapperRect.left, clipRight);
+        if (right <= left) continue; // fully outside the viewport
         out.push({
           top: rect.top - wrapperRect.top,
-          left: rect.left - wrapperRect.left,
-          width: rect.width,
+          left,
+          width: right - left,
           height: rect.height,
         });
       }
