@@ -470,46 +470,14 @@
     return set;
   });
 
-  /** See HunkLines.svelte's `outdatedEntriesFor` — the chevron in
-   *  this prototype is reserved for outdated comments only. */
-  function outdatedEntriesFor(side: Side, line: number): Array<
-    { kind: 'comment'; c: CommentView } | { kind: 'note'; n: AnnotationView }
-  > {
-    const out: Array<
-      { kind: 'comment'; c: CommentView } | { kind: 'note'; n: AnnotationView }
-    > = [];
-    for (const c of comments) {
-      if (c.side !== side) continue;
-      if (c.anchor.kind !== 'outdated') continue;
-      if (!c.lines || c.lines.end !== line) continue;
-      out.push({ kind: 'comment', c });
-    }
-    for (const n of annotations) {
-      if (n.side !== side) continue;
-      if (n.anchor.kind !== 'outdated') continue;
-      if (!n.lines || n.lines.end !== line) continue;
-      out.push({ kind: 'note', n });
-    }
-    return out;
-  }
-
-  function allOutdatedFoldedAt(side: Side, line: number): boolean {
-    const entries = outdatedEntriesFor(side, line);
-    if (entries.length === 0) return true;
-    for (const en of entries) {
-      if (en.kind === 'comment') {
-        if (isEffectivelyExpanded(en.c.comment_id)) return false;
-      } else {
-        if (!isFolded(en.n.annotation_id)) return false;
-      }
-    }
-    return true;
-  }
-
-  function toggleOutdatedAt(side: Side, line: number) {
+  /** Bulk-toggle every thread / note anchored at (side, line) from
+   *  the gutter marker. Normalizes to a single state — fold all if
+   *  anything is expanded, else expand all — matching the inline
+   *  highlight's `onContentClick` so the two affordances agree. */
+  function toggleAllAt(side: Side, line: number) {
     if (!foldStore) return;
-    const entries = outdatedEntriesFor(side, line);
-    const target = !allOutdatedFoldedAt(side, line);
+    const entries = entriesAt(side, line);
+    const target = !allFoldedAt(side, line);
     void preserveScrollAnchor(() => {
       for (const en of entries) {
         const id = en.kind === 'comment' ? en.c.comment_id : en.n.annotation_id;
@@ -826,7 +794,7 @@
           {@const leftHasMarker =
             leftLine != null &&
             showComments &&
-            outdatedEntriesFor('base', leftLine).length > 0}
+            entriesAt('base', leftLine).length > 0}
           {@const leftStackZ = leftHasMarker ? rows.length - i + 1 : undefined}
           <tr class="sbs-row {row.kind}">
             <!-- data-side/data-line are also on the gutter cell so the
@@ -853,18 +821,19 @@
               {/if}
               {#if row.left?.base_line != null && showComments}
                 {@const ln = row.left.base_line}
-                {@const count = outdatedEntriesFor('base', ln).length}
-                {@const folded = allOutdatedFoldedAt('base', ln)}
+                {@const count = entriesAt('base', ln).length}
+                {@const folded = allFoldedAt('base', ln)}
                 {#if count > 0}
                   <button
                     type="button"
                     class="thread-marker"
+                    data-tour="comment-marker"
                     class:folded
                     aria-pressed={!folded}
-                    aria-label="{count} outdated comment{count === 1 ? '' : 's'}; click to {folded ? 'expand' : 'collapse'}"
-                    title="{count} outdated comment{count === 1 ? '' : 's'} — click to {folded ? 'expand' : 'collapse'}"
+                    aria-label="{count} comment{count === 1 ? '' : 's'}; click to {folded ? 'expand' : 'collapse'}"
+                    title="{count} comment{count === 1 ? '' : 's'} — click to {folded ? 'expand' : 'collapse'}"
                     onmousedown={(e) => e.preventDefault()}
-                    onclick={() => toggleOutdatedAt('base', ln)}
+                    onclick={() => toggleAllAt('base', ln)}
                     onmouseenter={() => {
                       const r = foldedRangeAt('base', ln);
                       hoveredAnchor = r ? { side: 'base', start: r.start, end: r.end } : null;
@@ -984,7 +953,7 @@
           {@const rightHasMarker =
             rightLine != null &&
             showComments &&
-            outdatedEntriesFor('tip', rightLine).length > 0}
+            entriesAt('tip', rightLine).length > 0}
           {@const rightStackZ = rightHasMarker ? rows.length - i + 1 : undefined}
           <tr class="sbs-row {row.kind}">
             <td
@@ -1005,18 +974,19 @@
               {/if}
               {#if row.right?.tip_line != null && showComments}
                 {@const ln = row.right.tip_line}
-                {@const count = outdatedEntriesFor('tip', ln).length}
-                {@const folded = allOutdatedFoldedAt('tip', ln)}
+                {@const count = entriesAt('tip', ln).length}
+                {@const folded = allFoldedAt('tip', ln)}
                 {#if count > 0}
                   <button
                     type="button"
                     class="thread-marker"
+                    data-tour="comment-marker"
                     class:folded
                     aria-pressed={!folded}
-                    aria-label="{count} outdated comment{count === 1 ? '' : 's'}; click to {folded ? 'expand' : 'collapse'}"
-                    title="{count} outdated comment{count === 1 ? '' : 's'} — click to {folded ? 'expand' : 'collapse'}"
+                    aria-label="{count} comment{count === 1 ? '' : 's'}; click to {folded ? 'expand' : 'collapse'}"
+                    title="{count} comment{count === 1 ? '' : 's'} — click to {folded ? 'expand' : 'collapse'}"
                     onmousedown={(e) => e.preventDefault()}
-                    onclick={() => toggleOutdatedAt('tip', ln)}
+                    onclick={() => toggleAllAt('tip', ln)}
                     onmouseenter={() => {
                       const r = foldedRangeAt('tip', ln);
                       hoveredAnchor = r ? { side: 'tip', start: r.start, end: r.end } : null;
@@ -1406,9 +1376,9 @@
    * without colliding. See HunkLines.svelte for the full design
    * rationale. */
   .thread-marker {
-    /* In the click-on-highlight prototype the chevron is reserved
-     * for OUTDATED comments — the template only renders it when
-     * `outdatedEntriesFor(side, line)` is non-empty. */
+    /* Rendered on every line that anchors a thread or note — the
+     * uniform "there's a comment here" idiom. The inline highlight
+     * is a second, redundant toggle for the same fold. */
     position: absolute;
     left: -2px;
     /* Centered on the row boundary; the bottom half overflows the

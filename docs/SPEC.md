@@ -834,6 +834,13 @@ Clicking the marker toggles the bulk state: if anything was
 expanded, the click folds everything; if everything was folded,
 the click expands everything.
 
+A comment's inline highlight is a second handle on the same fold:
+clicking the tinted text toggles its thread too, so the reader can
+collapse a thread from wherever the cursor already is. The marker
+is the canonical, always-present cue — present on every anchored
+line including ones whose highlight is hard to spot — and the
+highlight is the convenience shortcut layered on top.
+
 When an anchor has 2+ items (e.g. one comment + one annotation, or
 two comments on the same line range), each item also carries its
 own per-item fold chevron in its header, so the user can collapse

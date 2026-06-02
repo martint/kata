@@ -611,49 +611,15 @@
     return set;
   });
 
-  /** Comments and annotations whose anchor is OUTDATED and whose
-   *  effective end-line is this row. They get a gutter chevron (the
-   *  inline-highlight model can't anchor a precise highlight, since
-   *  the content has changed), clicking it toggles fold on the
-   *  outdated items. */
-  function outdatedEntriesFor(a: { side: Side; line: number }): Array<
-    { kind: 'comment'; c: CommentView } | { kind: 'note'; n: AnnotationView }
-  > {
-    const out: Array<
-      { kind: 'comment'; c: CommentView } | { kind: 'note'; n: AnnotationView }
-    > = [];
-    for (const c of comments) {
-      if (c.side !== a.side) continue;
-      if (c.anchor.kind !== 'outdated') continue;
-      if (!c.lines || c.lines.end !== a.line) continue;
-      out.push({ kind: 'comment', c });
-    }
-    for (const n of annotations) {
-      if (n.side !== a.side) continue;
-      if (n.anchor.kind !== 'outdated') continue;
-      if (!n.lines || n.lines.end !== a.line) continue;
-      out.push({ kind: 'note', n });
-    }
-    return out;
-  }
-
-  function allOutdatedFoldedAt(a: { side: Side; line: number }): boolean {
-    const entries = outdatedEntriesFor(a);
-    if (entries.length === 0) return true;
-    for (const e of entries) {
-      if (e.kind === 'comment') {
-        if (isEffectivelyExpanded(e.c.comment_id)) return false;
-      } else {
-        if (!isFolded(e.n.annotation_id)) return false;
-      }
-    }
-    return true;
-  }
-
-  function toggleOutdatedAt(a: { side: Side; line: number }) {
+  /** Bulk-toggle every thread / note anchored at this row from the
+   *  gutter marker. Normalizes to a single state: if anything is
+   *  expanded the click folds all, otherwise it expands all — the
+   *  same rule `onContentClick` applies to the inline highlight, so
+   *  the two affordances stay in lock-step. */
+  function toggleAllAt(a: { side: Side; line: number }) {
     if (!foldStore) return;
-    const entries = outdatedEntriesFor(a);
-    const target = !allOutdatedFoldedAt(a);
+    const entries = entriesFor(a);
+    const target = !allFoldedAt(a);
     void preserveScrollAnchor(() => {
       for (const e of entries) {
         const id = idOf(e);
@@ -833,15 +799,15 @@
       {@const a = anchor(line)}
       {@const stripped = line.content.replace(/\n$/, '')}
       {@const html = htmlWithWordDiff(line, i)}
-      <!-- Gutter-marker bookkeeping. In the click-on-highlight
-           prototype the chevron is reserved for OUTDATED comments
-           only — non-outdated comments use the inline highlight as
-           their toggle affordance. Outdated comments can't have a
-           meaningful inline highlight (their original content
-           changed), so the chevron is the only marker available. -->
+      <!-- Gutter-marker bookkeeping. Every line that anchors a
+           comment or note gets the chevron — it's the one uniform
+           "there's a thread here" idiom (§12.4). Clicking the inline
+           highlight toggles the same fold as a convenience, but the
+           marker is what makes a folded thread discoverable without
+           relying on the reader spotting a tinted span. -->
       {@const markerCount =
-        showComments && a ? outdatedEntriesFor(a).length : 0}
-      {@const markerFolded = a != null && allOutdatedFoldedAt(a)}
+        showComments && a ? entriesFor(a).length : 0}
+      {@const markerFolded = a != null && allFoldedAt(a)}
       <!-- Higher z-index for earlier rows that host a marker, so
            the chevron's overflowing bottom half paints over the
            next row's sticky `.ln`. Non-marker rows stay at the
@@ -877,12 +843,13 @@
               <button
                 type="button"
                 class="thread-marker"
+                data-tour="comment-marker"
                 class:folded={markerFolded}
                 aria-pressed={!markerFolded}
-                aria-label="{markerCount} outdated comment{markerCount === 1 ? '' : 's'}; click to {markerFolded ? 'expand' : 'collapse'}"
-                title="{markerCount} outdated comment{markerCount === 1 ? '' : 's'} — click to {markerFolded ? 'expand' : 'collapse'}"
+                aria-label="{markerCount} comment{markerCount === 1 ? '' : 's'}; click to {markerFolded ? 'expand' : 'collapse'}"
+                title="{markerCount} comment{markerCount === 1 ? '' : 's'} — click to {markerFolded ? 'expand' : 'collapse'}"
                 onmousedown={(e) => e.preventDefault()}
-                onclick={() => toggleOutdatedAt(a)}
+                onclick={() => toggleAllAt(a)}
                 onmouseenter={() => {
                   const r = foldedRange(a);
                   hoveredAnchor = r ? { side: a.side, start: r.start, end: r.end } : null;
@@ -914,12 +881,13 @@
               <button
                 type="button"
                 class="thread-marker"
+                data-tour="comment-marker"
                 class:folded={markerFolded}
                 aria-pressed={!markerFolded}
-                aria-label="{markerCount} outdated comment{markerCount === 1 ? '' : 's'}; click to {markerFolded ? 'expand' : 'collapse'}"
-                title="{markerCount} outdated comment{markerCount === 1 ? '' : 's'} — click to {markerFolded ? 'expand' : 'collapse'}"
+                aria-label="{markerCount} comment{markerCount === 1 ? '' : 's'}; click to {markerFolded ? 'expand' : 'collapse'}"
+                title="{markerCount} comment{markerCount === 1 ? '' : 's'} — click to {markerFolded ? 'expand' : 'collapse'}"
                 onmousedown={(e) => e.preventDefault()}
-                onclick={() => toggleOutdatedAt(a)}
+                onclick={() => toggleAllAt(a)}
                 onmouseenter={() => {
                   const r = foldedRange(a);
                   hoveredAnchor = r ? { side: a.side, start: r.start, end: r.end } : null;
@@ -1372,10 +1340,9 @@
    * whether folded or expanded. Hover gets a subtle tint so the
    * click target is discoverable. */
   .thread-marker {
-    /* In the click-on-highlight prototype the chevron is reserved
-     * for OUTDATED comments — the template only renders it when
-     * `outdatedEntriesFor(a)` is non-empty. Non-outdated comments
-     * use the inline highlight as their toggle. */
+    /* Rendered on every line that anchors a thread or note — the
+     * uniform "there's a comment here" idiom. The inline highlight
+     * is a second, redundant toggle for the same fold. */
     position: absolute;
     left: -2px;
     /* Centered on the row boundary — half above, half below — so

@@ -139,16 +139,27 @@ export const tour: TourStep[] = [
       "inline comments.",
   },
   {
+    id: 'comment-marker',
+    target: '[data-tour=comment-marker]',
+    placement: 'right',
+    title: 'Fold from the gutter',
+    body:
+      "Every line that anchors a comment or note shows a chevron in " +
+      "the gutter — the one consistent cue that a thread lives here. " +
+      "Click it to fold or unfold: ▼ means expanded, ▶ folded. " +
+      "Clicking the comment's inline highlight does the same thing, " +
+      "whichever your eye lands on first.",
+  },
+  {
     id: 'thread-fold',
     target: '[data-tour=thread-fold]',
     placement: 'left',
     title: 'Fold an individual thread',
     body:
       "When two or more comments or notes share an anchor (here: " +
-      "Bob's question and Alice's annotation), each gets its own " +
-      "fold chevron so you can collapse the ones you've read while " +
-      "keeping the rest open. Single-anchor threads use the gutter " +
-      "marker instead — same idea, less chrome.",
+      "Bob's question and Alice's annotation), each ALSO gets its " +
+      "own fold chevron in its header, so you can collapse the ones " +
+      "you've read while keeping the rest open.",
   },
   {
     id: 'file-fold',
