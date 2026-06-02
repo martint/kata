@@ -95,6 +95,16 @@ ENV KATA_BIND=0.0.0.0:7878
 # works without operator setup, and the VOLUME below has something
 # concrete to track. Persist via `-v kata-data:/data`.
 ENV KATA_DATA=/data
+# Run the container as the host user (compose `user:` /
+# `docker run --user`) so the files kata writes into /data
+# (sqlite + scanner state + ACME cache) and /workspaces are owned
+# by that user, not root. That means an arbitrary UID must be
+# able to write both the data dir (which seeds the named volume)
+# and HOME, so make them world-writable here; the container is
+# single-tenant. Docker initialises a fresh named volume from the
+# mountpoint's perms, so this fixes named-volume operators too.
+ENV HOME=/home/kata
+RUN mkdir -p /data /home/kata && chmod 0777 /data /home/kata
 VOLUME ["/data"]
 EXPOSE 7878
 ENTRYPOINT ["kata"]

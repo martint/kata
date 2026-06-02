@@ -33,6 +33,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    # Run the container as the host user so files written to /data
+    # and /workspaces are owned by you, not root. Defaults to
+    # `0:0` (root) when unset — see .env.example for how to wire
+    # KATA_UID / KATA_GID to your actual host UID / GID.
+    user: "${KATA_UID:-0}:${KATA_GID:-0}"
     ports:
       - "${KATA_PUBLISH_ADDR:-127.0.0.1}:${KATA_PUBLISH_PORT:-7878}:7878"
     volumes:
@@ -57,6 +62,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    user: "${KATA_UID:-0}:${KATA_GID:-0}"
     ports:
       - "${KATA_PUBLISH_ADDR:-127.0.0.1}:${KATA_PUBLISH_PORT:-7878}:7878"
     volumes:

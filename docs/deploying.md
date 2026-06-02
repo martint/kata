@@ -58,6 +58,26 @@ ships sensible defaults for everything else (listens on
 `/workspaces` live so dropping a repo into the host dir
 registers it without a restart).
 
+By default the container runs as root, which writes root-owned
+files into the `/data` and `/workspaces` bind mounts. Tell
+compose to run as your host user instead by exporting
+`KATA_UID` / `KATA_GID` — either once on the command line:
+
+```sh
+KATA_UID=$(id -u) KATA_GID=$(id -g) docker compose up -d
+```
+
+or by adding the resolved numbers to `.env`:
+
+```sh
+echo "KATA_UID=$(id -u)" >> .env
+echo "KATA_GID=$(id -g)" >> .env
+```
+
+The image makes `/data` and the container's `HOME` world-
+writable so any UID can run it without a chown step inside the
+container.
+
 The defaults are tuned for **local development with agents** —
 compose publishes the port on `127.0.0.1` only + trust-client auth
 so Claude Code via MCP works on the same host without
