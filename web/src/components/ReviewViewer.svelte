@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, setContext, tick } from 'svelte';
+  import { onMount, setContext, tick, untrack } from 'svelte';
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import { api } from '../lib/api';
   import { subscribe as subscribeEvents } from '../lib/events';
@@ -529,6 +529,35 @@
    *  shell doesn't have to do arithmetic. */
   let searchPosition = $state(0);
 
+  /** Cache key for a file's resolved hunks under the active view —
+   *  mirrors `FileSlot`'s `cacheKey` so the search source reads back
+   *  the exact entry the slot wrote. Per-commit interdiff
+   *  (compare mode) keys by its endpoint pair; everything else keys
+   *  by `(patchset, compareWith, path)`. */
+  function searchCacheKey(path: string): string {
+    const ep = interdiffEndpoints;
+    return ep
+      ? `interdiff|${ep.useRebase ? 'r' : 'p'}|${ep.from}|${ep.to}|${path}`
+      : `${selectedPatchset}|${compareWith ?? ''}|${path}`;
+  }
+
+  /** Files to search, with hunks resolved the same way `FileSlot`
+   *  resolves them for rendering: prefer inline hunks (the scoped
+   *  `commit_diff` path ships them), else the shared cache, else the
+   *  metadata-only original.
+   *
+   *  Crucially this scans `displayedFiles` — the file set the viewer
+   *  is actually rendering — not the unscoped `current.diff.files`.
+   *  When the diff is scoped to one commit (`?scope=`) or to a
+   *  per-commit interdiff, the cumulative review diff carries files
+   *  and line numbers that aren't in the DOM; searching it counts
+   *  matches the reader can neither navigate to nor see highlighted. */
+  function searchFiles(): FileChange[] {
+    return displayedFiles.map((f) =>
+      f.hunks != null ? f : (fileDiffCache.get(searchCacheKey(f.path)) ?? f),
+    );
+  }
+
   /** Build the search source from the resolved-via-cache file list
    *  plus comments / responses / annotations / commits / review
    *  metadata. Comment / response / annotation lists are pre-merged
@@ -536,12 +565,7 @@
    *  text — they're the most likely thing to look for while
    *  drafting a follow-up reply. */
   const searchSource = $derived.by(() => {
-    const resolvedFiles = current.diff.files.map((f) => {
-      const key = compareWith != null
-        ? `${selectedPatchset}|${compareWith}|${f.path}`
-        : `${selectedPatchset}||${f.path}`;
-      return fileDiffCache.get(key) ?? f;
-    });
+    const resolvedFiles = searchFiles();
     const allComments = [
       ...current.comments,
       ...current.drafts.comments,
@@ -737,13 +761,17 @@
    *  `searchSource`). The user sees "loading…" in the search
    *  counter until they all complete. */
   async function forceLoadAllFilesForSearch(): Promise<void> {
+    // Cover the file set the viewer is rendering — `displayedFiles`,
+    // which follows the active scope / compare view — using the same
+    // endpoint each `FileSlot` would. A scoped `commit_diff` view
+    // already ships its hunks inline (`f.hunks != null`), so those
+    // files are skipped and the search source reads them directly.
+    const ep = interdiffEndpoints;
     const needed: { key: string; path: string }[] = [];
-    for (const f of current.diff.files) {
+    for (const f of displayedFiles) {
       if (f.binary) continue;
       if (f.hunks != null) continue;
-      const key = compareWith != null
-        ? `${selectedPatchset}|${compareWith}|${f.path}`
-        : `${selectedPatchset}||${f.path}`;
+      const key = searchCacheKey(f.path);
       if (fileDiffCache.has(key)) continue;
       needed.push({ key, path: f.path });
     }
@@ -753,13 +781,30 @@
       await Promise.all(
         needed.map(async ({ key, path }) => {
           try {
-            const updated = await api.fileDiff(
-              repo,
-              current.manifest.number,
-              path,
-              selectedPatchset,
-              compareWith ?? undefined,
-            );
+            let updated: FileChange;
+            if (ep) {
+              const res = await api.diffCommits(
+                repo,
+                ep.from,
+                ep.to,
+                path,
+                ep.useRebase,
+              );
+              // The generic /diff endpoint returns a discriminated
+              // union; a single-file fetch yields the `file` arm.
+              if (res.kind !== 'file') return;
+              const { kind: _kind, ...rest } = res;
+              void _kind;
+              updated = rest as FileChange;
+            } else {
+              updated = await api.fileDiff(
+                repo,
+                current.manifest.number,
+                path,
+                selectedPatchset,
+                compareWith ?? undefined,
+              );
+            }
             fileDiffCache.set(key, updated);
           } catch {
             // Best-effort: a single file failing shouldn't block the
@@ -776,8 +821,25 @@
   function openSearch() {
     if (searchOpen) return;
     searchOpen = true;
-    void forceLoadAllFilesForSearch();
   }
+
+  /** Keep the search index's diff coverage in step with the rendered
+   *  view. Re-runs whenever the bar is open and the displayed file
+   *  set changes — switching commit scope, compare pair, or patchset
+   *  while searching. `untrack` wraps the force-load so its internal
+   *  reads of `displayedFiles` / `fileDiffCache` don't make the effect
+   *  re-fire on its own cache writes; the dependencies that matter are
+   *  read explicitly above the call. */
+  $effect(() => {
+    if (!searchOpen) return;
+    // Explicit dependencies: the view selectors that change which
+    // files (and which endpoint) the search should cover.
+    void scopedChangeId;
+    void interdiffEndpoints;
+    void selectedPatchset;
+    void compareWith;
+    void untrack(() => forceLoadAllFilesForSearch());
+  });
 
   function closeSearch() {
     searchOpen = false;

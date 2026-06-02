@@ -877,7 +877,13 @@ Search scope:
   that file even when it's outside the viewport.
 - **Diff lines** in every loaded file's hunks (regular hunks
   only; conflict regions are out of scope for the substring
-  match, but the conflict badge already surfaces them).
+  match, but the conflict badge already surfaces them). The
+  diff-line index follows the *displayed* view: when the diff is
+  scoped to a single commit (`?scope=`) or to a per-commit
+  interdiff in compare mode, search covers those files and line
+  numbers — the ones actually rendered — not the unscoped
+  cumulative review diff. Otherwise a match would be counted on
+  a line the reader can neither see highlighted nor navigate to.
 - **Comment bodies** — both published and the viewer's own
   drafts, so a reviewer can find their in-progress text.
 - **Response bodies** — replies inside a thread. Pure
