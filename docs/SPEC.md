@@ -299,6 +299,16 @@ This is where the actual work happens. Three panes:
   threads anchor inside this commit. Clicking a row scopes the
   diff below to just that commit. An "All commits" sentinel at
   the top of the list restores the cumulative diff.
+
+  "That commit" means what the commit *itself* changed — its diff
+  against its parent, and for a **merge** its contribution over the
+  *merge of all its parents*. A merge therefore shows only its own
+  edits, never the content it inherits from the branches it merges
+  (a clean merge that just stitches branches together scopes to an
+  empty diff); content brought in by a merged branch is attributed
+  to the commit that introduced it. The "N comments" pill counts
+  comments on exactly those files, so it always agrees with what
+  the comment-nav can step through in the scoped view.
 - **Files panel** (centre, below the commits). The diff itself,
   file by file. Each file renders its header (status icon, path,
   add/remove counts), then its hunks, then any inline threads.

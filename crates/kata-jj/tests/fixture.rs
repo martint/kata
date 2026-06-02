@@ -575,3 +575,99 @@ async fn working_copy_commit_id_returns_at() {
     assert_eq!(at_commits.len(), 1);
     assert_eq!(wc.unwrap(), at_commits[0].commit_id);
 }
+
+/// A merge commit's per-commit diff shows only what the merge itself
+/// introduces — not content it inherits from the branches it merges.
+/// Regression: the scoped per-commit view diffed a merge against a
+/// single (arbitrary) parent, so it surfaced the *other* branch's files
+/// as if the merge authored them, and disagreed with the commits-panel
+/// `changed_files` count.
+#[tokio::test]
+async fn commit_self_diff_excludes_content_inherited_from_merged_branches() {
+    let fx = Fixture::new();
+    fx.write("base.txt", "base\n");
+    fx.jj(&["describe", "-m", "trunk"]);
+    fx.jj(&["bookmark", "create", "main", "-r", "@"]);
+
+    // Branch A adds a.txt.
+    fx.jj(&["new", "main", "-m", "branch a"]);
+    fx.write("a.txt", "aaa\n");
+    fx.jj(&["bookmark", "create", "branch-a", "-r", "@"]);
+
+    // Branch B adds b.txt.
+    fx.jj(&["new", "main", "-m", "branch b"]);
+    fx.write("b.txt", "bbb\n");
+    fx.jj(&["bookmark", "create", "branch-b", "-r", "@"]);
+
+    // Merge A and B, and add the merge's OWN file m.txt.
+    fx.jj(&["new", "branch-a", "branch-b", "-m", "merge"]);
+    fx.write("m.txt", "mmm\n");
+    fx.jj(&["bookmark", "create", "merge", "-r", "@"]);
+
+    let (_, merge_commit) = current_change_and_commit(&fx.root, "merge");
+
+    // Per-commit scoped diff (commit_diff source): only m.txt — the
+    // inherited a.txt / b.txt belong to the branches, not the merge.
+    let handle = kata_jj::libjj::open_repo(&fx.root).expect("open_repo");
+    let sd = handle
+        .compute_commit_self_diff(&merge_commit)
+        .expect("compute_commit_self_diff");
+    let mut paths: Vec<&str> = sd.files.iter().map(|f| f.path.as_str()).collect();
+    paths.sort();
+    assert_eq!(
+        paths,
+        vec!["m.txt"],
+        "merge self-diff must be only its own file, got {paths:?}"
+    );
+    assert_eq!(sd.tip.commit_id, merge_commit);
+    // The lone file ships full hunks (scoped view renders them inline).
+    assert!(sd.files[0].hunks.is_some());
+
+    // The commits-panel `changed_files` must agree with the scoped diff.
+    let cli = fx.cli();
+    let commits = cli
+        .list_commits(&RevSet::new("main..merge"))
+        .await
+        .expect("list_commits");
+    let m = commits
+        .iter()
+        .find(|c| c.commit_id == merge_commit)
+        .expect("merge commit in list");
+    let mut cf: Vec<&str> = m.changed_files.iter().map(|f| f.path.as_str()).collect();
+    cf.sort();
+    assert_eq!(
+        cf,
+        vec!["m.txt"],
+        "merge changed_files must match the scoped diff, got {cf:?}"
+    );
+}
+
+/// A clean merge — one that only stitches its branches together with no
+/// edits of its own — has an empty per-commit diff.
+#[tokio::test]
+async fn commit_self_diff_is_empty_for_a_clean_merge() {
+    let fx = Fixture::new();
+    fx.write("base.txt", "base\n");
+    fx.jj(&["describe", "-m", "trunk"]);
+    fx.jj(&["bookmark", "create", "main", "-r", "@"]);
+    fx.jj(&["new", "main", "-m", "branch a"]);
+    fx.write("a.txt", "aaa\n");
+    fx.jj(&["bookmark", "create", "branch-a", "-r", "@"]);
+    fx.jj(&["new", "main", "-m", "branch b"]);
+    fx.write("b.txt", "bbb\n");
+    fx.jj(&["bookmark", "create", "branch-b", "-r", "@"]);
+    // Pure merge: no own content.
+    fx.jj(&["new", "branch-a", "branch-b", "-m", "merge"]);
+    fx.jj(&["bookmark", "create", "merge", "-r", "@"]);
+
+    let (_, merge_commit) = current_change_and_commit(&fx.root, "merge");
+    let handle = kata_jj::libjj::open_repo(&fx.root).expect("open_repo");
+    let sd = handle
+        .compute_commit_self_diff(&merge_commit)
+        .expect("compute_commit_self_diff");
+    assert!(
+        sd.files.is_empty(),
+        "a clean merge introduces nothing of its own, got {:?}",
+        sd.files.iter().map(|f| &f.path).collect::<Vec<_>>()
+    );
+}

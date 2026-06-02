@@ -397,6 +397,142 @@ impl JjRepoHandle {
     }
 }
 
+/// jj-native per-commit diff: the changes a commit introduces over the
+/// merge of all its parents. `base`/`tip` carry both ids of each
+/// endpoint so the caller can build a `CommitDiffView`.
+pub struct CommitSelfDiff {
+    /// First parent — a real persisted commit. For non-conflict files
+    /// its content matches the merged parent tree byte-for-byte, so the
+    /// UI can keep reading base-side blobs / anchoring comments against
+    /// it. For a parentless commit this equals `tip` (degenerate).
+    pub base: Endpoint,
+    pub tip: Endpoint,
+    pub files: Vec<kata_core::FileChange>,
+}
+
+impl JjRepoHandle {
+    /// The diff a commit introduces over the **merge of all its
+    /// parents** (`Commit::parent_tree`) — what jj means by "what this
+    /// commit changed". For a single-parent commit this is just
+    /// `parent..commit`; for a merge it's the commit's own
+    /// contribution: a clean merge that only stitches branches together
+    /// diffs to nothing, and content inherited from a merged-in branch
+    /// is attributed to the commit that introduced it rather than the
+    /// merge. Matches the base used by `list_commits`' `changed_files`,
+    /// so the commits-panel counts and this scoped diff agree.
+    ///
+    /// Ships full per-file hunks (the scoped view renders them inline).
+    /// A tip-side conflict becomes a structured `ConflictHunk`, mirroring
+    /// `build_diff`.
+    pub fn compute_commit_self_diff(
+        &self,
+        commit_id: &KataCommitId,
+    ) -> Result<CommitSelfDiff> {
+        use futures::StreamExt;
+        use jj_lib::matchers::EverythingMatcher;
+
+        let commit = self.lookup_commit(commit_id)?;
+        let repo = self.repo.as_ref() as &dyn jj_lib::repo::Repo;
+        let parent_tree = futures::executor::block_on(commit.parent_tree(repo))
+            .map_err(|e| Error::Parse(format!("libjj parent_tree: {e}")))?;
+        let commit_tree = commit.tree();
+        let store = self.repo.store();
+
+        let matcher = EverythingMatcher;
+        let mut stream = parent_tree.diff_stream(&commit_tree, &matcher);
+        let mut files: Vec<kata_core::FileChange> = Vec::new();
+        while let Some(entry) = futures::executor::block_on(stream.next()) {
+            let path_str = entry.path.as_internal_file_string().to_string();
+            let values = entry
+                .values
+                .map_err(|e| Error::Parse(format!("libjj diff entry: {e}")))?;
+
+            // Tip-side conflict: emit the structured sides instead of a
+            // histogram, same as `build_diff`'s eager path.
+            if values.after.as_resolved().is_none()
+                && let Some(terms) = read_conflict_terms_at(&self.repo, commit_id, &path_str)?
+            {
+                files.push(kata_core::FileChange {
+                    path: path_str,
+                    status: kata_core::FileStatus::Modified,
+                    hunks: Some(vec![kata_core::Hunk::Conflict(
+                        kata_core::ConflictHunk { terms },
+                    )]),
+                    binary: false,
+                    added: 0,
+                    removed: 0,
+                });
+                continue;
+            }
+
+            let left_id = values
+                .before
+                .as_resolved()
+                .and_then(|opt| opt.as_ref())
+                .and_then(|tv| match tv {
+                    jj_lib::backend::TreeValue::File { id, .. } => Some(id.clone()),
+                    _ => None,
+                });
+            let right_id = values
+                .after
+                .as_resolved()
+                .and_then(|opt| opt.as_ref())
+                .and_then(|tv| match tv {
+                    jj_lib::backend::TreeValue::File { id, .. } => Some(id.clone()),
+                    _ => None,
+                });
+            let status = match (left_id.is_some(), right_id.is_some()) {
+                (true, true) => kata_core::FileStatus::Modified,
+                (false, true) => kata_core::FileStatus::Added,
+                (true, false) => kata_core::FileStatus::Deleted,
+                (false, false) => continue,
+            };
+            let left_bytes = if let Some(id) = &left_id {
+                read_file_bytes(store, &entry.path, id)?
+            } else {
+                Vec::new()
+            };
+            let right_bytes = if let Some(id) = &right_id {
+                read_file_bytes(store, &entry.path, id)?
+            } else {
+                Vec::new()
+            };
+            let (binary, added, removed) = count_line_changes(&left_bytes, &right_bytes);
+            let hunks = if binary {
+                None
+            } else {
+                Some(compute_hunks(&left_bytes, &right_bytes, &path_str)?)
+            };
+            files.push(kata_core::FileChange {
+                path: path_str,
+                status,
+                hunks,
+                binary,
+                added,
+                removed,
+            });
+        }
+
+        let tip = Endpoint {
+            change_id: KataChangeId::new(commit.change_id().reverse_hex()),
+            commit_id: commit_id.clone(),
+        };
+        let base = match commit.parent_ids().first() {
+            Some(pid) => {
+                let parent = store
+                    .get_commit(pid)
+                    .map_err(|e| Error::Parse(format!("libjj get_commit (parent): {e}")))?;
+                Endpoint {
+                    change_id: KataChangeId::new(parent.change_id().reverse_hex()),
+                    commit_id: KataCommitId::new(pid.hex()),
+                }
+            }
+            None => tip.clone(),
+        };
+        Ok(CommitSelfDiff { base, tip, files })
+    }
+}
+
 /// In-process jj backend built on `jj-lib`. Replaces the subprocess
 /// `JjCli` backend: every method runs inside `spawn_blocking` and
 /// talks to jj-lib's `RepoLoader` directly. `load_at_head` is called
@@ -776,17 +912,24 @@ impl JjBackend for JjLib {
                     .next()
                     .unwrap_or("")
                     .to_string();
-                // changed_files = files touched relative to first
-                // parent, each with its line counts. Same imara-diff
-                // histogram path as `build_diff_metadata` so the
-                // counts agree byte-for-byte with what a per-commit
-                // diff fetch would show.
-                let changed_files = if let Some(parent_id) = commit.parent_ids().first() {
-                    let parent = store.get_commit(parent_id).map_err(|e| {
-                        Error::Parse(format!("libjj get_commit (parent): {e}"))
-                    })?;
+                // changed_files = files this commit changed relative to
+                // the merge of ALL its parents (`parent_tree`), each
+                // with its line counts. For a single-parent commit this
+                // is just `parent..commit`; for a merge it's the
+                // commit's own contribution — content inherited from a
+                // merged-in branch is attributed to the commit that
+                // introduced it, not the merge, and a clean merge that
+                // only stitches branches together changes nothing.
+                // Same merged-parent base and imara-diff histogram path
+                // as the per-commit diff fetch (`compute_commit_self_diff`),
+                // so the commits-panel counts and the scoped diff agree.
+                let changed_files = {
+                    let parent_tree = futures::executor::block_on(
+                        commit.parent_tree(repo.as_ref() as &dyn jj_lib::repo::Repo),
+                    )
+                    .map_err(|e| Error::Parse(format!("libjj parent_tree: {e}")))?;
                     let matcher = EverythingMatcher;
-                    let mut stream = parent.tree().diff_stream(&commit.tree(), &matcher);
+                    let mut stream = parent_tree.diff_stream(&commit.tree(), &matcher);
                     let mut files = Vec::new();
                     while let Some(entry) = futures::executor::block_on(stream.next()) {
                         let path = entry.path.clone();
@@ -830,8 +973,6 @@ impl JjBackend for JjLib {
                         });
                     }
                     files
-                } else {
-                    Vec::new()
                 };
                 // Paths conflicted at this commit, surfaced for the
                 // UI's `⚠ conflict` badge in the commits panel. We
