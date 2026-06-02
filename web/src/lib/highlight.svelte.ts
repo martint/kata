@@ -84,6 +84,42 @@ export async function loadLang(lang: BundledLanguage): Promise<Highlighter> {
 /** Map line number (1-based) → rendered `<span>` HTML for that line. */
 export type LineHighlights = SvelteMap<number, string>;
 
+/** Cross-mount cache of tokenized line highlights, keyed by
+ *  `${theme}|${commit}|${path}`. `FileSlot` virtualizes a `FileDiff`
+ *  out of the DOM when it scrolls far away and remounts it on return;
+ *  without this, every remount re-ran `tokenizeWholeFile` from scratch
+ *  — flashing the diff from plain text to highlighted, and (because
+ *  tokenization is serialized, see `acquireTokenizeSlot`) backing up
+ *  the queue so the file the reader actually jumped to highlights late.
+ *  The tokenized HTML for a `(theme, commit, path)` triple is immutable,
+ *  so caching it is safe. Bounded with FIFO eviction to cap memory on
+ *  a long browsing session. */
+const highlightCache = new Map<string, LineHighlights>();
+const HIGHLIGHT_CACHE_MAX = 300;
+
+export function highlightCacheKey(
+  theme: string,
+  commit: string,
+  path: string,
+): string {
+  return `${theme}|${commit}|${path}`;
+}
+
+export function getCachedHighlights(key: string): LineHighlights | undefined {
+  return highlightCache.get(key);
+}
+
+/** Store a fully-tokenized map. No-op if already present (the first
+ *  writer wins; the map is immutable afterwards). */
+export function storeHighlights(key: string, map: LineHighlights): void {
+  if (highlightCache.has(key)) return;
+  if (highlightCache.size >= HIGHLIGHT_CACHE_MAX) {
+    const oldest = highlightCache.keys().next().value;
+    if (oldest !== undefined) highlightCache.delete(oldest);
+  }
+  highlightCache.set(key, map);
+}
+
 /** Single-slot semaphore so only one whole-file tokenize runs at a time
  *  across the app. `codeToTokensBase` is synchronous and can pin the main
  *  thread for 50–200ms on a big file — running several in parallel just

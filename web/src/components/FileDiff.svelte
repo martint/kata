@@ -18,6 +18,9 @@
     loadLang,
     tokenizeWholeFile,
     themeState,
+    highlightCacheKey,
+    getCachedHighlights,
+    storeHighlights,
     type LineHighlights,
   } from '../lib/highlight.svelte';
   import { isThreadFolded } from '../lib/resolution';
@@ -1737,7 +1740,7 @@
    *  expansion (and the "Whole file" toggle) still works for them.
    *  Highlighting is the part that needs a recognized language. */
   $effect(() => {
-    void themeState.value;
+    const theme = themeState.value;
     // Pin the primitive deps so this effect re-runs only on real changes.
     const lang = fileLang;
     const wantBase = baseSideExists;
@@ -1748,11 +1751,26 @@
     const tCommit = tipCommit;
     let cancelled = false;
     const isCancelled = () => cancelled;
-    // Reset on re-run (theme toggle, etc.) so we don't see stale colors.
-    highlightsBase = new SvelteMap();
-    highlightsTip = new SvelteMap();
+
+    // Reuse a cached tokenization when this exact (theme, commit, path)
+    // was highlighted before — common on a FileSlot remount during
+    // scroll/navigation. A cache hit is assigned synchronously, so the
+    // diff never flashes back to plain text and never re-queues a
+    // (serialized) tokenize pass. A miss starts empty and fills in
+    // below.
+    const baseKey = wantBase ? highlightCacheKey(theme, bCommit, bPath) : null;
+    const tipKey = wantTip ? highlightCacheKey(theme, tCommit, tPath) : null;
+    const cachedBase = baseKey ? getCachedHighlights(baseKey) : undefined;
+    const cachedTip = tipKey ? getCachedHighlights(tipKey) : undefined;
+    highlightsBase = cachedBase ?? new SvelteMap();
+    highlightsTip = cachedTip ?? new SvelteMap();
 
     (async () => {
+      // Read each side's text as before — `api.readFile` is itself
+      // cached, so a remount pays no network. (`tipText` is also needed
+      // for `tipLines`: context expansion / whole-file toggle.) What we
+      // skip on a cache hit is the expensive, *serialized*
+      // tokenization — that's what flashed and backed up the queue.
       const [baseText, tipText, h] = await Promise.all([
         wantBase
           ? api.readFile(repo, bCommit, bPath).catch(() => null)
@@ -1771,12 +1789,24 @@
       }
 
       if (lang != null && h != null) {
+        // Tokenize into the live state maps so highlighting paints
+        // progressively, then publish each to the shared cache once
+        // complete so the next remount is instant. Cache hits already
+        // hold the finished map and are skipped here.
         await Promise.all([
-          baseText != null
-            ? tokenizeWholeFile(h, baseText, lang, highlightsBase, { isCancelled })
+          !cachedBase && baseText != null
+            ? tokenizeWholeFile(h, baseText, lang, highlightsBase, { isCancelled }).then(
+                () => {
+                  if (!cancelled && baseKey) storeHighlights(baseKey, highlightsBase);
+                },
+              )
             : Promise.resolve(),
-          tipText != null
-            ? tokenizeWholeFile(h, tipText, lang, highlightsTip, { isCancelled })
+          !cachedTip && tipText != null
+            ? tokenizeWholeFile(h, tipText, lang, highlightsTip, { isCancelled }).then(
+                () => {
+                  if (!cancelled && tipKey) storeHighlights(tipKey, highlightsTip);
+                },
+              )
             : Promise.resolve(),
         ]);
       }
