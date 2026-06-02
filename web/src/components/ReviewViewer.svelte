@@ -1271,6 +1271,12 @@
     let scheduled = false;
     function syncActiveFile() {
       scheduled = false;
+      // Skip while an explicit file/comment nav is parking its
+      // target — its intermediate scrolls would otherwise let the
+      // spy reclaim `activeFilePath` from whatever slot is at the
+      // threshold mid-stabilization, which reads as "jumped to the
+      // next file". `scrollToFile` sets the highlight up front.
+      if (navigating) return;
       if (orderedFiles.length === 0) {
         if (activeFilePath !== null) activeFilePath = null;
         return;
@@ -2948,8 +2954,7 @@
 
   async function scrollToFile(path: string) {
     const sel = `[data-file-path="${CSS.escape(path)}"]`;
-    const target = document.querySelector(sel) as HTMLElement | null;
-    if (!target) return;
+    if (!document.querySelector(sel)) return;
     // On phones the tree is an overlay drawer — close it before we
     // start scrolling so the user actually sees the diff they jumped
     // to (and the layout has already settled into one-pane mode).
@@ -2959,27 +2964,55 @@
     ) {
       treeCollapsed = true;
     }
-    scrollTopOf(target);
-    // Slots above the target are virtualized placeholders sized from
-    // an estimate. As they enter the viewport during the scroll, the
-    // IntersectionObserver mounts the real FileDiff and the
-    // ResizeObserver updates `lastKnownHeight` — the document layout
-    // shifts and the slot we wanted ends up off-screen. Re-aim across
-    // a handful of frames until the slot's position is stable.
-    let stableFrames = 0;
-    let lastTop = Number.NaN;
-    for (let i = 0; i < 30 && stableFrames < 3; i++) {
-      await new Promise((r) => requestAnimationFrame(r));
-      const cur = document.querySelector(sel) as HTMLElement | null;
-      if (!cur) return;
-      const top = cur.getBoundingClientRect().top;
-      if (Number.isFinite(lastTop) && Math.abs(top - lastTop) < 0.5) {
-        stableFrames++;
-      } else {
-        stableFrames = 0;
-        scrollTopOf(cur);
+    // Honour the click immediately: highlight the target in the tree
+    // and suppress the scroll-spy so the intermediate scrolls below
+    // can't reclaim `activeFilePath` from whatever slot happens to
+    // sit at the threshold mid-stabilization.
+    activeFilePath = path;
+    const myGen = ++navGeneration;
+    const superseded = () => myGen !== navGeneration;
+    navigating = true;
+    try {
+      // Slots above the target are virtualized placeholders sized
+      // from an estimate; each one mounts a real FileDiff (and fires
+      // an async per-file hunk fetch) as it enters the viewport,
+      // re-flowing the document and shoving the target off-screen.
+      // A short fixed-frame loop exits before those network round-
+      // trips land — the layout then jumps and the reader ends up on
+      // the *next* file. Re-park every frame against a generous time
+      // budget, the same way `scrollToComment` does, and only quit
+      // once the position has held for ~320ms of real stability.
+      const TOTAL_TIME_MS = 10000;
+      const startTime = performance.now();
+      const remaining = () => performance.now() - startTime < TOTAL_TIME_MS;
+      let stableFrames = 0;
+      let lastTop = Number.NaN;
+      const STABLE_REQUIRED = 20;
+      while (stableFrames < STABLE_REQUIRED && remaining() && !superseded()) {
+        const el = document.querySelector(sel) as HTMLElement | null;
+        if (!el) return;
+        scrollTopOf(el);
+        await new Promise((r) => requestAnimationFrame(r));
+        const cur = document.querySelector(sel) as HTMLElement | null;
+        if (!cur) return;
+        const top = cur.getBoundingClientRect().top;
+        if (Number.isFinite(lastTop) && Math.abs(top - lastTop) < 0.5) {
+          stableFrames++;
+        } else {
+          stableFrames = 0;
+        }
+        lastTop = top;
       }
-      lastTop = top;
+    } finally {
+      // Release only if we're still the latest nav — a newer click
+      // owns the flag's lifecycle otherwise. The grace period lets
+      // the final re-park's scroll event drain before the spy
+      // resumes.
+      if (!superseded()) {
+        setTimeout(() => {
+          if (!superseded()) navigating = false;
+        }, 200);
+      }
     }
   }
 
