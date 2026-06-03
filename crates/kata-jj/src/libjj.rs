@@ -756,18 +756,33 @@ impl JjBackend for JjLib {
             // git's rename detection (`git diff -M`); other backends
             // return an empty stream so the diff still works, just
             // without rename info.
+            // Rename detection is best-effort. jj's copy tracking walks
+            // the commits between base and tip, and on a long-lived repo
+            // an intermediate commit may have been abandoned and
+            // garbage-collected out of the git store (e.g. after the
+            // branch advances and a stale patchset still pins old
+            // endpoints). A missing object there must NOT sink the whole
+            // diff — the base and tip trees are still readable, so we
+            // degrade to no rename detection (renames render as a
+            // delete + add pair) rather than failing the review load or
+            // refresh. Same outcome as a backend that doesn't implement
+            // copy records at all.
             let mut copy_records = CopyRecords::default();
-            let copy_stream = repo
-                .store()
-                .get_copy_records(
-                    None,
-                    base_commit.id(),
-                    tip_commit.id(),
-                )
-                .map_err(|e| Error::Parse(format!("libjj get_copy_records: {e}")))?;
-            let records: Vec<_> = futures::executor::block_on(copy_stream.try_collect())
-                .map_err(|e| Error::Parse(format!("libjj copy records: {e}")))?;
-            copy_records.add_records(records);
+            match repo.store().get_copy_records(None, base_commit.id(), tip_commit.id()) {
+                Ok(stream) => {
+                    match futures::executor::block_on(stream.try_collect::<Vec<_>>()) {
+                        Ok(records) => copy_records.add_records(records),
+                        Err(e) => tracing::warn!(
+                            base = %base, tip = %tip, error = %e,
+                            "copy-record stream failed; diffing without rename detection",
+                        ),
+                    }
+                }
+                Err(e) => tracing::warn!(
+                    base = %base, tip = %tip, error = %e,
+                    "get_copy_records failed; diffing without rename detection",
+                ),
+            }
             let matcher = EverythingMatcher;
             let mut stream = base_tree.diff_stream_with_copies(
                 &tip_tree,
