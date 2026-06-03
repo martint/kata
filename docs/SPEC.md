@@ -743,6 +743,19 @@ workflow can't: the wrong bookmark was named at creation time,
 or the branch's identity legitimately moved (a feature renamed
 mid-flight).
 
+### 10.4 Unavailable diffs
+
+A review diffs against the *commits* its patchsets pinned, not the
+live bookmark. If a diffable commit is gone — garbage-collected out
+of the repo after the branch that introduced it moved on — the
+review **still loads**. The viewer shows its chrome, summary,
+comments, and annotations as usual, with the file diff and commit
+list empty and a banner: *Diff unavailable. The commits this review
+compares appear to have been garbage-collected…*. Comments keep
+their stored line ranges (anchors that can't be re-read render in
+place rather than as "outdated"). Kata never bounces the reader to
+the home screen because the underlying commits vanished.
+
 ---
 
 ## 11. Patchset compare (interdiff)

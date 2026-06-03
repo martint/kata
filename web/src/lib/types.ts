@@ -409,6 +409,12 @@ export interface DraftsView {
 export interface ReviewView {
   manifest: ReviewManifest;
   diff: Diff;
+  /** True when the diff/commit list couldn't be computed — typically a
+   *  pinned base/tip commit was garbage-collected out of the repo. The
+   *  review still loads (chrome, comments, annotations); `diff` and
+   *  `commits` come back empty and the UI shows an explanatory banner
+   *  instead of bouncing to the home screen. Absent in the normal case. */
+  diff_unavailable?: boolean;
   commits: CommitInfo[];
   comments: CommentView[];
   responses: ResponseView[];

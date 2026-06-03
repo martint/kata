@@ -3315,6 +3315,20 @@
   </div>
 {/if}
 
+{#if current.diff_unavailable}
+  <div class="revset-error-banner" role="status">
+    <p class="headline">
+      <strong>Diff unavailable.</strong>
+      <span>
+        The commits this review compares appear to have been
+        garbage-collected from the repository, so the file diff and
+        commit list can't be shown. Comments and annotations below are
+        preserved.
+      </span>
+    </p>
+  </div>
+{/if}
+
 <ReviewSummary
   summary={current.manifest.summary}
   editable={(!!viewer && viewer === current.manifest.created_by) || isAdmin}

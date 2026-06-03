@@ -771,8 +771,29 @@ impl ReviewService {
             jj.resolve_range(&manifest.revset),
             jj.current_op_id(),
         );
-        let diff = diff_res?;
-        let commits = commits_res?;
+        // The diff and commit list are built from the patchset's pinned
+        // endpoints. If those commits have been garbage-collected (a
+        // pre-pinning review, or one whose kata refs were pruned), the
+        // build fails — but a review is more than its diff. Degrade to
+        // an empty diff/commit list plus a flag the UI turns into a
+        // banner, so the reader still gets the chrome, comments, and
+        // annotations instead of being bounced to the home screen.
+        let diff_unavailable = diff_res.is_err() || commits_res.is_err();
+        let diff = diff_res.unwrap_or_else(|e| {
+            tracing::warn!(
+                review = %review, base = %diff_base, tip = %selected.tip_commit,
+                error = ?e, "diff unavailable; serving review without it",
+            );
+            Diff {
+                base: diff_base.clone(),
+                tip: selected.tip_commit.clone(),
+                files: Vec::new(),
+            }
+        });
+        let commits = commits_res.unwrap_or_else(|e| {
+            tracing::warn!(review = %review, error = ?e, "commit list unavailable; serving review without it");
+            Vec::new()
+        });
         let revset_error = match &live_res {
             Err(e) => Some(build_revset_error(&*jj, e).await),
             Ok(_) => None,
@@ -864,7 +885,14 @@ impl ReviewService {
                 &selected,
             ));
         }
-        cache.prefetch(&*jj, prefetch_keys).await?;
+        // Best-effort: a GC'd anchor commit makes the bulk read fail,
+        // but per-comment anchor resolution below already degrades to an
+        // un-re-anchored view, so a failed prefetch must not sink the
+        // open. Each key it couldn't fill just falls through to an
+        // individual (also-degrading) read.
+        if let Err(e) = cache.prefetch(&*jj, prefetch_keys).await {
+            tracing::warn!(review = %review, error = ?e, "anchor prefetch failed; resolving anchors individually");
+        }
         let mut comments = Vec::with_capacity(published.len());
         for c in published {
             if c.patchset > selected_n {
@@ -954,6 +982,7 @@ impl ReviewService {
         Ok(ReviewView {
             manifest,
             diff,
+            diff_unavailable,
             commits,
             comments,
             responses: response_views,
@@ -970,6 +999,48 @@ impl ReviewService {
         })
     }
 
+    /// Resolve a comment/annotation anchor to its display form,
+    /// degrading to [`AnchorView::Valid`] when the underlying commit
+    /// content can't be read (e.g. a garbage-collected anchor or
+    /// patchset endpoint). A read failure here must not fail the whole
+    /// `open_review`: the reader still sees the comment, anchored at its
+    /// stored line range. Whole-file and whole-review comments have
+    /// nothing to re-anchor and map straight to `Valid`.
+    async fn resolve_anchor_view<B: JjBackend + ?Sized>(
+        &self,
+        jj: &B,
+        cache: &FileCache,
+        file: Option<&str>,
+        lines: Option<kata_core::LineRange>,
+        side: Option<Side>,
+        anchor_commit: &CommitId,
+        viewing: &Patchset,
+    ) -> AnchorView {
+        let (Some(path), Some(range), Some(side)) = (file, lines, side) else {
+            return AnchorView::Valid;
+        };
+        let current = match side {
+            Side::Tip => &viewing.tip_commit,
+            Side::Base => &viewing.base_commit,
+        };
+        match resolve_anchor(jj, cache, path, anchor_commit, range, current).await {
+            Ok(AnchorResolution::Valid) => AnchorView::Valid,
+            Ok(AnchorResolution::Moved { new_range }) => {
+                AnchorView::Moved { new_lines: new_range }
+            }
+            Ok(AnchorResolution::Drifted { new_range, similarity }) => {
+                AnchorView::Drifted { new_lines: new_range, similarity }
+            }
+            Ok(AnchorResolution::Outdated { original_content }) => {
+                AnchorView::Outdated { original_content }
+            }
+            Err(e) => {
+                tracing::warn!(path, error = ?e, "anchor resolution failed; showing comment at stored range");
+                AnchorView::Valid
+            }
+        }
+    }
+
     async fn build_comment_view(
         &self,
         repo: &RepoId,
@@ -979,40 +1050,17 @@ impl ReviewService {
         draft: bool,
     ) -> ServiceResult<CommentView> {
         let jj = self.jj_for(repo)?;
-        let anchor = match (&comment.file, comment.lines, comment.side) {
-            (Some(path), Some(range), Some(side)) => {
-                let current = match side {
-                    Side::Tip => &viewing.tip_commit,
-                    Side::Base => &viewing.base_commit,
-                };
-                match resolve_anchor(
-                    &*jj,
-                    cache,
-                    path,
-                    &comment.anchor_commit_id,
-                    range,
-                    current,
-                )
-                .await?
-                {
-                    AnchorResolution::Valid => AnchorView::Valid,
-                    AnchorResolution::Moved { new_range } => {
-                        AnchorView::Moved { new_lines: new_range }
-                    }
-                    AnchorResolution::Drifted { new_range, similarity } => {
-                        AnchorView::Drifted {
-                            new_lines: new_range,
-                            similarity,
-                        }
-                    }
-                    AnchorResolution::Outdated { original_content } => {
-                        AnchorView::Outdated { original_content }
-                    }
-                }
-            }
-            // Whole-file or whole-review comments have nothing to re-anchor.
-            _ => AnchorView::Valid,
-        };
+        let anchor = self
+            .resolve_anchor_view(
+                &*jj,
+                cache,
+                comment.file.as_deref(),
+                comment.lines,
+                comment.side,
+                &comment.anchor_commit_id,
+                viewing,
+            )
+            .await;
         Ok(CommentView { comment, anchor, draft })
     }
 
@@ -1027,39 +1075,17 @@ impl ReviewService {
         viewing: &Patchset,
     ) -> ServiceResult<AnnotationView> {
         let jj = self.jj_for(repo)?;
-        let anchor = match (&annotation.file, annotation.lines, annotation.side) {
-            (Some(path), Some(range), Some(side)) => {
-                let current = match side {
-                    Side::Tip => &viewing.tip_commit,
-                    Side::Base => &viewing.base_commit,
-                };
-                match resolve_anchor(
-                    &*jj,
-                    cache,
-                    path,
-                    &annotation.anchor_commit_id,
-                    range,
-                    current,
-                )
-                .await?
-                {
-                    AnchorResolution::Valid => AnchorView::Valid,
-                    AnchorResolution::Moved { new_range } => {
-                        AnchorView::Moved { new_lines: new_range }
-                    }
-                    AnchorResolution::Drifted { new_range, similarity } => {
-                        AnchorView::Drifted {
-                            new_lines: new_range,
-                            similarity,
-                        }
-                    }
-                    AnchorResolution::Outdated { original_content } => {
-                        AnchorView::Outdated { original_content }
-                    }
-                }
-            }
-            _ => AnchorView::Valid,
-        };
+        let anchor = self
+            .resolve_anchor_view(
+                &*jj,
+                cache,
+                annotation.file.as_deref(),
+                annotation.lines,
+                annotation.side,
+                &annotation.anchor_commit_id,
+                viewing,
+            )
+            .await;
         Ok(AnnotationView { annotation, anchor })
     }
 
@@ -2127,6 +2153,10 @@ fn is_zero_u32(n: &u32) -> bool {
     *n == 0
 }
 
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
 /// Gate an action that only a review's creator may perform, with a
 /// global admin able to act in the creator's stead. `is_admin` is
 /// decided up at the transport's auth boundary (it can depend on
@@ -2160,6 +2190,15 @@ impl UnreadSummary {
 pub struct ReviewView {
     pub manifest: ReviewManifest,
     pub diff: Diff,
+    /// True when the diff (and/or commit list) couldn't be computed —
+    /// typically because a pinned base/tip commit was garbage-collected
+    /// out of the repo. Rather than failing the whole open and bouncing
+    /// the reader to the home screen, the review still loads with its
+    /// chrome, comments, and annotations; `diff`/`commits` come back
+    /// empty and the UI renders an explanatory banner. `false` (and
+    /// skipped on the wire) for the normal, fully-readable case.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub diff_unavailable: bool,
     pub commits: Vec<CommitInfo>,
     pub comments: Vec<CommentView>,
     pub responses: Vec<ResponseView>,
