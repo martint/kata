@@ -9,6 +9,7 @@ license.workspace = true
 async-trait = { workspace = true }
 chrono = { workspace = true }
 futures = { workspace = true }
+gix = { version = "0.83", default-features = false }
 imara-diff = { workspace = true }
 jj-lib = "0.41"
 kata-core = { workspace = true }

@@ -743,11 +743,22 @@ workflow can't: the wrong bookmark was named at creation time,
 or the branch's identity legitimately moved (a feature renamed
 mid-flight).
 
-### 10.4 Unavailable diffs
+### 10.4 Commit retention and unavailable diffs
 
 A review diffs against the *commits* its patchsets pinned, not the
-live bookmark. If a diffable commit is gone — garbage-collected out
-of the repo after the branch that introduced it moved on — the
+live bookmark. Those commits can outlive every bookmark and branch
+that once pointed at them, so Kata protects them from garbage
+collection: when a patchset is recorded (at create, refresh, or
+revset-edit time) Kata writes a git ref under `refs/kata/<review>/`
+for each endpoint. Pinning a patchset's tip keeps every commit back
+to its base reachable, so neither `jj util gc` nor a plain `git gc`
+can collect the range a review needs. Deleting a review drops its
+pins, releasing the commits to normal collection. Existing reviews
+are re-pinned at startup, so the protection applies retroactively
+after an upgrade. (Operational detail in `docs/deploying.md`.)
+
+If a diffable commit is nonetheless gone — a review created before
+this protection existed, or whose refs were manually pruned — the
 review **still loads**. The viewer shows its chrome, summary,
 comments, and annotations as usual, with the file diff and commit
 list empty and a banner: *Diff unavailable. The commits this review

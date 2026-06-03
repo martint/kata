@@ -482,6 +482,42 @@ impl ReviewService {
         }
     }
 
+    /// Re-pin every existing review's patchset endpoints. Run once at
+    /// startup so reviews created before ref-pinning existed — or whose
+    /// kata refs were pruned — get their diffable commits protected from
+    /// the next `jj util gc` / `git gc`. Idempotent: pins are keyed by
+    /// review id and commit, so each boot just reasserts the same refs.
+    /// Best-effort and per-review isolated — a repo that won't open or a
+    /// review that won't pin is logged and skipped, never aborting the
+    /// sweep.
+    pub async fn backfill_pins(&self) {
+        let repos: Vec<RepoId> = self
+            .registry
+            .load()
+            .by_name
+            .iter()
+            .map(|(_, id)| id.clone())
+            .collect();
+        let mut pinned = 0usize;
+        for repo_id in repos {
+            let Ok(jj) = self.jj_for(&repo_id) else {
+                continue;
+            };
+            let summaries = match self.storage.list_reviews(&repo_id).await {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!(repo = %repo_id, error = ?e, "pin backfill: list_reviews failed");
+                    continue;
+                }
+            };
+            for summary in summaries {
+                self.pin_review_commits(&*jj, &summary.manifest).await;
+                pinned += 1;
+            }
+        }
+        tracing::info!(reviews = pinned, "review-commit pin backfill complete");
+    }
+
     /// All registered repos, in registration order.
     pub fn list_repos(&self) -> Vec<RepoSummary> {
         let snap = self.registry.load();
@@ -631,6 +667,24 @@ impl ReviewService {
 
     // ---- review lifecycle ----------------------------------------------
 
+    /// Pin every patchset endpoint of `manifest` via git refs so neither
+    /// `jj util gc` nor `git gc` can collect the commits a review diffs
+    /// against. Idempotent and best-effort: failures are logged, never
+    /// propagated — pinning is a durability guarantee layered on top of
+    /// a write that has already succeeded, so it must not be able to
+    /// fail that write. Pinning a patchset's tip keeps every commit back
+    /// to its base reachable; we pin the base too as cheap insurance.
+    async fn pin_review_commits(&self, jj: &dyn JjBackend, manifest: &ReviewManifest) {
+        let mut commits = Vec::with_capacity(manifest.patchsets.len() * 2);
+        for ps in &manifest.patchsets {
+            commits.push(ps.base_commit.clone());
+            commits.push(ps.tip_commit.clone());
+        }
+        if let Err(e) = jj.pin_commits(&manifest.review_id, &commits).await {
+            tracing::warn!(review = %manifest.review_id, error = ?e, "failed to pin review commits");
+        }
+    }
+
     pub async fn create_review(
         &self,
         repo: &RepoId,
@@ -673,6 +727,7 @@ impl ReviewService {
             archived_at: None,
         };
         let manifest = self.storage.create_review(repo, &manifest).await?;
+        self.pin_review_commits(&*jj, &manifest).await;
         let repo_name = self.repo_name(repo).unwrap_or_default();
         self.emit(Event::ReviewCreated {
             repo: repo_name,
@@ -1459,6 +1514,9 @@ impl ReviewService {
             manifest.summary = Some(s).filter(|s| !s.is_empty());
         }
         self.storage.update_review(repo, &manifest).await?;
+        if tip_moved {
+            self.pin_review_commits(&*jj, &manifest).await;
+        }
         let repo_name = self.repo_name(repo).unwrap_or_default();
         self.emit(Event::ReviewUpdated {
             repo: repo_name,
@@ -1517,6 +1575,9 @@ impl ReviewService {
             manifest.current_patchset = next_n;
         }
         self.storage.update_review(repo, &manifest).await?;
+        if endpoints_moved {
+            self.pin_review_commits(&*jj, &manifest).await;
+        }
         let repo_name = self.repo_name(repo).unwrap_or_default();
         self.emit(Event::ReviewUpdated {
             repo: repo_name,
@@ -1592,6 +1653,15 @@ impl ReviewService {
         let manifest = self.storage.open_review(repo, review).await?;
         ensure_creator_or_admin(actor, is_admin, &manifest, "delete it")?;
         self.storage.delete_review(repo, review).await?;
+        // Drop the review's pin refs so its now-orphaned commits become
+        // collectable again. Best-effort: an unregistered repo or a
+        // ref-store hiccup must not fail a delete that already
+        // committed in storage.
+        if let Ok(jj) = self.jj_for(repo) {
+            if let Err(e) = jj.unpin_review(review).await {
+                tracing::warn!(review = %review, error = ?e, "failed to unpin deleted review");
+            }
+        }
         let repo_name = self.repo_name(repo).unwrap_or_default();
         self.emit(Event::ReviewDeleted {
             repo: repo_name,

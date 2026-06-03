@@ -25,10 +25,20 @@ use jj_lib::repo::{ReadonlyRepo, Repo as _, RepoLoader};
 use jj_lib::settings::UserSettings;
 use kata_core::{
     Bookmark, ChangeId as KataChangeId, CommitId as KataCommitId, CommitInfo, FileChange,
-    FileStatus, OpId,
+    FileStatus, OpId, ReviewId,
 };
 
 use crate::backend::{Endpoint, JjBackend, ReviewRange};
+
+/// Git ref namespace under which kata keeps its reviews' pinned
+/// patchset commits reachable. A pin lives at
+/// `refs/kata/<review-id>/<commit-hex>`. These are ordinary git refs,
+/// so both `jj util gc` (whose `recreate_no_gc_refs` only manages
+/// `refs/jj/keep/`) and the underlying `git gc` honour them — the
+/// pinned commit, and via ancestry every commit between a patchset's
+/// base and tip, survive even after the branch that introduced them
+/// moves on.
+const KATA_REF_NAMESPACE: &str = "refs/kata/";
 use crate::error::{Error, Result};
 
 /// Build the [`UserSettings`] every libjj entry point uses. The kata
@@ -1260,6 +1270,100 @@ impl JjBackend for JjLib {
         .map_err(|e| Error::Parse(format!("spawn_blocking: {e}")))?
     }
 
+    async fn pin_commits(&self, review: &ReviewId, commits: &[KataCommitId]) -> Result<()> {
+        let loader = self.loader.clone();
+        let review = review.clone();
+        let commits = commits.to_vec();
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            let repo = futures::executor::block_on(loader.load_at_head())
+                .map_err(|e| Error::Parse(format!("libjj load_at_head: {e}")))?;
+            let git_repo = jj_lib::git::get_git_repo(repo.store())
+                .map_err(|e| Error::Parse(format!("libjj get_git_repo: {e}")))?;
+            let prefix = format!("{KATA_REF_NAMESPACE}{review}/");
+            let mut edits = Vec::new();
+            for commit in &commits {
+                let oid = match gix::ObjectId::from_hex(commit.as_str().as_bytes()) {
+                    Ok(oid) => oid,
+                    Err(e) => {
+                        tracing::warn!(%review, %commit, error = %e, "skip pin: malformed commit id");
+                        continue;
+                    }
+                };
+                // Never point a ref at an object that's already gone: the
+                // commit may have been collected before we got here, and a
+                // dangling ref is worse than a missing pin.
+                if git_repo.find_object(oid).is_err() {
+                    tracing::warn!(%review, %commit, "skip pin: object not present in store");
+                    continue;
+                }
+                let name = format!("{prefix}{commit}");
+                edits.push(gix::refs::transaction::RefEdit {
+                    change: gix::refs::transaction::Change::Update {
+                        log: gix::refs::transaction::LogChange {
+                            message: "pinned by kata".into(),
+                            ..Default::default()
+                        },
+                        // Idempotent re-pin: overwrite whatever's there.
+                        expected: gix::refs::transaction::PreviousValue::Any,
+                        new: gix::refs::Target::Object(oid),
+                    },
+                    name: name
+                        .clone()
+                        .try_into()
+                        .map_err(|e| Error::Parse(format!("libjj pin ref name {name:?}: {e}")))?,
+                    deref: false,
+                });
+            }
+            if !edits.is_empty() {
+                git_repo
+                    .edit_references(edits)
+                    .map_err(|e| Error::Parse(format!("libjj pin edit_references: {e}")))?;
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| Error::Parse(format!("spawn_blocking: {e}")))?
+    }
+
+    async fn unpin_review(&self, review: &ReviewId) -> Result<()> {
+        let loader = self.loader.clone();
+        let review = review.clone();
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            let repo = futures::executor::block_on(loader.load_at_head())
+                .map_err(|e| Error::Parse(format!("libjj load_at_head: {e}")))?;
+            let git_repo = jj_lib::git::get_git_repo(repo.store())
+                .map_err(|e| Error::Parse(format!("libjj get_git_repo: {e}")))?;
+            let prefix = format!("{KATA_REF_NAMESPACE}{review}/");
+            let git_references = git_repo
+                .references()
+                .map_err(|e| Error::Parse(format!("libjj references: {e}")))?;
+            let mut edits = Vec::new();
+            for git_ref in git_references
+                .prefixed(prefix.as_str())
+                .map_err(|e| Error::Parse(format!("libjj prefixed: {e}")))?
+            {
+                let git_ref = git_ref
+                    .map_err(|e| Error::Parse(format!("libjj ref iter: {e}")))?
+                    .detach();
+                edits.push(gix::refs::transaction::RefEdit {
+                    change: gix::refs::transaction::Change::Delete {
+                        expected: gix::refs::transaction::PreviousValue::Any,
+                        log: gix::refs::transaction::RefLog::AndReference,
+                    },
+                    name: git_ref.name,
+                    deref: false,
+                });
+            }
+            if !edits.is_empty() {
+                git_repo
+                    .edit_references(edits)
+                    .map_err(|e| Error::Parse(format!("libjj unpin edit_references: {e}")))?;
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| Error::Parse(format!("spawn_blocking: {e}")))?
+    }
 }
 
 /// Look up a kata `CommitId` (hex string) inside an open repo.

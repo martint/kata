@@ -2,7 +2,7 @@ use std::path::Path;
 
 use async_trait::async_trait;
 use kata_core::{
-    Bookmark, ChangeId, CommitId, CommitInfo, ConflictTerm, FileChange, OpId, RevSet,
+    Bookmark, ChangeId, CommitId, CommitInfo, ConflictTerm, FileChange, OpId, ReviewId, RevSet,
 };
 use serde::{Deserialize, Serialize};
 
@@ -137,4 +137,24 @@ pub trait JjBackend: Send + Sync {
     /// layer to flag the working-copy row in a [`browse_log`]
     /// result.
     async fn working_copy_commit_id(&self) -> Result<Option<CommitId>>;
+
+    /// Keep `commits` reachable so neither `jj util gc` nor `git gc`
+    /// collects them. A review pins its patchset endpoints (and, via
+    /// reachability, every commit between a patchset's base and tip)
+    /// this way, so a stale patchset's history survives the branch
+    /// advancing. `review` namespaces the pins for later cleanup.
+    ///
+    /// Best-effort and idempotent: a commit that's already gone (or any
+    /// other failure) is skipped/logged, never an error — pinning must
+    /// not be able to break the write that triggered it. The default is
+    /// a no-op so non-git backends (and the test stub) need do nothing.
+    async fn pin_commits(&self, _review: &ReviewId, _commits: &[CommitId]) -> Result<()> {
+        Ok(())
+    }
+
+    /// Drop every pin created for `review` (on review deletion). Default
+    /// no-op; see [`Self::pin_commits`].
+    async fn unpin_review(&self, _review: &ReviewId) -> Result<()> {
+        Ok(())
+    }
 }

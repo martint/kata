@@ -1265,6 +1265,14 @@ async fn serve(
     } else {
         tracing::info!("branch watcher disabled (--branch-poll-secs=0)");
     }
+
+    // Protect existing reviews' diffable commits from GC. Runs in the
+    // background so a large repo's sweep doesn't delay the listen call;
+    // reviews created from here on pin themselves at create/refresh time.
+    {
+        let service = service.clone();
+        tokio::spawn(async move { service.backfill_pins().await });
+    }
     // OIDC discovery + client build. Runs async because the
     // discovery document is fetched over HTTP from the IdP; a
     // failure here is fatal (we can't serve `/auth/login` without

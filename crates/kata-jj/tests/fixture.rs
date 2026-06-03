@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 
-use kata_core::{ChangeId, CommitId, FileStatus, LineRange, RevSet};
+use kata_core::{ChangeId, CommitId, FileStatus, LineRange, ReviewId, RevSet};
 use kata_jj::{AnchorResolution, FileCache, JjBackend, JjLib, build_diff, resolve_anchor};
 use tempfile::TempDir;
 
@@ -669,5 +669,98 @@ async fn commit_self_diff_is_empty_for_a_clean_merge() {
         sd.files.is_empty(),
         "a clean merge introduces nothing of its own, got {:?}",
         sd.files.iter().map(|f| &f.path).collect::<Vec<_>>()
+    );
+}
+
+/// Build two commits off `main`, then `jj abandon` both so they're
+/// hidden from jj's view — no bookmark, not `@`, not a visible head.
+/// Returns `(c_commit, d_commit)`. Abandoned commits are exactly what
+/// `jj util gc --expire=now` collects (it prunes everything not kept by
+/// a ref); a kata pin ref is then the only thing that can save one, so
+/// this is the lever that distinguishes "pinned" from "collectable".
+fn two_orphans(fx: &Fixture) -> (CommitId, CommitId) {
+    fx.write("seed.txt", "seed\n");
+    fx.jj(&["describe", "-m", "base"]);
+    fx.jj(&["bookmark", "create", "main", "-r", "@"]);
+    fx.jj(&["new", "main", "-m", "cfeat"]);
+    fx.write("cfeat.txt", "C\n");
+    let (_, c_commit) = current_change_and_commit(&fx.root, "@");
+    fx.jj(&["new", "main", "-m", "dfeat"]);
+    fx.write("dfeat.txt", "D\n");
+    let (_, d_commit) = current_change_and_commit(&fx.root, "@");
+    // Move the working copy off D, then hide both commits so neither is
+    // a visible head jj's gc would keep on its own.
+    fx.jj(&["new", "main", "-m", "scratch"]);
+    fx.jj(&["abandon", c_commit.as_str()]);
+    fx.jj(&["abandon", d_commit.as_str()]);
+    (c_commit, d_commit)
+}
+
+/// Collect everything not kept by a ref, right now. jj keeps commits
+/// referenced by any non-expired operation, so we first drop the
+/// operation history (`jj op abandon ..@-`) — otherwise the orphans
+/// stay reachable through old views — then run gc with an immediate
+/// expiry. This is the documented "garbage-collect old operations and
+/// their commits" recipe from `jj util gc --help`.
+fn gc_now(fx: &Fixture) {
+    fx.jj(&["op", "abandon", "..@-"]);
+    fx.jj(&["util", "gc", "--expire=now"]);
+}
+
+#[tokio::test]
+async fn pinned_commit_survives_gc() {
+    // The core retention guarantee: a commit a review pins must survive
+    // `jj util gc`, even when it's otherwise unreachable. The unpinned
+    // sibling is the control — it confirms the gc actually collects
+    // orphans, so the pinned one surviving is the pin's doing.
+    let fx = Fixture::new();
+    let (c_commit, d_commit) = two_orphans(&fx);
+
+    let review = ReviewId::new("review-pin-test");
+    fx.cli()
+        .pin_commits(&review, std::slice::from_ref(&c_commit))
+        .await
+        .expect("pin_commits");
+
+    gc_now(&fx);
+
+    let cli = fx.cli();
+    let kept = cli
+        .read_file(&c_commit, "cfeat.txt")
+        .await
+        .expect("read pinned commit");
+    assert_eq!(
+        kept.as_deref(),
+        Some(&b"C\n"[..]),
+        "pinned commit's content should still be readable after gc",
+    );
+    let gone = cli.read_file(&d_commit, "dfeat.txt").await;
+    assert!(
+        gone.is_err(),
+        "unpinned orphan should have been collected by gc, but read succeeded: {gone:?}",
+    );
+}
+
+#[tokio::test]
+async fn unpinned_review_commit_becomes_collectable() {
+    // Deleting a review drops its pins; the commit it kept alive should
+    // then be collectable again. Pin, unpin, gc — and the commit is
+    // gone, proving `unpin_review` actually removed the ref.
+    let fx = Fixture::new();
+    let (c_commit, _d_commit) = two_orphans(&fx);
+
+    let review = ReviewId::new("review-unpin-test");
+    let cli = fx.cli();
+    cli.pin_commits(&review, std::slice::from_ref(&c_commit))
+        .await
+        .expect("pin_commits");
+    cli.unpin_review(&review).await.expect("unpin_review");
+
+    gc_now(&fx);
+
+    let gone = fx.cli().read_file(&c_commit, "cfeat.txt").await;
+    assert!(
+        gone.is_err(),
+        "after unpin + gc the commit should be collected, but read succeeded: {gone:?}",
     );
 }

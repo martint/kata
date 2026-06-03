@@ -259,3 +259,32 @@ A valid token authenticates as its bound author regardless of
 they're the only way to authenticate non-browser clients, since
 session cookies don't apply. Manage with `kata token list` and
 `kata token revoke <token_id>`.
+
+## Commit retention (garbage collection)
+
+A review diffs against the commits its patchsets pinned, not the
+live bookmark — so those commits have to outlive the branch that
+introduced them. Kata protects them by writing a git ref under
+`refs/kata/<review-id>/` in the backing repo for each patchset
+endpoint. Because these are ordinary refs, both `jj util gc` and a
+plain `git gc` treat the pinned commits (and everything between a
+patchset's base and tip) as reachable and never collect them.
+Reviews are re-pinned at every startup, so upgrading an existing
+deployment retroactively protects reviews created before this
+behaviour existed; the protection drops automatically when a review
+is deleted.
+
+Operational implications:
+
+- **Don't prune `refs/kata/*`.** If you run repo maintenance that
+  deletes refs (mirroring scripts, aggressive `git gc --prune` with
+  custom ref filtering, etc.), exclude the `refs/kata/` namespace.
+  Removing those refs re-exposes reviewed commits to collection.
+- **Kata needs write access to the repo's git store** to create and
+  delete these refs. The bind-mounted repo must be writable by the
+  user the container runs as (see the host-user note in the
+  compose template).
+- If a commit is collected anyway (a pre-upgrade review, or pruned
+  refs), the review degrades gracefully rather than failing — it
+  loads with comments intact and a "diff unavailable" banner
+  instead of erroring out. See `docs/SPEC.md` §10.4.
