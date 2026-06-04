@@ -778,7 +778,7 @@
   <div
     class="sbs-side base"
     bind:this={baseSideEl}
-    style:flex-basis="calc({sbsSplit * 100}% - 0.5px)"
+    style:flex-basis="calc({sbsSplit * 100}% - 5.5px)"
   >
     <table class="hunk-half" bind:this={baseTableEl}>
       <colgroup>
@@ -940,7 +940,7 @@
   <div
     class="sbs-side tip"
     bind:this={tipSideEl}
-    style:flex-basis="calc({(1 - sbsSplit) * 100}% - 0.5px)"
+    style:flex-basis="calc({(1 - sbsSplit) * 100}% - 5.5px)"
   >
     <table class="hunk-half" bind:this={tipTableEl}>
       <colgroup>
@@ -1113,21 +1113,41 @@
     touch-action: pan-x pan-y;
   }
 
-  /* Visual divider between the two sides. The 1-px line is the
-   * `.sbs-divider` itself; the wider `.sbs-divider-handle` sits on
-   * top via absolute positioning, giving the user a generous hit
-   * area without adding any visible bulk. */
+  /* Visual divider between the two sides. The divider is a wide,
+   * transparent *track* (its own flex column) so the drag target is
+   * comfortable to hit; the visible line is a 1-px rule centred inside
+   * it via `::before`. Widening the track — rather than overhanging
+   * the handle further into the columns — grows the hit area while
+   * actually *reducing* overlap with the adjacent code and line
+   * gutter, so divider drags don't steal clicks meant for commenting.
+   * The two sides each subtract half the track width from their
+   * flex-basis (see the inline `- 5.5px`) so the split ratio stays
+   * true. */
   .sbs-divider {
-    flex: 0 0 1px;
-    background: var(--border);
+    flex: 0 0 11px;
     align-self: stretch;
     position: relative;
     user-select: none;
     touch-action: none;
   }
 
-  .sbs-divider.dragging,
-  .sbs-divider:hover {
+  .sbs-divider::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 50%;
+    width: 1px;
+    transform: translateX(-50%);
+    background: var(--border);
+    /* Thicken + recolour on hover/drag so the user gets clear feedback
+     * that they've landed on the draggable zone. */
+    transition: width 60ms ease, background-color 60ms ease;
+  }
+
+  .sbs-divider.dragging::before,
+  .sbs-divider:hover::before {
+    width: 3px;
     background: var(--link);
   }
 
@@ -1135,8 +1155,10 @@
     position: absolute;
     top: 0;
     bottom: 0;
-    left: -3px;
-    right: -3px;
+    /* Fill the 11-px track, plus a small overhang for extra reach —
+     * still under the old 3-px, so net column overlap shrinks. */
+    left: -2px;
+    right: -2px;
     cursor: col-resize;
   }
 
