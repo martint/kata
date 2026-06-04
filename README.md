@@ -97,8 +97,8 @@ in Claude Code as `@<server>:skill://kata/review`.
 
 The MCP surface mirrors every write path on the HTTP API:
 
-- **Read** — `list_repos`, `list_bookmarks`, `list_reviews`,
-  `get_review`.
+- **Read** — `list_repos`, `resolve_repo`, `list_bookmarks`,
+  `list_reviews`, `get_review`.
 - **Review lifecycle** — `create_review`, `refresh_review`,
   `update_review_summary`, `update_review_revset`,
   `archive_review` / `unarchive_review`, `delete_review`.
@@ -113,7 +113,11 @@ The MCP surface mirrors every write path on the HTTP API:
   `add_file_annotation`, `update_annotation`, `delete_annotation`.
 
 Workspace-scoped tools take a `repo` argument; call `list_repos`
-first.
+first. When the server fronts more than one repo and the agent
+can't tell which slug is its own checkout — the paths `list_repos`
+reports are in the *server's* filesystem namespace, so they don't
+match across a container bind-mount — `resolve_repo` maps a local
+commit id (e.g. the working copy's `@`) to the right slug.
 
 ## Architecture
 

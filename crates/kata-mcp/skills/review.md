@@ -13,9 +13,15 @@ MCP server can front multiple repositories; every tool call takes a
 ## Workflow
 
 1. **Discover.** `list_repos` returns the workspaces this server hosts;
-   each has a `name` (the slug to pass as `repo`). `list_reviews` then
-   returns the open reviews in that repo — each has a `review_id` (the
-   jj bookmark name) and counts of published comments.
+   each has a `name` (the slug to pass as `repo`). If more than one is
+   listed and you're unsure which is your own checkout, **don't guess
+   from the paths** — they're in the server's filesystem namespace and
+   won't match yours across a container bind-mount. Call `resolve_repo`
+   with a commit id you know locally (your working copy's `@`, via
+   `jj log -r @ -T commit_id`) and it returns the matching slug.
+   `list_reviews` then returns the open reviews in that repo — each has
+   a `review_id` (the jj bookmark name) and counts of published
+   comments.
 
 2. **Open.** `get_review` with the `review_id` returns:
    - `manifest` — metadata and patchset history.

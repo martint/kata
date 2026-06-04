@@ -53,10 +53,21 @@ impl ReviewMcp {
     // ---- discovery -----------------------------------------------------
 
     #[tool(
-        description = "List the repositories this MCP server can act on. Returns each repo's `name` (the slug to pass as `repo` to every other tool) and its canonical path."
+        description = "List the repositories this MCP server can act on. Returns each repo's `name` (the slug to pass as `repo` to every other tool) and its canonical path. NOTE: the path and id are in the *server's* filesystem namespace — across a container bind-mount they won't match your local checkout. When more than one repo is listed and you need to know which one is yours, use `resolve_repo` rather than guessing from paths or bookmarks."
     )]
     async fn list_repos(&self) -> Result<CallToolResult, McpError> {
         Ok(text_json(&self.service.list_repos()))
+    }
+
+    #[tool(
+        description = "Identify which repository slug corresponds to your local working copy. Use this whenever `list_repos` returns more than one repo: the path/id it reports are in the server's filesystem namespace, so across a container bind-mount you can't match them to your checkout. Instead pass a `commit` id you know exists locally — your working copy's `@` is ideal (`jj log -r @ -T commit_id`). Commit ids are content hashes, identical on both sides of the mount, so this maps you to a slug unambiguously. Returns the matching repo summaries (use `.name` as the `repo` arg for other tools); an empty list means no registered repo contains that commit. Pass a concrete commit id, not a symbolic revset — `trunk()` resolves in every repo and would match all of them."
+    )]
+    async fn resolve_repo(
+        &self,
+        Parameters(args): Parameters<ResolveRepoArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let matches = self.service.repos_containing_commit(&args.commit).await;
+        Ok(text_json(&matches))
     }
 
     #[tool(description = "List bookmarks in the underlying jj repo.")]
@@ -798,7 +809,11 @@ impl ServerHandler for ReviewMcp {
         info.protocol_version = ProtocolVersion::V_2024_11_05;
         info.instructions = Some(
             "Code review tool. One server can front multiple repositories; pass `repo` \
-             (a workspace slug from `list_repos`) on every tool call. Use `list_reviews` \
+             (a workspace slug from `list_repos`) on every tool call. When `list_repos` \
+             returns more than one repo, don't guess which is yours from its path or id \
+             (those are in the server's namespace, not yours) — call `resolve_repo` with \
+             a local commit id (e.g. your `@`) to map your checkout to a slug. Use \
+             `list_reviews` \
              and `get_review` to inspect changes; `read_file_diff` to fetch the cumulative \
              base..tip hunks for a specific file; `read_commit_diff` to isolate what one \
              commit did (required for per-commit reasoning on multi-commit stacks — the \
@@ -885,6 +900,15 @@ impl ServerHandler for ReviewMcp {
 pub struct RepoArgs {
     /// Workspace slug (from `list_repos`).
     pub repo: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct ResolveRepoArgs {
+    /// A commit id that exists in your local checkout — typically your
+    /// working-copy `@` (`jj log -r @ -T commit_id`). Full id or an
+    /// unambiguous prefix. Not a symbolic revset: `trunk()` resolves in
+    /// every repo and would match all of them.
+    pub commit: String,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]

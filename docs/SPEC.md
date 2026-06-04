@@ -1102,14 +1102,20 @@ APIs as a human reviewer.
 
 Two pieces:
 
-- **Tools.** `list_repos`, `list_bookmarks`, `list_reviews`,
-  `get_review`, `read_file_diff`, `read_commit_diff`,
-  `create_review`, `refresh_review`, `update_review_summary`,
-  `start_session`, `publish_session`, `discard_session`,
-  `draft_line_comment`, `draft_file_comment`,
+- **Tools.** `list_repos`, `resolve_repo`, `list_bookmarks`,
+  `list_reviews`, `get_review`, `read_file_diff`,
+  `read_commit_diff`, `create_review`, `refresh_review`,
+  `update_review_summary`, `start_session`, `publish_session`,
+  `discard_session`, `draft_line_comment`, `draft_file_comment`,
   `draft_review_comment`, `update_draft_comment`, `respond`. Tools
   are scoped per workspace; `list_repos` returns the slugs the
-  agent should pass as `repo`. `get_review` returns file-level
+  agent should pass as `repo`. When several repos are listed and the
+  agent can't tell which is its own checkout — the paths and ids
+  `list_repos` reports are in the *server's* filesystem namespace
+  and don't survive a container bind-mount — `resolve_repo` maps a
+  local commit id (a content hash, identical on both sides of the
+  mount; the working copy's `@` is the natural choice) to the
+  matching slug. `get_review` returns file-level
   metadata only; `read_file_diff` fetches the cumulative
   `base..tip` hunks for one file (matching the SPA's lazy-per-file
   fetch pattern). `read_commit_diff` isolates one commit's

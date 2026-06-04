@@ -708,6 +708,36 @@ fn gc_now(fx: &Fixture) {
 }
 
 #[tokio::test]
+async fn resolve_endpoint_accepts_a_bare_commit_id() {
+    // resolve_repo maps a caller's checkout to a slug by asking each
+    // backend to resolve a commit id; this pins down the primitive it
+    // leans on — a full commit id resolves to itself when present, and
+    // a commit from a different history doesn't resolve to Some here.
+    let fx = Fixture::new();
+    fx.write("a.txt", "hi\n");
+    fx.jj(&["describe", "-m", "only"]);
+    let (_, commit) = current_change_and_commit(&fx.root, "@");
+
+    let cli = fx.cli();
+    let ep = cli
+        .resolve_endpoint(commit.as_str())
+        .await
+        .expect("resolve a present commit id");
+    assert_eq!(ep.map(|e| e.commit_id), Some(commit));
+
+    // A commit id from some other repo's history: must not resolve to
+    // Some (jj either reports an empty set or errors "unknown
+    // revision" — both mean "not in this repo"). Not all-zeros — that's
+    // jj's virtual root commit, which is genuinely present.
+    let bogus = "deadbeef".repeat(5);
+    let miss = cli.resolve_endpoint(&bogus).await;
+    assert!(
+        !matches!(miss, Ok(Some(_))),
+        "an unknown commit id must not resolve to Some, got {miss:?}",
+    );
+}
+
+#[tokio::test]
 async fn pinned_commit_survives_gc() {
     // The core retention guarantee: a commit a review pins must survive
     // `jj util gc`, even when it's otherwise unreachable. The unpinned

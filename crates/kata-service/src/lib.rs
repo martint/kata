@@ -527,6 +527,45 @@ impl ReviewService {
             .collect()
     }
 
+    /// Find which registered repos contain `commit` — the
+    /// namespace-independent way to map a caller's local working copy to
+    /// a kata slug. A repo's `canonical_path` / `repo_id` are derived
+    /// from the *server's* filesystem path, so an agent on the other
+    /// side of a bind-mount can't match against them; a commit id, being
+    /// a content hash, is identical on both sides. `commit` may be any
+    /// expression the backend resolves (a full or unambiguous-prefix
+    /// commit id is the intended input — a symbolic revset like
+    /// `trunk()` resolves in every repo and so matches all of them).
+    ///
+    /// Returns every repo whose backend resolves the expression, in
+    /// registration order. A normal commit id matches exactly one repo;
+    /// an empty result means no registered repo has it. Per-repo resolve
+    /// failures (the usual "unknown revision" for a commit that isn't
+    /// here) are treated as "not this repo", not surfaced as errors.
+    pub async fn repos_containing_commit(&self, commit: &str) -> Vec<RepoSummary> {
+        // Clone the snapshot's entries up front so we don't hold the
+        // ArcSwap guard across the `.await`s below.
+        let entries: Vec<RepoEntry> = {
+            let snap = self.registry.load();
+            snap.by_name
+                .iter()
+                .filter_map(|(_, id)| snap.repos.get(id).cloned())
+                .collect()
+        };
+        let mut out = Vec::new();
+        for entry in entries {
+            match entry.jj.resolve_endpoint(commit).await {
+                Ok(Some(_)) => out.push(entry.summary.clone()),
+                Ok(None) => {}
+                Err(e) => tracing::debug!(
+                    repo = %entry.summary.name, commit, error = ?e,
+                    "repos_containing_commit: not resolvable here",
+                ),
+            }
+        }
+        out
+    }
+
     /// Resolve a URL-slug to its canonical [`RepoId`].
     pub fn resolve_repo(&self, name: &str) -> ServiceResult<RepoId> {
         let snap = self.registry.load();
@@ -3035,7 +3074,14 @@ mod annotation_creator_only_tests {
     // assert the registry transitions without dragging libjj into the
     // test surface.
 
-    struct StubBackend;
+    /// Registry-test backend. `known_commit` is the single expression
+    /// this repo resolves; any other query errors, mirroring jj's
+    /// "unknown revision" for a commit that isn't in this repo. `None`
+    /// resolves nothing — used by the add/remove tests that never touch
+    /// the backend.
+    struct StubBackend {
+        known_commit: Option<String>,
+    }
     #[async_trait::async_trait]
     impl kata_jj::JjBackend for StubBackend {
         fn repo_path(&self) -> &std::path::Path {
@@ -3052,9 +3098,16 @@ mod annotation_creator_only_tests {
         }
         async fn resolve_endpoint(
             &self,
-            _expr: &str,
+            expr: &str,
         ) -> kata_jj::Result<Option<kata_jj::Endpoint>> {
-            unimplemented!()
+            match &self.known_commit {
+                Some(id) if id == expr => Ok(Some(kata_jj::Endpoint {
+                    change_id: kata_core::ChangeId::new("stub-change"),
+                    commit_id: kata_core::CommitId::new(id.clone()),
+                })),
+                Some(_) => Err(kata_jj::Error::Parse(format!("unknown revision: {expr}"))),
+                None => Ok(None),
+            }
         }
         async fn read_file(
             &self,
@@ -3107,7 +3160,15 @@ mod annotation_creator_only_tests {
     }
 
     fn stub_jj() -> Arc<dyn kata_jj::JjBackend> {
-        Arc::new(StubBackend)
+        Arc::new(StubBackend { known_commit: None })
+    }
+
+    /// A stub backend that resolves exactly `commit` and errors on
+    /// anything else — for exercising `repos_containing_commit`.
+    fn stub_jj_for(commit: &str) -> Arc<dyn kata_jj::JjBackend> {
+        Arc::new(StubBackend {
+            known_commit: Some(commit.to_string()),
+        })
     }
 
     #[tokio::test]
@@ -3124,6 +3185,43 @@ mod annotation_creator_only_tests {
         assert_eq!(listed, vec!["alpha"]);
         assert_eq!(service.resolve_repo("alpha").unwrap(), repo_id);
         assert_eq!(service.repo_name(&repo_id).as_deref(), Some("alpha"));
+    }
+
+    #[tokio::test]
+    async fn repos_containing_commit_maps_a_commit_to_its_repo() {
+        let storage = Arc::new(SqliteStorage::open_in_memory().await.unwrap());
+        let service = service_for(storage).await;
+        service
+            .add_repo(
+                "trino".into(),
+                RepoId::new("r-trino"),
+                "/srv/trino".into(),
+                stub_jj_for("aaaa"),
+            )
+            .await
+            .unwrap();
+        service
+            .add_repo(
+                "typesolver".into(),
+                RepoId::new("r-types"),
+                "/srv/typesolver".into(),
+                stub_jj_for("bbbb"),
+            )
+            .await
+            .unwrap();
+
+        // A commit that lives in exactly one repo resolves to that slug;
+        // the other repo errors on it (mirroring "unknown revision") and
+        // is silently skipped, not surfaced.
+        let matched = service.repos_containing_commit("bbbb").await;
+        assert_eq!(
+            matched.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            vec!["typesolver"],
+        );
+
+        // A commit in no registered repo matches nothing.
+        let none = service.repos_containing_commit("cccc").await;
+        assert!(none.is_empty(), "expected no match, got {none:?}");
     }
 
     #[tokio::test]
