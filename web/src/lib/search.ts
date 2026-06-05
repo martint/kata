@@ -333,6 +333,36 @@ export function searchReview(
   return out;
 }
 
+/** CSS selector for the DOM element to scroll to for a match. Stays
+ *  in sync with the data attributes the renderers apply:
+ *  `data-side`+`data-line` on diff rows (scoped to the match's
+ *  `.file-slot[data-file-path]`, because line numbers repeat across
+ *  files — an unscoped `[data-side][data-line]` resolves to whichever
+ *  file mounted first, sending the reader to a line that doesn't hold
+ *  the match), `data-comment-id` in CommentThread, `data-annotation-id`
+ *  on AnnotationBubble, `data-change-id` on the commit-row, and
+ *  `data-file-path` on the FileSlot wrapper. A `response` reuses its
+ *  parent comment's anchor (the reply renders inline beneath it).
+ *  `review-meta` targets the top of the page, so it has no selector. */
+export function selectorForMatch(m: SearchMatch): string | null {
+  switch (m.kind) {
+    case 'line':
+      return `.file-slot[data-file-path="${CSS.escape(m.file)}"] [data-side="${m.side}"][data-line="${m.line}"]`;
+    case 'comment':
+      return `[data-comment-id="${CSS.escape(m.comment_id)}"]`;
+    case 'response':
+      return `[data-comment-id="${CSS.escape(m.in_reply_to)}"]`;
+    case 'annotation':
+      return `[data-annotation-id="${CSS.escape(m.annotation_id)}"]`;
+    case 'file':
+      return `.file-slot[data-file-path="${CSS.escape(m.file)}"]`;
+    case 'commit':
+      return `[data-change-id="${CSS.escape(m.change_id)}"]`;
+    case 'review-meta':
+      return null;
+  }
+}
+
 /** Push a file-path match if `q` matches anywhere in `path`. One
  *  match per `(file, occurrence)` — typical paths contain the
  *  query at most once, but the multi-pass loop handles repeats

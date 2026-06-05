@@ -24,7 +24,7 @@
   import { resolutionFor } from '../lib/resolution';
   import { createFoldStore, type FoldStore } from '../lib/foldStore';
   import { parseLineRangeHash } from '../lib/linkHash';
-  import { searchReview, type SearchMatch } from '../lib/search';
+  import { searchReview, selectorForMatch, type SearchMatch } from '../lib/search';
   import {
     annotationComposerSurvivesPatchset,
     composerSurvivesPatchset,
@@ -665,37 +665,6 @@
       case 'response':
         return m.file;
       case 'commit':
-      case 'review-meta':
-        return null;
-    }
-  }
-
-  /** CSS selector for the DOM element to scroll to for `m`. Stays
-   *  in sync with the data attributes the relevant renderers
-   *  apply: `data-comment-id` in CommentThread, `data-annotation-
-   *  id` on AnnotationBubble, `data-side`+`data-line` on diff
-   *  rows, `data-change-id` on the commit-row `<li>`, `data-
-   *  response-id` on the reply `<li>`, `data-file-path` on the
-   *  FileSlot wrapper. For `review-meta` we just target the top
-   *  of the page (no specific element). */
-  function selectorForMatch(m: SearchMatch): string | null {
-    switch (m.kind) {
-      case 'line':
-        return `[data-side="${m.side}"][data-line="${m.line}"]`;
-      case 'comment':
-        return `[data-comment-id="${CSS.escape(m.comment_id)}"]`;
-      case 'response':
-        // Use the parent comment's anchor — the response renders
-        // inline beneath it, so scrolling to the parent lands
-        // close enough and the in-thread highlight catches the
-        // reader's eye.
-        return `[data-comment-id="${CSS.escape(m.in_reply_to)}"]`;
-      case 'annotation':
-        return `[data-annotation-id="${CSS.escape(m.annotation_id)}"]`;
-      case 'file':
-        return `.file-slot[data-file-path="${CSS.escape(m.file)}"]`;
-      case 'commit':
-        return `[data-change-id="${CSS.escape(m.change_id)}"]`;
       case 'review-meta':
         return null;
     }

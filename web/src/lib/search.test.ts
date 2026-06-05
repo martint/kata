@@ -1,6 +1,12 @@
 import { describe, expect, test } from 'vitest';
 
-import { searchReview, type CommitInfoLite, type SearchSource } from './search';
+import {
+  searchReview,
+  selectorForMatch,
+  type CommitInfoLite,
+  type SearchMatch,
+  type SearchSource,
+} from './search';
 import type {
   AnnotationView,
   CommentView,
@@ -398,5 +404,67 @@ describe('searchReview', () => {
     expect(m.length).toBe(2);
     expect(m[0]).toMatchObject({ kind: 'review-meta', field: 'name' });
     expect(m[1]).toMatchObject({ kind: 'review-meta', field: 'summary' });
+  });
+});
+
+describe('selectorForMatch', () => {
+  test('scopes a line match to its own file slot', () => {
+    // Line numbers repeat across files; without the file-path scope
+    // the selector matches the first file in the DOM carrying that
+    // side+line, which is how navigation landed on lines that did not
+    // hold the search term.
+    const a: SearchMatch = {
+      kind: 'line',
+      file: 'src/a.java',
+      side: 'tip',
+      line: 42,
+      snippet: 'numericType x;',
+      matchStart: 0,
+      matchEnd: 11,
+    };
+    const b: SearchMatch = { ...a, file: 'src/b.java' };
+    const selA = selectorForMatch(a)!;
+    const selB = selectorForMatch(b)!;
+    // The path is CSS.escape'd (slashes/dots get backslash-escaped),
+    // so build the expected fragment the same way rather than hard-
+    // coding the raw path.
+    expect(selA).toContain(`.file-slot[data-file-path="${CSS.escape('src/a.java')}"]`);
+    expect(selA).toContain('[data-side="tip"][data-line="42"]');
+    // Same side+line in two files yields distinct, file-scoped
+    // selectors — so each resolves to its own file's row.
+    expect(selA).not.toBe(selB);
+    expect(selB).toContain(`.file-slot[data-file-path="${CSS.escape('src/b.java')}"]`);
+  });
+
+  test('comment / commit / review-meta selectors are global or null', () => {
+    expect(
+      selectorForMatch({
+        kind: 'comment',
+        comment_id: 'c1',
+        file: 'src/a.java',
+        line: 1,
+        snippet: '',
+        matchStart: 0,
+        matchEnd: 0,
+      }),
+    ).toBe('[data-comment-id="c1"]');
+    expect(
+      selectorForMatch({
+        kind: 'commit',
+        change_id: 'ch1',
+        snippet: '',
+        matchStart: 0,
+        matchEnd: 0,
+      }),
+    ).toBe('[data-change-id="ch1"]');
+    expect(
+      selectorForMatch({
+        kind: 'review-meta',
+        field: 'name',
+        snippet: '',
+        matchStart: 0,
+        matchEnd: 0,
+      }),
+    ).toBeNull();
   });
 });
