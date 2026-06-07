@@ -708,6 +708,50 @@ fn gc_now(fx: &Fixture) {
 }
 
 #[tokio::test]
+async fn reads_a_commit_written_by_an_external_process_after_open() {
+    // A long-lived backend must reflect commits another `jj` process
+    // writes after it was opened — the scenario behind the stale
+    // object-store bug (a branch rewritten from a second workspace).
+    // This guards the "see new state without a restart" contract; it
+    // does NOT by itself reproduce gix's pack-index staleness, which
+    // needs a heavily-packed, long-running handle that isn't
+    // reconstructable in-process (gix refreshes on miss in simple
+    // cases). The fix — reopening the loader when the op log advances —
+    // makes correctness independent of that gix behaviour.
+    let fx = Fixture::new();
+    fx.write("a.txt", "one\n");
+    fx.jj(&["describe", "-m", "first"]);
+    fx.jj(&["bookmark", "create", "first", "-r", "@"]);
+    let (_, first_commit) = current_change_and_commit(&fx.root, "first");
+
+    // Open the backend BEFORE the external write.
+    let cli = fx.cli();
+
+    fx.jj(&["new", "first", "-m", "second"]);
+    fx.write("a.txt", "two\n");
+    fx.jj(&["bookmark", "create", "second", "-r", "@"]);
+    let (_, second_commit) = current_change_and_commit(&fx.root, "second");
+    fx.jj(&["util", "gc"]);
+
+    // The same backend resolves and diffs the new commit's freshly
+    // written objects.
+    let resolved = cli
+        .resolve_endpoint(second_commit.as_str())
+        .await
+        .expect("resolve the new commit");
+    assert_eq!(resolved.map(|e| e.commit_id), Some(second_commit.clone()));
+    let changes = cli
+        .changed_files(&first_commit, &second_commit)
+        .await
+        .expect("diff across an external write");
+    assert!(
+        changes.iter().any(|c| c.path == "a.txt"),
+        "expected a.txt in the diff, got {:?}",
+        changes.iter().map(|c| &c.path).collect::<Vec<_>>(),
+    );
+}
+
+#[tokio::test]
 async fn resolve_endpoint_accepts_a_bare_commit_id() {
     // resolve_repo maps a caller's checkout to a slug by asking each
     // backend to resolve a commit id; this pins down the primitive it

@@ -17,7 +17,7 @@
 //! to keep the async runtime responsive.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use jj_lib::object_id::ObjectId as _;
@@ -96,6 +96,80 @@ struct OpenedWorkspace {
     loader: Arc<RepoLoader>,
     workspace_name: jj_lib::ref_name::WorkspaceNameBuf,
     workspace_root: PathBuf,
+}
+
+/// Current operation heads on disk, sorted for a stable comparison.
+/// Cheap — reads the op-heads directory off `.jj/repo`, not the full
+/// repo or any git object.
+fn read_op_heads(loader: &RepoLoader) -> Result<Vec<jj_lib::op_store::OperationId>> {
+    let mut heads = futures::executor::block_on(loader.op_heads_store().get_op_heads())
+        .map_err(|e| Error::Parse(format!("libjj op heads: {e}")))?;
+    heads.sort();
+    Ok(heads)
+}
+
+/// Holds the opened [`RepoLoader`] and reopens it — and thus its
+/// backing `Store` — when the operation log advances.
+///
+/// jj-lib opens the git object database once, when the `Store` is
+/// created, and reuses that handle for the life of the loader. An
+/// object written *afterward* by another `jj` process — e.g. an
+/// author rewriting a stacked branch from a second workspace of the
+/// same repo, landing new commits/trees in a fresh packfile — is
+/// invisible to the cached handle. Reads of it fail with
+/// `Error when reading object … of type tree`, and the diff for the
+/// affected review comes back empty, even though the objects are on
+/// disk and a fresh `jj` process reads them fine.
+///
+/// The op-log head moves whenever such writes land, so we use it as
+/// the change signal: before each load we stat the op heads (a tiny
+/// directory read) and only re-run `Workspace::load` — which builds a
+/// fresh `Store` that rescans the packs — when they differ from what
+/// we last saw. The steady-state no-change path stays as cheap as a
+/// plain `load_at_head`.
+struct LoaderCache {
+    settings: UserSettings,
+    workspace_path: PathBuf,
+    state: Mutex<LoaderState>,
+}
+
+struct LoaderState {
+    /// Op heads observed when `loader` was last (re)opened.
+    op_heads: Vec<jj_lib::op_store::OperationId>,
+    loader: Arc<RepoLoader>,
+}
+
+impl LoaderCache {
+    fn new(
+        settings: UserSettings,
+        workspace_path: PathBuf,
+        loader: Arc<RepoLoader>,
+    ) -> Result<Self> {
+        let op_heads = read_op_heads(&loader)?;
+        Ok(Self {
+            settings,
+            workspace_path,
+            state: Mutex::new(LoaderState { op_heads, loader }),
+        })
+    }
+
+    /// Load the repo at the current op head, reopening the backing
+    /// store first if the op log advanced since we last looked. Runs
+    /// synchronously; callers already wrap their work in
+    /// `spawn_blocking`.
+    fn load_at_head(&self) -> Result<Arc<ReadonlyRepo>> {
+        let mut state = self.state.lock().expect("loader cache poisoned");
+        let heads = read_op_heads(&state.loader)?;
+        if heads != state.op_heads {
+            let opened = open_loader(&self.settings, &self.workspace_path)?;
+            state.loader = opened.loader;
+            state.op_heads = heads;
+        }
+        let loader = state.loader.clone();
+        drop(state);
+        futures::executor::block_on(loader.load_at_head())
+            .map_err(|e| Error::Parse(format!("libjj load_at_head: {e}")))
+    }
 }
 
 /// Open a jj repo at the given workspace path. Returns a handle the
@@ -551,11 +625,10 @@ impl JjRepoHandle {
 /// repo from scratch).
 pub struct JjLib {
     workspace_path: PathBuf,
-    _settings: UserSettings,
-    /// Cached so we skip the cost of re-running `Workspace::load`
-    /// on every method call. `load_at_head` still rereads the op
-    /// heads file off disk, so fresh state is picked up.
-    loader: Arc<RepoLoader>,
+    /// Opened loader, reopened on demand when the op log advances so a
+    /// fresh git object store rescans packs written by other `jj`
+    /// processes. See [`LoaderCache`].
+    cache: Arc<LoaderCache>,
     /// Workspace identity, needed by the revset parser to resolve
     /// `@` to this workspace's working-copy commit.
     workspace_name: Arc<jj_lib::ref_name::WorkspaceNameBuf>,
@@ -567,10 +640,14 @@ impl JjLib {
         let workspace_path = workspace_path.into();
         let settings = build_settings()?;
         let opened = open_loader(&settings, &workspace_path)?;
+        let cache = Arc::new(LoaderCache::new(
+            settings,
+            workspace_path.clone(),
+            opened.loader,
+        )?);
         Ok(Self {
             workspace_path,
-            _settings: settings,
-            loader: opened.loader,
+            cache,
             workspace_name: Arc::new(opened.workspace_name),
             workspace_root: Arc::new(opened.workspace_root),
         })
@@ -584,10 +661,9 @@ impl JjBackend for JjLib {
     }
 
     async fn list_bookmarks(&self) -> Result<Vec<Bookmark>> {
-        let loader = self.loader.clone();
+        let cache = self.cache.clone();
         tokio::task::spawn_blocking(move || -> Result<Vec<Bookmark>> {
-            let repo = futures::executor::block_on(loader.load_at_head())
-                .map_err(|e| Error::Parse(format!("libjj load_at_head: {e}")))?;
+            let repo = cache.load_at_head()?;
             let view = repo.view();
             let store = repo.store();
             let mut out = Vec::new();
@@ -622,13 +698,12 @@ impl JjBackend for JjLib {
         &self,
         change: &KataChangeId,
     ) -> Result<Option<KataCommitId>> {
-        let loader = self.loader.clone();
+        let cache = self.cache.clone();
         let change = change.clone();
         let workspace_name = self.workspace_name.clone();
         let workspace_root = self.workspace_root.clone();
         tokio::task::spawn_blocking(move || -> Result<Option<KataCommitId>> {
-            let repo = futures::executor::block_on(loader.load_at_head())
-                .map_err(|e| Error::Parse(format!("libjj load_at_head: {e}")))?;
+            let repo = cache.load_at_head()?;
             // Round-trip through the revset string parser:
             // `latest(change_id_prefix(<reverse-hex>))` matches the
             // commit (most recent if the change is divergent) the
@@ -652,13 +727,12 @@ impl JjBackend for JjLib {
     }
 
     async fn resolve_endpoint(&self, expr: &str) -> Result<Option<Endpoint>> {
-        let loader = self.loader.clone();
+        let cache = self.cache.clone();
         let expr = expr.to_string();
         let workspace_name = self.workspace_name.clone();
         let workspace_root = self.workspace_root.clone();
         tokio::task::spawn_blocking(move || -> Result<Option<Endpoint>> {
-            let repo = futures::executor::block_on(loader.load_at_head())
-                .map_err(|e| Error::Parse(format!("libjj load_at_head: {e}")))?;
+            let repo = cache.load_at_head()?;
             let ws = Some((workspace_name.as_ref().as_ref(), workspace_root.as_path()));
             match evaluate_user_revset(&repo, &expr, ws)? {
                 None => Ok(None),
@@ -684,12 +758,11 @@ impl JjBackend for JjLib {
         commit: &KataCommitId,
         path: &str,
     ) -> Result<Option<Vec<u8>>> {
-        let loader = self.loader.clone();
+        let cache = self.cache.clone();
         let commit = commit.clone();
         let path = path.to_string();
         tokio::task::spawn_blocking(move || -> Result<Option<Vec<u8>>> {
-            let repo = futures::executor::block_on(loader.load_at_head())
-                .map_err(|e| Error::Parse(format!("libjj load_at_head: {e}")))?;
+            let repo = cache.load_at_head()?;
             read_file_at_commit(&repo, &commit, &path)
         })
         .await
@@ -701,13 +774,12 @@ impl JjBackend for JjLib {
         commit: &KataCommitId,
         path: &str,
     ) -> Result<Option<Vec<kata_core::ConflictTerm>>> {
-        let loader = self.loader.clone();
+        let cache = self.cache.clone();
         let commit = commit.clone();
         let path = path.to_string();
         tokio::task::spawn_blocking(
             move || -> Result<Option<Vec<kata_core::ConflictTerm>>> {
-                let repo = futures::executor::block_on(loader.load_at_head())
-                    .map_err(|e| Error::Parse(format!("libjj load_at_head: {e}")))?;
+                let repo = cache.load_at_head()?;
                 read_conflict_terms_at(&repo, &commit, &path)
             },
         )
@@ -722,11 +794,10 @@ impl JjBackend for JjLib {
         if pairs.is_empty() {
             return Ok(Vec::new());
         }
-        let loader = self.loader.clone();
+        let cache = self.cache.clone();
         let pairs = pairs.to_vec();
         tokio::task::spawn_blocking(move || -> Result<Vec<Option<Vec<u8>>>> {
-            let repo = futures::executor::block_on(loader.load_at_head())
-                .map_err(|e| Error::Parse(format!("libjj load_at_head: {e}")))?;
+            let repo = cache.load_at_head()?;
             // Sequential reads. Each read is in-process disk I/O —
             // no subprocess overhead to amortise. If profiling shows
             // this hot, swap for a futures::stream::iter().buffered()
@@ -746,15 +817,14 @@ impl JjBackend for JjLib {
         base: &KataCommitId,
         tip: &KataCommitId,
     ) -> Result<Vec<FileChange>> {
-        let loader = self.loader.clone();
+        let cache = self.cache.clone();
         let base = base.clone();
         let tip = tip.clone();
         tokio::task::spawn_blocking(move || -> Result<Vec<FileChange>> {
             use futures::{StreamExt, TryStreamExt};
             use jj_lib::copies::{CopyOperation, CopyRecords};
             use jj_lib::matchers::EverythingMatcher;
-            let repo = futures::executor::block_on(loader.load_at_head())
-                .map_err(|e| Error::Parse(format!("libjj load_at_head: {e}")))?;
+            let repo = cache.load_at_head()?;
             let base_commit = lookup_commit(&repo, &base)?;
             let tip_commit = lookup_commit(&repo, &tip)?;
             let base_tree = base_commit.tree();
@@ -857,13 +927,12 @@ impl JjBackend for JjLib {
         &self,
         revset: &kata_core::RevSet,
     ) -> Result<ReviewRange> {
-        let loader = self.loader.clone();
+        let cache = self.cache.clone();
         let revset = revset.clone();
         let workspace_name = self.workspace_name.clone();
         let workspace_root = self.workspace_root.clone();
         tokio::task::spawn_blocking(move || -> Result<ReviewRange> {
-            let repo = futures::executor::block_on(loader.load_at_head())
-                .map_err(|e| Error::Parse(format!("libjj load_at_head: {e}")))?;
+            let repo = cache.load_at_head()?;
             let ws = Some((workspace_name.as_ref().as_ref(), workspace_root.as_path()));
             let tip = solo_endpoint(
                 &repo,
@@ -903,15 +972,14 @@ impl JjBackend for JjLib {
         &self,
         revset: &kata_core::RevSet,
     ) -> Result<Vec<CommitInfo>> {
-        let loader = self.loader.clone();
+        let cache = self.cache.clone();
         let revset_str = revset.to_string();
         let workspace_name = self.workspace_name.clone();
         let workspace_root = self.workspace_root.clone();
         tokio::task::spawn_blocking(move || -> Result<Vec<CommitInfo>> {
             use futures::StreamExt;
             use jj_lib::matchers::EverythingMatcher;
-            let repo = futures::executor::block_on(loader.load_at_head())
-                .map_err(|e| Error::Parse(format!("libjj load_at_head: {e}")))?;
+            let repo = cache.load_at_head()?;
             let ws = Some((workspace_name.as_ref().as_ref(), workspace_root.as_path()));
             let Some(rs) = evaluate_user_revset(&repo, &revset_str, ws)? else {
                 return Ok(Vec::new());
@@ -1042,12 +1110,11 @@ impl JjBackend for JjLib {
         if ancestor == descendant {
             return Ok(true);
         }
-        let loader = self.loader.clone();
+        let cache = self.cache.clone();
         let ancestor = ancestor.clone();
         let descendant = descendant.clone();
         tokio::task::spawn_blocking(move || -> Result<bool> {
-            let repo = futures::executor::block_on(loader.load_at_head())
-                .map_err(|e| Error::Parse(format!("libjj load_at_head: {e}")))?;
+            let repo = cache.load_at_head()?;
             let ancestor_id = parse_commit_id(&ancestor)?;
             let descendant_id = parse_commit_id(&descendant)?;
             repo.index()
@@ -1059,10 +1126,9 @@ impl JjBackend for JjLib {
     }
 
     async fn current_op_id(&self) -> Result<OpId> {
-        let loader = self.loader.clone();
+        let cache = self.cache.clone();
         tokio::task::spawn_blocking(move || -> Result<OpId> {
-            let repo = futures::executor::block_on(loader.load_at_head())
-                .map_err(|e| Error::Parse(format!("libjj load_at_head: {e}")))?;
+            let repo = cache.load_at_head()?;
             Ok(OpId::new(repo.op_id().hex()))
         })
         .await
@@ -1074,7 +1140,7 @@ impl JjBackend for JjLib {
         revset: &kata_core::RevSet,
         max_rows: usize,
     ) -> Result<kata_core::LogPage> {
-        let loader = self.loader.clone();
+        let cache = self.cache.clone();
         let workspace_root = self.workspace_root.clone();
         let workspace_name = self.workspace_name.clone();
         let expr = revset.as_str().to_owned();
@@ -1083,8 +1149,7 @@ impl JjBackend for JjLib {
             use jj_lib::graph::{GraphEdgeType, TopoGroupedGraph};
             use jj_lib::matchers::EverythingMatcher;
             use jj_lib::object_id::ObjectId;
-            let repo = futures::executor::block_on(loader.load_at_head())
-                .map_err(|e| Error::Parse(format!("libjj load_at_head: {e}")))?;
+            let repo = cache.load_at_head()?;
             let ws = Some((workspace_name.as_ref().as_ref(), workspace_root.as_path()));
             let resolved = evaluate_user_revset(&repo, &expr, ws)?;
             let Some(rs) = resolved else {
@@ -1253,12 +1318,11 @@ impl JjBackend for JjLib {
     }
 
     async fn working_copy_commit_id(&self) -> Result<Option<KataCommitId>> {
-        let loader = self.loader.clone();
+        let cache = self.cache.clone();
         let workspace_name = self.workspace_name.clone();
         tokio::task::spawn_blocking(move || -> Result<Option<KataCommitId>> {
             use jj_lib::object_id::ObjectId;
-            let repo = futures::executor::block_on(loader.load_at_head())
-                .map_err(|e| Error::Parse(format!("libjj load_at_head: {e}")))?;
+            let repo = cache.load_at_head()?;
             let name: &jj_lib::ref_name::WorkspaceName = workspace_name.as_ref().as_ref();
             Ok(repo
                 .view()
@@ -1271,12 +1335,11 @@ impl JjBackend for JjLib {
     }
 
     async fn pin_commits(&self, review: &ReviewId, commits: &[KataCommitId]) -> Result<()> {
-        let loader = self.loader.clone();
+        let cache = self.cache.clone();
         let review = review.clone();
         let commits = commits.to_vec();
         tokio::task::spawn_blocking(move || -> Result<()> {
-            let repo = futures::executor::block_on(loader.load_at_head())
-                .map_err(|e| Error::Parse(format!("libjj load_at_head: {e}")))?;
+            let repo = cache.load_at_head()?;
             let git_repo = jj_lib::git::get_git_repo(repo.store())
                 .map_err(|e| Error::Parse(format!("libjj get_git_repo: {e}")))?;
             let prefix = format!("{KATA_REF_NAMESPACE}{review}/");
@@ -1326,11 +1389,10 @@ impl JjBackend for JjLib {
     }
 
     async fn unpin_review(&self, review: &ReviewId) -> Result<()> {
-        let loader = self.loader.clone();
+        let cache = self.cache.clone();
         let review = review.clone();
         tokio::task::spawn_blocking(move || -> Result<()> {
-            let repo = futures::executor::block_on(loader.load_at_head())
-                .map_err(|e| Error::Parse(format!("libjj load_at_head: {e}")))?;
+            let repo = cache.load_at_head()?;
             let git_repo = jj_lib::git::get_git_repo(repo.store())
                 .map_err(|e| Error::Parse(format!("libjj get_git_repo: {e}")))?;
             let prefix = format!("{KATA_REF_NAMESPACE}{review}/");
