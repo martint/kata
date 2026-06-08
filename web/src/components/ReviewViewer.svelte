@@ -1149,10 +1149,51 @@
    *  rule would make multiple arrow presses look like no-ops until
    *  the next comment ran off the bottom. Re-park on every press
    *  there instead, so each step visibly advances. */
+  /** Watch for a reader-initiated scroll gesture so the re-park loops
+   *  below can stop fighting it. They programmatically re-scroll to a
+   *  target every frame until its layout holds for ~320ms; for a target
+   *  that keeps reflowing (a big file, a slow async syntax-highlight
+   *  pass) that can run for the whole time budget, and without yielding
+   *  here every wheel tick gets snapped straight back — the page feels
+   *  stuck. `scrollTo` fires only `scroll` events, never wheel / touch /
+   *  keydown, so watching those cleanly tells the reader's intent apart
+   *  from our own scrolling. */
+  function watchUserScroll(): { interrupted: () => boolean; stop: () => void } {
+    const scrollKeys = new Set([
+      'ArrowUp',
+      'ArrowDown',
+      'PageUp',
+      'PageDown',
+      'Home',
+      'End',
+      ' ',
+      'Spacebar',
+    ]);
+    let hit = false;
+    const onMove = () => {
+      hit = true;
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (scrollKeys.has(e.key)) hit = true;
+    };
+    window.addEventListener('wheel', onMove, { passive: true });
+    window.addEventListener('touchmove', onMove, { passive: true });
+    window.addEventListener('keydown', onKey);
+    return {
+      interrupted: () => hit,
+      stop: () => {
+        window.removeEventListener('wheel', onMove);
+        window.removeEventListener('touchmove', onMove);
+        window.removeEventListener('keydown', onKey);
+      },
+    };
+  }
+
   async function scrollToComment(commentId: string, file: string | null) {
     const myGen = ++navGeneration;
     const superseded = () => myGen !== navGeneration;
     navigating = true;
+    const userScroll = watchUserScroll();
     try {
       // Prefer the comment's anchor row (its gutter marker is in the
       // DOM regardless of fold state) so navigation can leave a folded
@@ -1251,7 +1292,8 @@
       while (
         stableFrames < STABLE_REQUIRED &&
         remaining() &&
-        !superseded()
+        !superseded() &&
+        !userScroll.interrupted()
       ) {
         bringCommentIntoView(target.el);
         await new Promise((r) => requestAnimationFrame(r));
@@ -1269,7 +1311,9 @@
       // Mark where the jump landed so the reader can see which comment
       // is selected. A visible box or a bubble/orphan element flashes
       // its outline; a folded line comment pulses its gutter marker.
-      if (!superseded()) {
+      // Skip it if the reader scrolled away mid-settle — the landing
+      // is no longer where they're looking.
+      if (!superseded() && !userScroll.interrupted()) {
         if (target.kind === 'marker' && anchor) {
           pulseMarker(file, anchor.side, anchor.line);
         } else {
@@ -1277,6 +1321,7 @@
         }
       }
     } finally {
+      userScroll.stop();
       // Only release the flag if we're still the latest scrollToComment
       // — a newer call has its own lifecycle to manage navigating.
       if (!superseded()) {
@@ -3092,6 +3137,7 @@
     const myGen = ++navGeneration;
     const superseded = () => myGen !== navGeneration;
     navigating = true;
+    const userScroll = watchUserScroll();
     try {
       // Slots above the target are virtualized placeholders sized
       // from an estimate; each one mounts a real FileDiff (and fires
@@ -3108,7 +3154,12 @@
       let stableFrames = 0;
       let lastTop = Number.NaN;
       const STABLE_REQUIRED = 20;
-      while (stableFrames < STABLE_REQUIRED && remaining() && !superseded()) {
+      while (
+        stableFrames < STABLE_REQUIRED &&
+        remaining() &&
+        !superseded() &&
+        !userScroll.interrupted()
+      ) {
         const el = document.querySelector(sel) as HTMLElement | null;
         if (!el) return;
         scrollTopOf(el);
@@ -3124,6 +3175,7 @@
         lastTop = top;
       }
     } finally {
+      userScroll.stop();
       // Release only if we're still the latest nav — a newer click
       // owns the flag's lifecycle otherwise. The grace period lets
       // the final re-park's scroll event drain before the spy
