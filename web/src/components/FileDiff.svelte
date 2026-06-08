@@ -657,12 +657,19 @@
         );
       }
 
-      // 2. Composer takes precedence over the live selection (the
-      //    textarea autofocus collapses the document selection on
-      //    mount, so `diffSelectionFor` would return null at that
-      //    moment).
-      let sel: DiffSelection | null = null;
+      // 2. Prefer a live document selection so the reader gets a
+      //    real-time highlight while dragging, even with a composer
+      //    open. Native `::selection` is suppressed on diff content —
+      //    the overlay is the only selection paint — so if we ignored
+      //    the live selection here, dragging to copy some code into the
+      //    comment would be completely invisible and feel like
+      //    selection is broken. Fall back to the composer's fixed
+      //    anchor only when the live selection has collapsed, which the
+      //    textarea's autofocus does on mount; that keeps the anchor
+      //    painted the rest of the time.
+      let sel: DiffSelection | null = diffSelectionFor(hunksWrapperEl);
       if (
+        !sel &&
         composing?.kind === 'line' &&
         composing.file === file.path &&
         composing.columns
@@ -676,8 +683,6 @@
           multiLine: composing.startLine !== composing.endLine,
           rect: new DOMRect(),
         };
-      } else {
-        sel = diffSelectionFor(hunksWrapperEl);
       }
       // During an active drag, hold the last valid selection through
       // transient invalid states.
