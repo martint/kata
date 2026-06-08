@@ -1099,6 +1099,14 @@
      * has nothing to clip. */
     overflow-y: clip;
     overscroll-behavior-x: contain;
+    /* Hide the per-column scrollbar. Every hunk renders its base and
+     * tip as their own scroll boxes, so the native bars would stack up
+     * one-per-hunk — visual clutter the reader called out, and
+     * redundant now that FileDiff keeps all same-side columns the same
+     * width and scrolled to the same position (so they read as one
+     * column). Horizontal scrolling still works by wheel / trackpad /
+     * Shift+wheel, the same gestures the unified pane uses. */
+    scrollbar-width: none;
     /* Permit both single-finger pan axes. Horizontal stays in this
      * box (overflow-x: auto); vertical has nowhere to go here
      * (overflow-y: clip) so it bubbles to the parent `.hunks`
@@ -1111,6 +1119,11 @@
      * with `touch-action: none`; permitting both axes from the
      * start gives the browser room to disambiguate. */
     touch-action: pan-x pan-y;
+  }
+  /* `scrollbar-width` covers Firefox + modern Chromium; this covers
+   * Safari and older WebKit. */
+  .sbs-side::-webkit-scrollbar {
+    display: none;
   }
 
   /* Visual divider between the two sides. The divider is a wide,

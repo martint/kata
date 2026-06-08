@@ -409,10 +409,17 @@ syntax colours.
 The split between base and tip is shared across every SBS hunk on
 the page; dragging the divider on one hunk rebalances all of
 them. Snap-to-centre at 50% makes the common case effortless.
-Each side scrolls horizontally on its own when the code is wider
-than the column; *neither* side scrolls vertically (the page
-scroll handles that). Holding `Shift` while scrolling horizontally
-moves both sides together.
+Each side scrolls horizontally when the code is wider than the
+column. The base and tip scroll independently of each other, but a
+given side behaves as one column for the whole file: every hunk's
+base column is the same width and scrolls to the same position (and
+likewise for tip), so expanding two hunks until they meet leaves
+the joined halves scrolling as one continuous column instead of
+sliding apart. There are no per-hunk scrollbars — horizontal
+scrolling is by wheel / trackpad / `Shift`+wheel, as in the unified
+pane. *Neither* side scrolls vertically (the page scroll handles
+that). Holding `Shift` while scrolling horizontally moves both
+sides together.
 
 ### 5.5 File-level fold
 

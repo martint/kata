@@ -923,6 +923,103 @@
   });
   let hunksEl: HTMLDivElement | undefined = $state();
 
+  /** Keep the side-by-side columns horizontally in sync across hunks.
+   *  Each SBS hunk renders its base and tip as their own `.sbs-side`
+   *  scroll containers, so without this every hunk scrolls
+   *  independently — and two hunks the reader expanded until they meet
+   *  still scroll apart, which reads as a bug (the diff looks
+   *  continuous but the halves slide separately). Mirror each side's
+   *  `scrollLeft` onto the same side of every other hunk, so the file
+   *  has one base-column position and one tip-column position — the
+   *  same single-horizontal-context model unified mode already has.
+   *  Base and tip stay independent of each other (the whole point of
+   *  side-by-side). A no-op in unified mode, which has no `.sbs-side`
+   *  elements. */
+  $effect(() => {
+    if (!hunksEl) return;
+    const root = hunksEl;
+    // Guards a re-entrant burst: the programmatic `scrollLeft` writes
+    // below queue their own `scroll` events, which would otherwise
+    // bounce back through this handler. Cleared next frame so a
+    // genuine later scroll is still honoured.
+    let syncing = false;
+    function onScroll(e: Event) {
+      if (syncing) return;
+      const el = e.target as HTMLElement | null;
+      if (!el?.classList?.contains('sbs-side')) return;
+      const side = el.classList.contains('base')
+        ? 'base'
+        : el.classList.contains('tip')
+          ? 'tip'
+          : null;
+      if (!side) return;
+      const x = el.scrollLeft;
+      syncing = true;
+      for (const other of root.querySelectorAll<HTMLElement>(
+        `.sbs-side.${side}`,
+      )) {
+        if (other !== el && other.scrollLeft !== x) other.scrollLeft = x;
+      }
+      requestAnimationFrame(() => {
+        syncing = false;
+      });
+    }
+    // `scroll` doesn't bubble, so capture to catch it from any
+    // `.sbs-side` descendant — including hunks that mount later.
+    root.addEventListener('scroll', onScroll, true);
+    return () => root.removeEventListener('scroll', onScroll, true);
+  });
+
+  /** Give every hunk's base column (and every hunk's tip column) the
+   *  same width, so the cross-hunk scroll sync above never has to
+   *  clamp. Each hunk sizes its table to its own longest line, so a
+   *  hunk with a short max line can only scroll a little; mirroring a
+   *  wider hunk's `scrollLeft` onto it would clamp, and the columns
+   *  would drift apart. Measure the file-wide widest line per side and
+   *  floor every same-side table to it (keeping the `100%` column floor
+   *  via CSS `max()`), so all same-side tables share one scroll range
+   *  and the mirrored position lands identically — the trailing
+   *  whitespace on narrower hunks is exactly what unified mode shows
+   *  for its short lines. No-op in unified mode. */
+  function equalizeSbsColumnWidths(root: HTMLElement) {
+    for (const side of ['base', 'tip'] as const) {
+      const tables = Array.from(
+        root.querySelectorAll<HTMLElement>(`.sbs-side.${side} > table`),
+      );
+      if (tables.length < 2) {
+        for (const t of tables) t.style.minWidth = '';
+        continue;
+      }
+      // Lift the floor so each table reports its natural content width,
+      // take the max, then floor them all to it. Batched writes/reads
+      // keep this to two reflows, and it runs only on content changes
+      // (never during a scroll), all before the next paint — so there's
+      // no visible collapse.
+      for (const t of tables) t.style.minWidth = '0px';
+      let max = 0;
+      for (const t of tables) max = Math.max(max, t.scrollWidth);
+      for (const t of tables) t.style.minWidth = `max(${max}px, 100%)`;
+    }
+  }
+
+  $effect(() => {
+    if (!hunksEl) return;
+    const root = hunksEl;
+    // Re-equalize whenever the rendered content can change width:
+    // expanding context, the whole-file toggle, collapsing, switching
+    // render mode, or a new diff. The column *display* width (the SBS
+    // split / viewport size) doesn't need a re-measure — the `100%`
+    // half of the CSS `max()` tracks that on its own.
+    void expansions;
+    void wholeFile;
+    void collapsed;
+    void sideBySide;
+    void file.hunks;
+    // Measure after Svelte flushes the DOM and the browser lays out.
+    const raf = requestAnimationFrame(() => equalizeSbsColumnWidths(root));
+    return () => cancelAnimationFrame(raf);
+  });
+
   /** Track the visible width of the file's .hunks scroll viewport so the
    *  sticky thread wrappers inside know how wide to render. */
   $effect(() => {
