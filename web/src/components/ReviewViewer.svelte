@@ -30,6 +30,7 @@
     composerSurvivesPatchset,
     pruneFileDiffCache,
   } from '../lib/patchsetSwap';
+  import { compareBaseCommit as compareBaseCommitFor } from '../lib/compareBase';
   import Chevron from './Chevron.svelte';
   import CommitsPanel from './CommitsPanel.svelte';
   import FileSlot from './FileSlot.svelte';
@@ -1757,19 +1758,6 @@
     return visibleComments.filter((c) => sides.has(c.anchor_commit_id));
   });
 
-  /** Tip commit of the patchset being compared against, or `null`
-   *  outside compare mode. Threaded into `FileSlot` → `FileDiff` so
-   *  the per-file highlight pass reads from the same file the diff's
-   *  `base_line` numbers index into. Without this, removed-side
-   *  rows in compare mode render with HTML pulled from
-   *  `patchset.base_commit`'s file instead — line content reads as
-   *  wildly unrelated to the actual diff. */
-  const compareBaseCommit = $derived(
-    compareWith != null
-      ? (current.manifest.patchsets.find((p) => p.n === compareWith)?.tip_commit ?? null)
-      : null,
-  );
-
   // Sidebar layout state, persisted to localStorage.
   const TREE_WIDTH_KEY = 'kata:treeWidth';
   const TREE_COLLAPSED_KEY = 'kata:treeCollapsed';
@@ -1955,6 +1943,30 @@
         return null;
     }
   });
+
+  /** The commit the displayed diff's `base_line` numbers index into,
+   *  or `null` outside compare mode. Threaded into `FileSlot` →
+   *  `FileDiff` so the per-file highlight pass (and base-side content
+   *  reads) pull from the same file version the hunks reference.
+   *  Without this, removed-side rows in compare mode render with HTML
+   *  pulled from `patchset.base_commit`'s file instead — line content
+   *  reads as wildly unrelated to the actual diff.
+   *
+   *  Two compare shapes need different answers:
+   *  - Per-commit interdiff (a pair row is selected): the base is the
+   *    pair's from-side commit (`interdiffEndpoints.from` — the
+   *    parent for an added/removed pair, the from-side commit for a
+   *    changed pair), which `viewingFor` already points the diff at.
+   *    The compared patchset's tip would be the wrong file entirely.
+   *  - Whole-patchset cumulative compare (no pair selected): the base
+   *    is the compared patchset's tip. */
+  const compareBaseCommit = $derived(
+    compareBaseCommitFor(
+      interdiffEndpoints?.from ?? null,
+      compareWith,
+      current.manifest.patchsets,
+    ),
+  );
 
   // Fetch the file list backing the per-commit interdiff whenever the
   // endpoint pair changes. The per-file hunks ship lazily via FileSlot's
