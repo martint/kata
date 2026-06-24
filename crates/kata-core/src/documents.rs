@@ -114,6 +114,37 @@ pub struct Comment {
     /// frontmatter at write time and append it after the closing fence.
     #[serde(default)]
     pub body: String,
+
+    /// Ghost-author identity when the comment was imported from an
+    /// external source (e.g. a GitHub PR). `None` for native kata-
+    /// authored comments. The UI renders this in place of the
+    /// kata [`Author`] (avatar + `@login` link) so imported threads
+    /// don't show up as written by a synthetic `gh:<login>` user.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_author: Option<ExternalAuthor>,
+}
+
+/// Identity of a user from a non-kata source — currently only
+/// github.com — preserved on imported comments + responses so the
+/// UI can render the original author (avatar, `@login`, link back
+/// to the source) rather than the synthetic ghost author kata
+/// stores against [`Comment::author`].
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ExternalAuthor {
+    /// `"github"` today; carve out other sources as we add them.
+    /// Kept as a free-form string rather than an enum so the
+    /// archive format doesn't need a schema bump when we extend.
+    pub source: String,
+    pub login: String,
+    /// Stable numeric identity from the source. Survives logname
+    /// changes; used as the *real* dedup key during refresh.
+    pub id: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
+    /// Profile URL on the source. UI uses this to make the `@login`
+    /// chip a link back to the source's user page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub html_url: Option<String>,
 }
 
 /// An author-written annotation anchored to a region of code.
@@ -262,6 +293,46 @@ pub struct ReviewManifest {
     /// active reviews; older manifests deserialize to `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archived_at: Option<DateTime<Utc>>,
+    /// GitHub PR this review is bound to, when it was created via the
+    /// `/api/github/import` endpoint. `None` for native kata reviews
+    /// and for reviews carried over from before this field existed.
+    /// Reviews with `github_pr = Some(...)` swap the publish-session
+    /// behaviour for the "Publish to GitHub" path; see phase 6.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github_pr: Option<GithubPr>,
+}
+
+/// Identity + provenance of a GitHub pull request a kata review is
+/// bound to. Populated at import time and never edited afterwards
+/// (a PR's `(owner, repo, number)` is immutable; the head SHA is
+/// captured here purely as the import-time baseline for the head-
+/// drift refusal in phase 6).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct GithubPr {
+    pub owner: String,
+    pub repo: String,
+    pub number: u32,
+    /// The PR's `html_url` at import time — used by the UI to
+    /// link back to github.com.
+    pub html_url: String,
+    /// PR head SHA at the moment kata imported the PR. Phase 6
+    /// re-fetches and compares before publishing back so a force-
+    /// pushed head doesn't get reviews anchored to lines that no
+    /// longer exist.
+    pub original_head_sha: String,
+    /// PR base SHA at import time. Captured for the same reason —
+    /// rebases that move the base are common.
+    pub original_base_sha: String,
+    /// Name of the git remote on the matched workspace that the
+    /// PR was fetched through (typically `"origin"`). Recorded so
+    /// review deletion can scope its branch cleanup to the right
+    /// remote — without it, same-numbered PRs imported from
+    /// different remotes would clobber each other's refs on
+    /// delete. Defaults to empty for manifests written before this
+    /// field existed; the delete path falls back to an all-remotes
+    /// scan in that case.
+    #[serde(default)]
+    pub remote_name: String,
 }
 
 impl ReviewManifest {

@@ -8,6 +8,40 @@ use kata_core::{
     RepoManifest, Response, ResponseId, ReviewId, ReviewManifest, Session, SessionId,
 };
 
+/// One mapping row between a kata comment-or-response and the
+/// GitHub object it was imported from. Persisted in
+/// `github_comment_map`; consulted on refresh to dedup
+/// already-imported items, and on publish (phase 6) to thread
+/// replies back to the right upstream comment.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct GithubCommentMapping {
+    /// Stable GitHub GraphQL node id (`PRRC_kw...`). Primary dedup
+    /// key — survives renames/edits and is what GraphQL mutations
+    /// (resolve thread, reply to comment) take as input.
+    pub github_node_id: String,
+    /// REST API numeric id, when known. Convenient for REST-only
+    /// endpoints in phase 6 (e.g. `POST .../pulls/N/comments`
+    /// `in_reply_to` takes the REST id, not the node id).
+    pub github_rest_id: Option<i64>,
+    /// Discriminator: `"review_summary"`, `"line_comment"`,
+    /// `"issue_comment"`, or `"thread_reply"`. Kept as a string so
+    /// adding a new kind is additive.
+    pub kind: String,
+    pub review_id: ReviewId,
+    pub pr_number: u32,
+    /// Kata comment id, when this mapping points at one.
+    pub kata_comment_id: Option<CommentId>,
+    /// Kata response id, when this mapping points at one. Exactly
+    /// one of [`Self::kata_comment_id`] / [`Self::kata_response_id`]
+    /// is `Some` per row.
+    pub kata_response_id: Option<ResponseId>,
+    /// GitHub review-thread node id this row belongs to, when
+    /// known. Threads anchor their resolution state at the thread
+    /// level (not per-comment); phase 6 uses this to issue
+    /// `resolveReviewThread` mutations.
+    pub thread_node_id: Option<String>,
+}
+
 use crate::error::Result;
 
 /// What the storage layer remembers from a reviewer's previous open of
@@ -237,4 +271,121 @@ pub trait Storage: Send + Sync {
     /// and-forget from the caller's perspective; a failure here
     /// must not reject the request that just authenticated.
     async fn touch_api_token(&self, token_id: &ApiTokenId) -> Result<()>;
+
+    // ---- imported (non-draft) inserts ----------------------------------
+    //
+    // The "raw" methods below let kata land an externally-produced
+    // session/comment/response directly into storage at its
+    // archive-preserved content (no draft-phase, no
+    // `created_at = now()` overwrite). Originally exposed for the
+    // archive import path; phase-5 GitHub import reuses them for the
+    // same reason — every imported item carries its github.com
+    // `created_at` and an explicit author identity that we don't
+    // want a draft-flow `now()` to clobber.
+
+    async fn raw_insert_session(&self, repo: &RepoId, session: &Session) -> Result<()>;
+    async fn raw_insert_comment(&self, repo: &RepoId, comment: &Comment) -> Result<()>;
+    async fn raw_insert_response(&self, repo: &RepoId, response: &Response) -> Result<()>;
+
+    /// Insert an imported comment **and** its
+    /// `github_comment_map` row in the same SQL transaction.
+    /// Crash-safe by construction — without the transaction, a
+    /// failure between the two writes leaves the comment with no
+    /// mapping row, which makes the next import re-insert it as a
+    /// ghost duplicate (the dedup check goes through the mapping).
+    async fn raw_insert_comment_with_mapping(
+        &self,
+        repo: &RepoId,
+        comment: &Comment,
+        mapping: &GithubCommentMapping,
+    ) -> Result<()>;
+
+    /// Counterpart of [`Self::raw_insert_comment_with_mapping`]
+    /// for an imported response (thread reply). Same atomicity
+    /// rationale.
+    async fn raw_insert_response_with_mapping(
+        &self,
+        repo: &RepoId,
+        response: &Response,
+        mapping: &GithubCommentMapping,
+    ) -> Result<()>;
+
+    // ---- GitHub comment-id mapping -------------------------------------
+
+    /// Persist a row in `github_comment_map`. Idempotent: a
+    /// duplicate `(repo_id, github_node_id)` is treated as success
+    /// (no-op) so refresh paths can re-run without conflict.
+    async fn insert_github_comment_mapping(
+        &self,
+        repo: &RepoId,
+        mapping: &GithubCommentMapping,
+    ) -> Result<()>;
+
+    /// True iff a row already exists for `(repo, github_node_id)`.
+    /// Used during refresh to skip already-imported items.
+    async fn is_github_comment_mapped(
+        &self,
+        repo: &RepoId,
+        github_node_id: &str,
+    ) -> Result<bool>;
+
+    /// Find the GitHub mapping for a kata comment, if any. Drives
+    /// publish (phase 6): when a kata response targets a comment
+    /// that was imported from a GitHub thread, the reply has to
+    /// be posted with `in_reply_to = <that github id>` so it
+    /// threads correctly on github.com.
+    async fn lookup_github_mapping_by_kata_comment(
+        &self,
+        repo: &RepoId,
+        kata_comment_id: &CommentId,
+    ) -> Result<Option<GithubCommentMapping>>;
+
+    /// Counterpart of [`Self::lookup_github_mapping_by_kata_comment`]
+    /// for responses (replies). Drives the publish-retry
+    /// idempotency check — a reply whose mapping row already
+    /// exists has already landed on github.com and must not be
+    /// re-posted.
+    async fn lookup_github_mapping_by_kata_response(
+        &self,
+        repo: &RepoId,
+        kata_response_id: &ResponseId,
+    ) -> Result<Option<GithubCommentMapping>>;
+
+    /// Single-comment fetch by id. Used by the publish path to
+    /// quote a parent comment's body when a reply has to fall
+    /// back to an issue comment (the parent isn't a thread that
+    /// accepts `in_reply_to`, or the threaded post 422s). `None`
+    /// when the comment doesn't exist.
+    async fn get_comment_by_id(
+        &self,
+        repo: &RepoId,
+        comment_id: &CommentId,
+    ) -> Result<Option<Comment>>;
+
+    /// Reverse lookup: from a GitHub GraphQL node id to the kata
+    /// mapping (if any). Drives the refresh path's "attach a new
+    /// reply to a previously-imported thread" branch — when a new
+    /// reply lands on github.com, kata needs to find the kata
+    /// comment id corresponding to the thread's anchor so the
+    /// reply lands as a kata response under it.
+    async fn lookup_github_mapping_by_node_id(
+        &self,
+        repo: &RepoId,
+        github_node_id: &str,
+    ) -> Result<Option<GithubCommentMapping>>;
+
+    /// Mapping for the wrapping `pull_request_review` (or, in the
+    /// deep-fallback path where both the bundle and the empty-
+    /// comments shell 422, the issue comment its body landed as).
+    /// Keyed by `(repo, review_id, pr_number, kind="review_body")`
+    /// — there's no kata comment to thread it off of, so the
+    /// "natural id" is the kata review itself. Drives publish
+    /// idempotency: a retry whose body was already posted skips
+    /// the body part of the wrapping review.
+    async fn lookup_review_body_mapping(
+        &self,
+        repo: &RepoId,
+        review_id: &ReviewId,
+        pr_number: u32,
+    ) -> Result<Option<GithubCommentMapping>>;
 }

@@ -193,7 +193,7 @@ impl SqliteStorage {
                 "SELECT comment_id, session_id, review_id, schema_version, author,
                         created_at, patchset, anchor_change_id, anchor_commit_id,
                         file, side, line_start, line_end, col_start, col_end, review_wide,
-                        flag, body
+                        flag, body, external_author
                  FROM comments WHERE session_id = ?1 ORDER BY created_at",
             )?;
             let rows = stmt.query_map(params![session_str], comment_from_row)?;
@@ -280,40 +280,8 @@ impl SqliteStorage {
         ensure_comment_id(&comment.comment_id)?;
         let repo_str = repo.as_str().to_owned();
         let comment = comment.clone();
-        self.with_conn(move |conn| {
-            let (line_start, line_end) = match &comment.lines {
-                Some(LineRange { start, end }) => (Some(*start), Some(*end)),
-                None => (None, None),
-            };
-            conn.execute(
-                "INSERT INTO comments
-                    (comment_id, repo_id, review_id, session_id, schema_version, author,
-                     created_at, patchset, anchor_change_id, anchor_commit_id, file, side,
-                     line_start, line_end, review_wide, flag, body)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
-                params![
-                    comment.comment_id.as_str(),
-                    repo_str,
-                    comment.review_id.as_str(),
-                    comment.session_id.as_str(),
-                    comment.schema_version,
-                    comment.author.as_str(),
-                    comment.created_at,
-                    comment.patchset,
-                    comment.anchor_change_id.as_str(),
-                    comment.anchor_commit_id.as_str(),
-                    comment.file,
-                    comment.side.map(side_to_str),
-                    line_start,
-                    line_end,
-                    comment.review_wide as i64,
-                    flag_to_str(comment.flag),
-                    comment.body,
-                ],
-            )?;
-            Ok(())
-        })
-        .await
+        self.with_conn(move |conn| exec_insert_comment(conn, &repo_str, &comment))
+            .await
     }
 
     /// Insert a response at its archive-preserved content. Counterpart
@@ -328,40 +296,8 @@ impl SqliteStorage {
         ensure_response_id(&response.response_id)?;
         let repo_str = repo.as_str().to_owned();
         let response = response.clone();
-        self.with_conn(move |conn| {
-            // Look up the comment's review_id so the FK and the column
-            // stay consistent without the caller having to thread it.
-            let review_id: String = conn
-                .query_row(
-                    "SELECT review_id FROM comments WHERE comment_id = ?1",
-                    params![response.in_reply_to.as_str()],
-                    |row| row.get(0),
-                )
-                .optional()?
-                .ok_or_else(|| Error::NotFound {
-                    what: format!("comment {}", response.in_reply_to),
-                })?;
-            conn.execute(
-                "INSERT INTO responses
-                    (response_id, repo_id, review_id, session_id, in_reply_to, schema_version,
-                     author, created_at, action, body)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-                params![
-                    response.response_id.as_str(),
-                    repo_str,
-                    review_id,
-                    response.session_id.as_str(),
-                    response.in_reply_to.as_str(),
-                    response.schema_version,
-                    response.author.as_str(),
-                    response.created_at,
-                    action_to_str(response.action),
-                    response.body,
-                ],
-            )?;
-            Ok(())
-        })
-        .await
+        self.with_conn(move |conn| exec_insert_response(conn, &repo_str, &response))
+            .await
     }
 }
 
@@ -425,7 +361,7 @@ impl Storage for SqliteStorage {
                 "SELECT
                     r.review_id, r.number, r.name, r.schema_version, r.revset, r.bookmark,
                     r.summary, r.created_by, r.created_at, r.current_patchset, r.patchsets_json,
-                    r.archived_at,
+                    r.archived_at, r.github_pr,
                     (SELECT COUNT(*) FROM sessions s
                      WHERE s.repo_id = r.repo_id AND s.review_id = r.review_id) AS session_count,
                     (SELECT COUNT(*) FROM comments c
@@ -437,8 +373,8 @@ impl Storage for SqliteStorage {
                  ORDER BY r.number DESC",
             )?;
             let rows = stmt.query_map(params![repo_str], |row| {
-                let session_count: i64 = row.get(12)?;
-                let comment_count: i64 = row.get(13)?;
+                let session_count: i64 = row.get(13)?;
+                let comment_count: i64 = row.get(14)?;
                 let manifest = review_manifest_from_row(row)?;
                 Ok(ReviewSummary {
                     manifest,
@@ -484,7 +420,8 @@ impl Storage for SqliteStorage {
             let opt = conn
                 .query_row(
                     "SELECT review_id, number, name, schema_version, revset, bookmark, summary,
-                            created_by, created_at, current_patchset, patchsets_json, archived_at
+                            created_by, created_at, current_patchset, patchsets_json, archived_at,
+                            github_pr
                      FROM reviews WHERE repo_id = ?1 AND review_id = ?2",
                     params![repo_str, review_str],
                     review_manifest_from_row,
@@ -538,11 +475,19 @@ impl Storage for SqliteStorage {
                     .clone()
                     .unwrap_or_else(|| manifest.review_id.as_str().to_owned());
             }
+            let github_pr_json = match &manifest.github_pr {
+                Some(p) => Some(serde_json::to_string(p).map_err(|source| Error::Json {
+                    context: "github_pr".into(),
+                    source,
+                })?),
+                None => None,
+            };
             let res = tx.execute(
                 "INSERT INTO reviews
                     (repo_id, review_id, number, name, schema_version, revset, bookmark, summary,
-                     created_by, created_at, current_patchset, patchsets_json, archived_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                     created_by, created_at, current_patchset, patchsets_json, archived_at,
+                     github_pr)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
                 params![
                     repo_str,
                     manifest.review_id.as_str(),
@@ -557,6 +502,7 @@ impl Storage for SqliteStorage {
                     manifest.current_patchset,
                     patchsets_json,
                     manifest.archived_at,
+                    github_pr_json,
                 ],
             );
             match res {
@@ -588,6 +534,13 @@ impl Storage for SqliteStorage {
                     context: "patchsets".into(),
                     source,
                 })?;
+            let github_pr_json = match &manifest.github_pr {
+                Some(p) => Some(serde_json::to_string(p).map_err(|source| Error::Json {
+                    context: "github_pr".into(),
+                    source,
+                })?),
+                None => None,
+            };
             let affected = conn.execute(
                 "UPDATE reviews
                     SET name = ?3,
@@ -599,7 +552,8 @@ impl Storage for SqliteStorage {
                         created_at = ?9,
                         current_patchset = ?10,
                         patchsets_json = ?11,
-                        archived_at = ?12
+                        archived_at = ?12,
+                        github_pr = ?13
                   WHERE repo_id = ?1 AND review_id = ?2",
                 params![
                     repo_str,
@@ -614,6 +568,7 @@ impl Storage for SqliteStorage {
                     manifest.current_patchset,
                     patchsets_json,
                     manifest.archived_at,
+                    github_pr_json,
                 ],
             )?;
             if affected == 0 {
@@ -762,12 +717,20 @@ impl Storage for SqliteStorage {
                 Some(ColumnRange { start, end }) => (Some(*start), Some(*end)),
                 None => (None, None),
             };
+            let external_author_json = match &comment.external_author {
+                Some(a) => Some(serde_json::to_string(a).map_err(|source| Error::Json {
+                    context: "external_author".into(),
+                    source,
+                })?),
+                None => None,
+            };
             tx.execute(
                 "INSERT INTO comments
                     (comment_id, repo_id, review_id, session_id, schema_version, author,
                      created_at, patchset, anchor_change_id, anchor_commit_id, file, side,
-                     line_start, line_end, col_start, col_end, review_wide, flag, body)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
+                     line_start, line_end, col_start, col_end, review_wide, flag, body,
+                     external_author)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
                  ON CONFLICT(comment_id) DO UPDATE SET
                     schema_version = excluded.schema_version,
                     author = excluded.author,
@@ -783,7 +746,8 @@ impl Storage for SqliteStorage {
                     col_end = excluded.col_end,
                     review_wide = excluded.review_wide,
                     flag = excluded.flag,
-                    body = excluded.body",
+                    body = excluded.body,
+                    external_author = excluded.external_author",
                 params![
                     comment.comment_id.as_str(),
                     repo_str,
@@ -804,6 +768,7 @@ impl Storage for SqliteStorage {
                     comment.review_wide as i64,
                     flag_to_str(comment.flag),
                     comment.body,
+                    external_author_json,
                 ],
             )?;
             tx.commit()?;
@@ -922,7 +887,7 @@ impl Storage for SqliteStorage {
                 "SELECT c.comment_id, c.session_id, c.review_id, c.schema_version, c.author,
                         c.created_at, c.patchset, c.anchor_change_id, c.anchor_commit_id,
                         c.file, c.side, c.line_start, c.line_end, c.col_start, c.col_end,
-                        c.review_wide, c.flag, c.body
+                        c.review_wide, c.flag, c.body, c.external_author
                  FROM comments c
                  JOIN sessions s ON s.session_id = c.session_id
                  WHERE c.repo_id = ?1 AND c.review_id = ?2 AND s.status = 'published'
@@ -934,6 +899,32 @@ impl Storage for SqliteStorage {
                 out.push(r.map_err(Error::from)?);
             }
             Ok(out)
+        })
+        .await
+    }
+
+    async fn get_comment_by_id(
+        &self,
+        repo: &RepoId,
+        comment_id: &CommentId,
+    ) -> Result<Option<Comment>> {
+        ensure_repo_id(repo)?;
+        ensure_comment_id(comment_id)?;
+        let repo_str = repo.as_str().to_owned();
+        let cid = comment_id.as_str().to_owned();
+        self.with_conn(move |conn| {
+            conn.query_row(
+                "SELECT comment_id, session_id, review_id, schema_version, author,
+                        created_at, patchset, anchor_change_id, anchor_commit_id,
+                        file, side, line_start, line_end, col_start, col_end,
+                        review_wide, flag, body, external_author
+                   FROM comments
+                  WHERE repo_id = ?1 AND comment_id = ?2",
+                params![repo_str, cid],
+                comment_from_row,
+            )
+            .optional()
+            .map_err(Into::into)
         })
         .await
     }
@@ -1105,7 +1096,7 @@ impl Storage for SqliteStorage {
                 "SELECT comment_id, session_id, review_id, schema_version, author,
                         created_at, patchset, anchor_change_id, anchor_commit_id,
                         file, side, line_start, line_end, col_start, col_end, review_wide,
-                        flag, body
+                        flag, body, external_author
                  FROM comments WHERE session_id = ?1 ORDER BY created_at",
             )?;
             let comments: Vec<Comment> = comment_stmt
@@ -1287,9 +1278,343 @@ impl Storage for SqliteStorage {
         })
         .await
     }
+
+    async fn raw_insert_session(&self, repo: &RepoId, session: &Session) -> Result<()> {
+        // Delegates to the inherent helper. Method-resolution prefers
+        // the inherent definition, so this is a one-line shim.
+        SqliteStorage::raw_insert_session(self, repo, session).await
+    }
+
+    async fn raw_insert_comment(&self, repo: &RepoId, comment: &Comment) -> Result<()> {
+        SqliteStorage::raw_insert_comment(self, repo, comment).await
+    }
+
+    async fn raw_insert_response(&self, repo: &RepoId, response: &Response) -> Result<()> {
+        SqliteStorage::raw_insert_response(self, repo, response).await
+    }
+
+    async fn insert_github_comment_mapping(
+        &self,
+        repo: &RepoId,
+        mapping: &crate::storage::GithubCommentMapping,
+    ) -> Result<()> {
+        ensure_repo_id(repo)?;
+        let repo_str = repo.as_str().to_owned();
+        let m = mapping.clone();
+        self.with_conn(move |conn| exec_insert_github_mapping(conn, &repo_str, &m))
+            .await
+    }
+
+    async fn raw_insert_comment_with_mapping(
+        &self,
+        repo: &RepoId,
+        comment: &Comment,
+        mapping: &crate::storage::GithubCommentMapping,
+    ) -> Result<()> {
+        ensure_repo_id(repo)?;
+        ensure_review_id(&comment.review_id)?;
+        ensure_session_id(&comment.session_id)?;
+        ensure_comment_id(&comment.comment_id)?;
+        let repo_str = repo.as_str().to_owned();
+        let comment = comment.clone();
+        let m = mapping.clone();
+        self.with_conn(move |conn| {
+            // BEGIN IMMEDIATE: take the write lock up-front so a
+            // concurrent import racing on the same comment id can't
+            // wedge half-applied state in.
+            let tx = conn.transaction_with_behavior(
+                rusqlite::TransactionBehavior::Immediate,
+            )?;
+            exec_insert_comment(&tx, &repo_str, &comment)?;
+            exec_insert_github_mapping(&tx, &repo_str, &m)?;
+            tx.commit()?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn raw_insert_response_with_mapping(
+        &self,
+        repo: &RepoId,
+        response: &Response,
+        mapping: &crate::storage::GithubCommentMapping,
+    ) -> Result<()> {
+        ensure_repo_id(repo)?;
+        ensure_session_id(&response.session_id)?;
+        ensure_response_id(&response.response_id)?;
+        let repo_str = repo.as_str().to_owned();
+        let response = response.clone();
+        let m = mapping.clone();
+        self.with_conn(move |conn| {
+            let tx = conn.transaction_with_behavior(
+                rusqlite::TransactionBehavior::Immediate,
+            )?;
+            exec_insert_response(&tx, &repo_str, &response)?;
+            exec_insert_github_mapping(&tx, &repo_str, &m)?;
+            tx.commit()?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn is_github_comment_mapped(
+        &self,
+        repo: &RepoId,
+        github_node_id: &str,
+    ) -> Result<bool> {
+        ensure_repo_id(repo)?;
+        let repo_str = repo.as_str().to_owned();
+        let node_id = github_node_id.to_owned();
+        self.with_conn(move |conn| {
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM github_comment_map
+                  WHERE repo_id = ?1 AND github_node_id = ?2",
+                params![repo_str, node_id],
+                |row| row.get(0),
+            )?;
+            Ok(count > 0)
+        })
+        .await
+    }
+
+    async fn lookup_github_mapping_by_kata_comment(
+        &self,
+        repo: &RepoId,
+        kata_comment_id: &CommentId,
+    ) -> Result<Option<crate::storage::GithubCommentMapping>> {
+        ensure_repo_id(repo)?;
+        let repo_str = repo.as_str().to_owned();
+        let cid = kata_comment_id.as_str().to_owned();
+        self.with_conn(move |conn| {
+            conn.query_row(
+                "SELECT github_node_id, github_rest_id, kind, kata_comment_id,
+                        kata_response_id, review_id, pr_number, thread_node_id
+                   FROM github_comment_map
+                  WHERE repo_id = ?1 AND kata_comment_id = ?2",
+                params![repo_str, cid],
+                row_to_github_mapping,
+            )
+            .optional()
+            .map_err(Into::into)
+        })
+        .await
+    }
+
+    async fn lookup_github_mapping_by_kata_response(
+        &self,
+        repo: &RepoId,
+        kata_response_id: &ResponseId,
+    ) -> Result<Option<crate::storage::GithubCommentMapping>> {
+        ensure_repo_id(repo)?;
+        let repo_str = repo.as_str().to_owned();
+        let rid = kata_response_id.as_str().to_owned();
+        self.with_conn(move |conn| {
+            conn.query_row(
+                "SELECT github_node_id, github_rest_id, kind, kata_comment_id,
+                        kata_response_id, review_id, pr_number, thread_node_id
+                   FROM github_comment_map
+                  WHERE repo_id = ?1 AND kata_response_id = ?2",
+                params![repo_str, rid],
+                row_to_github_mapping,
+            )
+            .optional()
+            .map_err(Into::into)
+        })
+        .await
+    }
+
+    async fn lookup_review_body_mapping(
+        &self,
+        repo: &RepoId,
+        review_id: &ReviewId,
+        pr_number: u32,
+    ) -> Result<Option<crate::storage::GithubCommentMapping>> {
+        ensure_repo_id(repo)?;
+        let repo_str = repo.as_str().to_owned();
+        let rid = review_id.as_str().to_owned();
+        self.with_conn(move |conn| {
+            conn.query_row(
+                "SELECT github_node_id, github_rest_id, kind, kata_comment_id,
+                        kata_response_id, review_id, pr_number, thread_node_id
+                   FROM github_comment_map
+                  WHERE repo_id = ?1
+                    AND review_id = ?2
+                    AND pr_number = ?3
+                    AND kind = 'review_body'
+                  LIMIT 1",
+                params![repo_str, rid, pr_number],
+                row_to_github_mapping,
+            )
+            .optional()
+            .map_err(Into::into)
+        })
+        .await
+    }
+
+    async fn lookup_github_mapping_by_node_id(
+        &self,
+        repo: &RepoId,
+        github_node_id: &str,
+    ) -> Result<Option<crate::storage::GithubCommentMapping>> {
+        ensure_repo_id(repo)?;
+        let repo_str = repo.as_str().to_owned();
+        let node_id = github_node_id.to_owned();
+        self.with_conn(move |conn| {
+            conn.query_row(
+                "SELECT github_node_id, github_rest_id, kind, kata_comment_id,
+                        kata_response_id, review_id, pr_number, thread_node_id
+                   FROM github_comment_map
+                  WHERE repo_id = ?1 AND github_node_id = ?2",
+                params![repo_str, node_id],
+                row_to_github_mapping,
+            )
+            .optional()
+            .map_err(Into::into)
+        })
+        .await
+    }
 }
 
 // ---- shared row extractors ---------------------------------------------
+
+/// Build a [`GithubCommentMapping`] from a row whose columns are
+/// `(github_node_id, github_rest_id, kind, kata_comment_id,
+/// kata_response_id, review_id, pr_number, thread_node_id)` —
+/// shared by both lookup paths.
+fn row_to_github_mapping(
+    row: &Row<'_>,
+) -> rusqlite::Result<crate::storage::GithubCommentMapping> {
+    let kata_cid: Option<String> = row.get(3)?;
+    let kata_rid: Option<String> = row.get(4)?;
+    Ok(crate::storage::GithubCommentMapping {
+        github_node_id: row.get(0)?,
+        github_rest_id: row.get(1)?,
+        kind: row.get(2)?,
+        kata_comment_id: kata_cid.map(CommentId::new),
+        kata_response_id: kata_rid.map(ResponseId::new),
+        review_id: ReviewId::new(row.get::<_, String>(5)?),
+        pr_number: row.get(6)?,
+        thread_node_id: row.get(7)?,
+    })
+}
+
+/// SQL helper shared by `raw_insert_comment` and the transactional
+/// `raw_insert_comment_with_mapping`. Takes a generic
+/// connection-like handle so it works on both a top-level
+/// `Connection` and an open `Transaction`.
+fn exec_insert_comment(
+    conn: &rusqlite::Connection,
+    repo_str: &str,
+    comment: &Comment,
+) -> Result<()> {
+    let (line_start, line_end) = match &comment.lines {
+        Some(LineRange { start, end }) => (Some(*start), Some(*end)),
+        None => (None, None),
+    };
+    let external_author_json = match &comment.external_author {
+        Some(a) => Some(serde_json::to_string(a).map_err(|source| Error::Json {
+            context: "external_author".into(),
+            source,
+        })?),
+        None => None,
+    };
+    conn.execute(
+        "INSERT INTO comments
+            (comment_id, repo_id, review_id, session_id, schema_version, author,
+             created_at, patchset, anchor_change_id, anchor_commit_id, file, side,
+             line_start, line_end, review_wide, flag, body, external_author)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+        params![
+            comment.comment_id.as_str(),
+            repo_str,
+            comment.review_id.as_str(),
+            comment.session_id.as_str(),
+            comment.schema_version,
+            comment.author.as_str(),
+            comment.created_at,
+            comment.patchset,
+            comment.anchor_change_id.as_str(),
+            comment.anchor_commit_id.as_str(),
+            comment.file,
+            comment.side.map(side_to_str),
+            line_start,
+            line_end,
+            comment.review_wide as i64,
+            flag_to_str(comment.flag),
+            comment.body,
+            external_author_json,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Counterpart of [`exec_insert_comment`] for a response.
+fn exec_insert_response(
+    conn: &rusqlite::Connection,
+    repo_str: &str,
+    response: &Response,
+) -> Result<()> {
+    let review_id: String = conn
+        .query_row(
+            "SELECT review_id FROM comments WHERE comment_id = ?1",
+            params![response.in_reply_to.as_str()],
+            |row| row.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| Error::NotFound {
+            what: format!("comment {}", response.in_reply_to),
+        })?;
+    conn.execute(
+        "INSERT INTO responses
+            (response_id, repo_id, review_id, session_id, in_reply_to, schema_version,
+             author, created_at, action, body)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        params![
+            response.response_id.as_str(),
+            repo_str,
+            review_id,
+            response.session_id.as_str(),
+            response.in_reply_to.as_str(),
+            response.schema_version,
+            response.author.as_str(),
+            response.created_at,
+            action_to_str(response.action),
+            response.body,
+        ],
+    )?;
+    Ok(())
+}
+
+/// SQL helper for `github_comment_map` inserts. Same `ON CONFLICT
+/// DO NOTHING` shape as the trait method; idempotent on
+/// `(repo_id, github_node_id)`.
+fn exec_insert_github_mapping(
+    conn: &rusqlite::Connection,
+    repo_str: &str,
+    m: &crate::storage::GithubCommentMapping,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO github_comment_map
+            (repo_id, github_node_id, github_rest_id, kind,
+             kata_comment_id, kata_response_id, review_id, pr_number,
+             thread_node_id, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+         ON CONFLICT(repo_id, github_node_id) DO NOTHING",
+        params![
+            repo_str,
+            m.github_node_id,
+            m.github_rest_id,
+            m.kind,
+            m.kata_comment_id.as_ref().map(|c| c.as_str()),
+            m.kata_response_id.as_ref().map(|r| r.as_str()),
+            m.review_id.as_str(),
+            m.pr_number,
+            m.thread_node_id,
+            chrono::Utc::now().to_rfc3339(),
+        ],
+    )?;
+    Ok(())
+}
 
 fn row_to_api_token(row: &Row<'_>) -> rusqlite::Result<ApiToken> {
     // Columns: token_id, author, name, token_hash, prefix,
@@ -1309,13 +1634,24 @@ fn row_to_api_token(row: &Row<'_>) -> rusqlite::Result<ApiToken> {
 fn review_manifest_from_row(row: &Row<'_>) -> rusqlite::Result<ReviewManifest> {
     // Columns are: review_id, number, name, schema_version, revset,
     // bookmark, summary, created_by, created_at, current_patchset,
-    // patchsets_json, archived_at. The two listing/opening queries
-    // above project exactly that order; if you change one, change the
-    // other.
+    // patchsets_json, archived_at, github_pr. The listing/opening
+    // queries above project exactly that order; if you change one,
+    // change the other.
     let patchsets_json: String = row.get(10)?;
     let patchsets = serde_json::from_str(&patchsets_json).map_err(|e| {
         rusqlite::Error::FromSqlConversionFailure(10, rusqlite::types::Type::Text, Box::new(e))
     })?;
+    let github_pr_json: Option<String> = row.get(12)?;
+    let github_pr = match github_pr_json {
+        Some(s) => Some(serde_json::from_str(&s).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(
+                12,
+                rusqlite::types::Type::Text,
+                Box::new(e),
+            )
+        })?),
+        None => None,
+    };
     Ok(ReviewManifest {
         review_id: ReviewId::new(row.get::<_, String>(0)?),
         number: row.get(1)?,
@@ -1329,6 +1665,7 @@ fn review_manifest_from_row(row: &Row<'_>) -> rusqlite::Result<ReviewManifest> {
         current_patchset: row.get(9)?,
         patchsets,
         archived_at: row.get(11)?,
+        github_pr,
     })
 }
 
@@ -1340,6 +1677,17 @@ fn comment_from_row(row: &Row<'_>) -> rusqlite::Result<Comment> {
     let col_end: Option<u32> = row.get(14)?;
     let review_wide: i64 = row.get(15)?;
     let flag_str: String = row.get(16)?;
+    let external_author_json: Option<String> = row.get(18)?;
+    let external_author = match external_author_json {
+        Some(s) => Some(serde_json::from_str(&s).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(
+                18,
+                rusqlite::types::Type::Text,
+                Box::new(e),
+            )
+        })?),
+        None => None,
+    };
     let side = match side {
         Some(s) => Some(side_from_str(&s).map_err(|e| {
             rusqlite::Error::FromSqlConversionFailure(
@@ -1383,6 +1731,7 @@ fn comment_from_row(row: &Row<'_>) -> rusqlite::Result<Comment> {
         review_wide: review_wide != 0,
         flag,
         body: row.get(17)?,
+        external_author,
     })
 }
 
@@ -1568,6 +1917,7 @@ mod round_trip_tests {
             patchsets: vec![patchset],
             current_patchset: 1,
             archived_at: None,
+            github_pr: None,
         };
         let manifest = store.create_review(&repo, &manifest).await.expect("create_review");
 
@@ -1689,6 +2039,7 @@ mod round_trip_tests {
             review_wide: true,
             flag: Flag::Suggestion,
             body: "draft".into(),
+            external_author: None,
         };
         store.upsert_draft_comment(&repo, &comment).await.unwrap();
         let visit_op = OpId::new("op-visit");
@@ -1806,6 +2157,7 @@ mod round_trip_tests {
             review_wide: false,
             flag: Flag::Suggestion,
             body: "this slice".into(),
+            external_author: None,
         };
         store.upsert_draft_comment(&repo, &comment).await.unwrap();
 
@@ -1842,6 +2194,7 @@ mod round_trip_tests {
             review_wide: false,
             flag: Flag::MustDo,
             body: "whole-range".into(),
+            external_author: None,
         };
         store.upsert_draft_comment(&repo, &comment).await.unwrap();
 

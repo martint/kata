@@ -79,6 +79,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "api_tokens",
         sql: include_str!("../../migrations/V010__api_tokens.sql"),
     },
+    Migration {
+        version: 11,
+        name: "github_pr",
+        sql: include_str!("../../migrations/V011__github_pr.sql"),
+    },
 ];
 
 /// Bring `conn` up to the latest schema. Idempotent: re-running on an

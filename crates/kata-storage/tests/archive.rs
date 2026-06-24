@@ -58,6 +58,7 @@ fn review_manifest(review: &ReviewId, author: &Author) -> ReviewManifest {
         current_patchset: 1,
         summary: Some("Author-written summary.".into()),
         archived_at: None,
+        github_pr: None,
     }
 }
 
@@ -99,6 +100,7 @@ async fn seed_database(storage: &SqliteStorage) {
         review_wide: false,
         flag: Flag::MustDo,
         body: "this needs a doc comment\n".into(),
+    external_author: None,
     };
     let file_level = Comment {
         comment_id: kata_storage::ids::new_comment_id(),
@@ -153,6 +155,7 @@ async fn seed_database(storage: &SqliteStorage) {
         review_wide: true,
         flag: Flag::Question,
         body: "review-wide thought\n".into(),
+    external_author: None,
     };
     storage.upsert_draft_comment(&repo, &drafted).await.unwrap();
     storage
@@ -285,6 +288,7 @@ async fn import_handles_cross_session_responses() {
         review_wide: false,
         flag: Flag::MustDo,
         body: "fix this\n".into(),
+    external_author: None,
     };
     source.upsert_draft_comment(&repo, &target_comment).await.unwrap();
     source
