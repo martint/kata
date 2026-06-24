@@ -2306,6 +2306,48 @@ impl ReviewService {
         Ok(())
     }
 
+    /// Publish a kata session as a GitHub PR review. Wraps
+    /// [`github::publish::publish_session_to_github`] with the
+    /// extra context the route handler doesn't have: resolving the
+    /// review manifest, emitting the kata `SessionPublished`
+    /// event, and rejecting when the review isn't GH-bound.
+    pub async fn publish_session_to_github(
+        &self,
+        repo: &RepoId,
+        review: &ReviewId,
+        session: &SessionId,
+        author: &Author,
+        event: github::publish::PublishEvent,
+        body: Option<String>,
+    ) -> ServiceResult<github::publish::PublishCounts> {
+        let manifest = self.storage.open_review(repo, review).await?;
+        if manifest.github_pr.is_none() {
+            return Err(ServiceError::BadRequest(
+                "this review is not bound to a GitHub PR; use the regular Publish action".into(),
+            ));
+        }
+        let client = github::GithubClient::new();
+        let counts = github::publish::publish_session_to_github(
+            &*self.storage,
+            &client,
+            repo,
+            &manifest,
+            session,
+            author,
+            event,
+            body,
+        )
+        .await?;
+        let repo_name = self.repo_name(repo).unwrap_or_default();
+        // Same downstream event the regular publish_session
+        // emits — subscribers don't care which surface published.
+        self.emit(Event::SessionPublished {
+            repo: repo_name,
+            review_id: review.clone(),
+            session_id: session.clone(),
+        });
+        Ok(counts)
+    }
 
     pub async fn discard_session(
         &self,

@@ -30,6 +30,7 @@ impl IntoResponse for AppError {
             ServiceError::NotFound(_) => StatusCode::NOT_FOUND,
             ServiceError::BadRequest(_) => StatusCode::BAD_REQUEST,
             ServiceError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
+            ServiceError::Conflict { .. } => StatusCode::CONFLICT,
             ServiceError::Storage(kata_storage::Error::NotFound { .. }) => {
                 StatusCode::NOT_FOUND
             }
@@ -54,6 +55,16 @@ impl IntoResponse for AppError {
         if status.is_server_error() {
             tracing::error!(error = %message, "request failed");
         }
-        (status, Json(json!({ "error": message }))).into_response()
+        // `Conflict` carries a machine-readable `error_kind` the
+        // SPA branches on (e.g. head-drift → "head_drift"). Other
+        // errors emit just the prose for display.
+        let body = match &self.0 {
+            ServiceError::Conflict { kind, .. } => json!({
+                "error": message,
+                "error_kind": kind,
+            }),
+            _ => json!({ "error": message }),
+        };
+        (status, Json(body)).into_response()
     }
 }

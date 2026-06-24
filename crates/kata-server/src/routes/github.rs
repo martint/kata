@@ -3,8 +3,9 @@
 //! its own. See [`kata_service::github`] for the rationale.
 
 use axum::Json;
-use axum::extract::State;
-use kata_core::ReviewManifest;
+use axum::extract::{Path, State};
+use kata_core::{ReviewManifest, SessionId};
+use kata_service::github::publish::{PublishCounts, PublishEvent};
 use kata_service::github::{AuthStatus, GithubClient, GithubError};
 use serde::{Deserialize, Serialize};
 
@@ -52,6 +53,45 @@ pub struct GithubStatusResponse {
     /// Human-readable explanation when [`Self::connected`] is false
     /// — distinguishes "install gh" from "run `gh auth login`".
     pub error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PublishToGithubRequest {
+    /// `COMMENT` (default), `APPROVE`, or `REQUEST_CHANGES`. Maps
+    /// directly to GitHub's review `event` field.
+    #[serde(default = "default_event")]
+    pub event: PublishEvent,
+    /// Optional review-level body (rendered above the inline
+    /// comments on github.com). When omitted, the GH review has
+    /// no body and only the inline + issue comments show up.
+    #[serde(default)]
+    pub body: Option<String>,
+}
+
+fn default_event() -> PublishEvent {
+    PublishEvent::Comment
+}
+
+/// `POST /api/repos/{repo}/reviews/{n}/sessions/{session}/publish-github`
+/// — publish the kata session as a GitHub PR review. Refuses
+/// (BadRequest) when the kata review isn't bound to a GH PR.
+pub async fn publish_to_github(
+    State(state): State<AppState>,
+    Path((repo_name, review_number, session_id)): Path<(String, u32, String)>,
+    ViewerAuthor(author): ViewerAuthor,
+    Json(req): Json<PublishToGithubRequest>,
+) -> AppResult<Json<PublishCounts>> {
+    let repo = state.service.resolve_repo(&repo_name)?;
+    let review_id = state
+        .service
+        .resolve_review_number(&repo, review_number)
+        .await?;
+    let session = SessionId::new(session_id);
+    let counts = state
+        .service
+        .publish_session_to_github(&repo, &review_id, &session, &author, req.event, req.body)
+        .await?;
+    Ok(Json(counts))
 }
 
 /// `GET /api/github/status` — does this kata host have a working

@@ -120,6 +120,32 @@ impl GithubClient {
         run(cmd, None).await
     }
 
+    /// Typed `gh api <endpoint>` (GET). Symmetric with [`Self::post`].
+    pub async fn get<T: DeserializeOwned>(&self, endpoint: &str) -> GithubResult<T> {
+        let bytes = self.api_get(endpoint).await?;
+        serde_json::from_slice(&bytes).map_err(|e| GithubError::Parse(format!("get {endpoint}: {e}")))
+    }
+
+    /// `gh api <endpoint> --method POST --input -` — request body
+    /// piped in as JSON. Used by phase 6 (publish review, post
+    /// reply, post issue comment). Returns the typed response.
+    pub async fn post<T: DeserializeOwned>(
+        &self,
+        endpoint: &str,
+        body: &serde_json::Value,
+    ) -> GithubResult<T> {
+        let mut cmd = tokio::process::Command::new("gh");
+        cmd.arg("api")
+            .arg(endpoint)
+            .arg("--method")
+            .arg("POST")
+            .arg("--input")
+            .arg("-");
+        let bytes = serde_json::to_vec(body).expect("Value -> JSON bytes is infallible");
+        let out = run(cmd, Some(bytes)).await?;
+        serde_json::from_slice(&out).map_err(|e| GithubError::Parse(format!("post {endpoint}: {e}")))
+    }
+
     async fn api_stdin(
         &self,
         endpoint: &str,
