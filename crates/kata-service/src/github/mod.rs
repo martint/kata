@@ -13,6 +13,7 @@
 
 pub mod client;
 pub mod comments;
+pub mod publish;
 pub mod resolver;
 pub mod url;
 

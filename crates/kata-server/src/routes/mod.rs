@@ -66,6 +66,10 @@ fn attach_oidc_routes(api: Router<AppState>, state: &AppState) -> Router<AppStat
 fn attach_github_routes(api: Router<AppState>) -> Router<AppState> {
     api.route("/api/github/status", get(github::status))
         .route("/api/github/import", post(github::import))
+        .route(
+            "/api/repos/{repo_name}/reviews/{review_number}/sessions/{session_id}/publish-github",
+            post(github::publish_to_github),
+        )
 }
 
 fn api_routes() -> Router<AppState> {
