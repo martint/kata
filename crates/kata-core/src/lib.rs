@@ -14,8 +14,8 @@ pub use diff::{
     LineOrigin, RegularHunk,
 };
 pub use documents::{
-    Annotation, ApiToken, Comment, Flag, Patchset, RepoManifest, ResolutionAction, Response,
-    ReviewManifest, SCHEMA_VERSION, Session, SessionStatus,
+    Annotation, ApiToken, Comment, ExternalAuthor, Flag, GithubPr, Patchset, RepoManifest,
+    ResolutionAction, Response, ReviewManifest, SCHEMA_VERSION, Session, SessionStatus,
 };
 pub use ids::{
     AnnotationId, ApiTokenId, Author, Bookmark, ChangedFile, ChangeId, ColumnRange, CommentId,

@@ -48,6 +48,7 @@ fn review_manifest(review: &ReviewId, author: &Author) -> ReviewManifest {
         current_patchset: 1,
         summary: None,
         archived_at: None,
+        github_pr: None,
     }
 }
 
@@ -69,6 +70,7 @@ fn line_comment(session: &Session) -> Comment {
         review_wide: false,
         flag: Flag::MustDo,
         body: "this needs a doc comment\n".into(),
+    external_author: None,
     }
 }
 

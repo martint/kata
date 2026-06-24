@@ -764,6 +764,7 @@ impl ReviewService {
             }],
             current_patchset: 1,
             archived_at: None,
+            github_pr: None,
         };
         let manifest = self.storage.create_review(repo, &manifest).await?;
         self.pin_review_commits(&*jj, &manifest).await;
@@ -1976,6 +1977,7 @@ impl ReviewService {
             review_wide: input.review_wide,
             flag: input.flag,
             body: input.body,
+            external_author: None,
         };
         self.storage.upsert_draft_comment(repo, &comment).await?;
         Ok(comment)
