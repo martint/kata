@@ -15,6 +15,20 @@ pub struct ReviewRange {
     pub tip: Endpoint,
 }
 
+/// One configured git remote on a workspace. Read-only — kata never
+/// edits remotes; the operator owns `git remote add`. Used by the
+/// GitHub PR resolver to find which workspace's underlying git
+/// repo points at a given github.com `(owner, repo)`.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct GitRemote {
+    pub name: String,
+    /// Fetch URL as configured in `.git/config`. May be any form
+    /// git understands — `https://github.com/o/r.git`,
+    /// `git@github.com:o/r.git`, `ssh://git@github.com/o/r.git`,
+    /// or non-github URLs. The caller normalises before matching.
+    pub fetch_url: String,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Endpoint {
     pub change_id: ChangeId,
@@ -155,6 +169,65 @@ pub trait JjBackend: Send + Sync {
     /// Drop every pin created for `review` (on review deletion). Default
     /// no-op; see [`Self::pin_commits`].
     async fn unpin_review(&self, _review: &ReviewId) -> Result<()> {
+        Ok(())
+    }
+
+    /// Configured git remotes on this workspace's underlying git
+    /// repo. Default is an empty list so non-git backends and the
+    /// test stub don't have to invent shapes. Used by the GitHub PR
+    /// resolver to match a PR's `(owner, repo)` to a workspace.
+    async fn git_remotes(&self) -> Result<Vec<GitRemote>> {
+        Ok(Vec::new())
+    }
+
+    /// Fetch `refs/pull/<n>/head` from `remote` into the local
+    /// ref `refs/remotes/<remote>/kata-pr/<n>` so subsequent revset
+    /// operations can see the PR head as a normal commit. The ref
+    /// shape is a standard remote-tracking branch, which means
+    /// jj's normal `import_refs` path picks it up — no special-
+    /// case filter needed. Idempotent: re-running against an
+    /// already-fetched PR fast-forwards or no-ops. The `+` force-
+    /// update prefix is intentional — PRs get force-pushed, and
+    /// kata wants the new head, not a non-fast-forward error.
+    ///
+    /// `base_sha` is fetched separately. The base is on whatever
+    /// branch the PR targets; that branch may have advanced past
+    /// the PR's base since the workspace last fetched it, in which
+    /// case the base object isn't in the local store and the revset
+    /// `<base>..<head>` fails to resolve. We fetch the base SHA
+    /// directly (github.com allows fetch-by-SHA) and import it
+    /// alongside the head's bookmark so both endpoints of the
+    /// revset are visible.
+    ///
+    /// Default `unimplemented` so a misconfigured backend errors
+    /// loudly rather than silently dropping the fetch.
+    async fn git_fetch_pr_head(
+        &self,
+        _remote: &str,
+        _pr_number: u32,
+        _base_sha: &str,
+    ) -> Result<()> {
+        Err(crate::error::Error::Parse(
+            "git_fetch_pr_head is not implemented for this backend".into(),
+        ))
+    }
+
+    /// Drop the `refs/remotes/<remote>/kata-pr/<n>/{head,base}`
+    /// refs that [`Self::git_fetch_pr_head`] created, and tell jj
+    /// about the removal so the corresponding bookmarks drop out
+    /// of the view too. Called when a kata review bound to a
+    /// GitHub PR is deleted — otherwise the workspace accumulates
+    /// orphan `kata-pr/*@<remote>` bookmarks. `remote` is taken
+    /// from the manifest; pass `None` for legacy imports that
+    /// don't have one recorded (the impl falls back to scanning
+    /// every remote, which is incorrect across multi-remote
+    /// workspaces but unblocks cleanup). Best-effort: missing
+    /// refs are not an error.
+    async fn git_delete_pr_head(
+        &self,
+        _remote: Option<&str>,
+        _pr_number: u32,
+    ) -> Result<()> {
         Ok(())
     }
 }
