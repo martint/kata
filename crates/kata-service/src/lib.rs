@@ -4,6 +4,7 @@
 
 pub mod error;
 pub mod events;
+pub mod github;
 
 use std::collections::HashMap;
 use std::sync::Arc;

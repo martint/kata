@@ -13,7 +13,12 @@ futures = { workspace = true }
 kata-core = { workspace = true }
 kata-jj = { workspace = true }
 kata-storage = { workspace = true }
+# Only used for URL parsing in `github::url`. We could hand-roll
+# it for ~30 lines, but the workspace already pulls reqwest in
+# via kata-server, so the marginal cost here is nil.
+reqwest = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
