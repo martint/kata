@@ -1454,3 +1454,231 @@ section above. Stated once, for reference:
    `?demo=1`, the refresh hint — every behaviour the user has to
    know about is reachable from on-screen affordances or from the
    docs. Hidden shortcuts are escape hatches, not the primary path.
+
+---
+
+## 21. GitHub PR integration
+
+Kata can host the full review cycle on a github.com pull request
+without the reviewer leaving kata. The integration is intentionally
+narrow: a single-user, locally-hosted kata server delegates *all*
+GitHub I/O to the `gh` CLI on the host. Kata stores no GitHub
+credentials. The user runs `gh auth login` once (the standard
+GitHub CLI setup); kata reuses that authenticated session for every
+API call it makes.
+
+This shape is deliberately not the multi-tenant story; see
+[`docs/deploying.md`](deploying.md) for what that would require.
+
+### 21.1 Importing a PR
+
+The home screen exposes an "Import from GitHub PR" card when
+`gh` is connected (kata probes via `gh api user` and renders a
+precise disabled-note otherwise — "install gh" vs "run
+`gh auth login`"). Paste any github.com pull-request URL —
+`https://github.com/<owner>/<repo>/pull/<n>` with or without
+the `/files`, `/commits`, or fragment suffixes — and kata:
+
+1. Matches the PR's `(owner, repo)` against the git-remote URLs
+   of every registered workspace (case-insensitive). The first
+   match wins; **no auto-clone**: an unmatched URL surfaces an
+   error pointing the operator at `--workspace <name>=<path>`.
+2. Fetches the PR head and base into remote-tracking refs
+   under `refs/remotes/<remote>/kata-pr/<n>/{head,base}` (the
+   base by SHA, since it may sit on a branch the workspace
+   hasn't pulled lately) and runs `jj git import` so both
+   commits land in jj's view. Putting both under the same
+   per-PR prefix lets review deletion clean up everything with
+   one ref-scoped scan.
+3. Calls `gh api repos/<o>/<r>/pulls/<n>` for the PR metadata
+   (base/head refs + SHAs, title, body).
+4. Creates a kata review pinned to `<base_sha>..<head_sha>` with
+   the review name `PR #<n>: <title>`, body = PR body, and
+   `manifest.github_pr = { owner, repo, number, html_url,
+   original_base_sha, original_head_sha }`. The two SHAs are
+   captured at import time and drive the head-drift check at
+   publish (§21.4).
+5. Imports the existing PR discussion (§21.3).
+
+Re-importing the same PR is **idempotent**: kata detects the
+existing kata review by its `github_pr.(owner, repo, number)`
+(case-insensitive) and returns it instead of creating a duplicate.
+The re-import re-fetches the PR head and re-runs the discussion
+import — which is itself idempotent at the per-comment level, so
+the net effect is a refresh.
+
+**Closed and merged PRs are importable.** The PR's `state` does
+not gate import — a historical PR can be pulled in for read-only
+review of how the discussion went. Publishing back to a closed
+PR is still allowed (GitHub itself accepts new comments on closed
+threads); kata does not invent a separate "frozen" mode for these
+reviews.
+
+### 21.2 Workspace resolution
+
+Kata only imports PRs whose `(owner, repo)` matches a remote URL
+on a workspace registered at startup. Recognised remote-URL
+shapes: `https://github.com/<o>/<r>(.git)?`,
+`git@github.com:<o>/<r>(.git)?`,
+`ssh://git@github.com/<o>/<r>(.git)?`,
+`git://github.com/<o>/<r>(.git)?`. Trailing path components, ports,
+and user-info segments are ignored. Anything that doesn't resolve
+to a `github.com` host with a `<o>/<r>` path is skipped.
+
+GitHub Enterprise (GHE) hostnames are not yet supported. The
+remote-URL parser and the `gh` CLI both ground out on github.com
+in this iteration.
+
+### 21.3 Discussion import
+
+A single GraphQL query (over `gh api graphql`) fetches three
+sources in one round-trip:
+
+- **Top-level (issue) comments** on the PR conversation →
+  imported as review-wide kata comments (no file/lines anchor).
+- **Review summaries** — a `Review` with a non-empty body, with
+  the review state prepended (`**APPROVED** — …`) so the reader
+  knows what kind of feedback they're looking at. State-only
+  reviews ("LGTM" with no body, `event=COMMENTED`, no inline
+  comments) are dropped — the inline comments themselves carry
+  the signal.
+- **Review threads** — each thread becomes one kata comment (the
+  thread's anchor comment) plus N kata responses (the replies).
+  Thread anchors are line-level: kata takes `(path, line/
+  startLine, diffSide)` from the thread and resolves the
+  comment's `(original)commit.oid` against the local jj store
+  to recover an `anchor_change_id`. Anchors that can't be
+  resolved (commit unknown locally) degrade to a review-wide
+  anchor rather than dropping the comment.
+
+Authorship: imported comments and responses carry the GitHub
+author's identity in `external_author = { source: "github",
+login, id, avatar_url, html_url }` (visible identity — UI
+renders the avatar + `@login` link + "from github" chip). The
+structural `author` is a synthetic ghost of the form
+`gh:<login>` so kata's session model (one session per author)
+keeps working unchanged for ghost authors.
+
+Imported items land in a per-author `Session` with
+`status = Published` — no draft-publish round-trip, no toolbar
+flicker. Bots and deleted users are skipped rather than rendered
+with a placeholder.
+
+Idempotency rides on a per-repo `github_comment_map` table keyed
+by GitHub's GraphQL node id. A re-import skips anything already
+mapped; only new replies / comments since the last import are
+inserted.
+
+**Known limits** (queued for follow-up, called out so reviewers
+know what to expect):
+- Pagination is `first: 100` on each connection; PRs that exceed
+  it emit a warn log and import the first page.
+- Outdated and resolved state are encoded as `_(outdated)_` /
+  `_(resolved)_` markdown prefixes on the body — kata doesn't
+  yet have first-class fields for those.
+- Suggestion-block code fences imported as plain text.
+
+### 21.4 Publishing back
+
+When the kata review has `github_pr` set, the toolbar's "Publish"
+button becomes "Publish to GitHub". The kata session's drafts get
+partitioned and pushed to github.com:
+
+- **Replies to imported threads** — kata responses whose
+  `in_reply_to` points at a comment in `github_comment_map` →
+  `POST /pulls/<n>/comments` with `in_reply_to=<rest_id>` so
+  github threads them onto the right conversation. Posted before
+  the bundled review so they appear in order on github.com.
+- **New inline comments** — kata comments with `file`+`lines`+
+  `side` set and `review_wide = false` → bundled into the GH
+  review payload's `comments[]` array.
+- **Review-wide kata comments** (no file/lines, or
+  `review_wide = true`) → `POST /issues/<n>/comments`. GitHub's
+  review API doesn't bundle these so they live as conversation
+  comments on the PR.
+- **Bundled review** — `POST /pulls/<n>/reviews` with
+  `event = COMMENT | APPROVE | REQUEST_CHANGES`, the chosen
+  body, and the inline `comments[]` payload. Skipped entirely
+  when there's nothing inline and no body — no empty review
+  stubs left on github.com.
+
+MVP exposes `event = COMMENT` in the UI; the API accepts
+APPROVE / REQUEST_CHANGES and the publish handler routes them
+correctly, but the SPA doesn't yet surface the choice. A
+follow-up split-button will.
+
+After GH returns, kata's local session is published (same code
+path the regular Publish takes) so drafts become locally
+visible, and the new github ids land in `github_comment_map`
+so subsequent imports don't re-pull them as new comments.
+
+**Head-drift refusal.** Before posting, kata re-fetches the PR
+head SHA. If it differs from `github_pr.original_head_sha`
+captured at import time, kata refuses with an actionable
+message ("re-import the PR to anchor inline comments against
+the new head, then publish"). Inline comments would otherwise
+land on whatever the new content happens to be at the same
+line numbers — almost always the wrong place after a rebase or
+force-push. The SPA surfaces the refusal as a confirm dialog
+offering one-click "re-import + retry" so the user doesn't
+have to navigate home and paste the URL again; the existing
+imported discussion stays in place and only the head SHA +
+any new GitHub comments since the last import are refreshed.
+
+**Failure mode.** Publishing isn't transactional across HTTP
+calls. If a step fails mid-way (replies posted, review POST
+rejected), kata leaves the local session in draft and logs
+what made it through. A retry skips already-mapped items via
+the `github_comment_map` dedup — every individual item kata
+posts (inline comment, issue comment, threaded reply, *and*
+the wrapping review's body) lands a mapping row keyed off its
+github.com node id, and the dedup check is the first thing
+each publish loop runs. The wrapping review body is tracked
+under a synthetic `kind=review_body` mapping row scoped to
+`(review_id, pr_number)`; the same row covers the deep-
+fallback path where the bundle and the empty-comments shell
+both 422 and the body lands as an issue comment instead.
+
+### 21.5 Branch lifecycle
+
+Imported PRs leave two remote-tracking bookmarks per PR —
+`kata-pr/<n>/head@<remote>` and `kata-pr/<n>/base@<remote>` —
+on the workspace, pointing at the PR head and base at import
+time. The shapes are standard tracking refs under
+`refs/remotes/<remote>/kata-pr/<n>/{head,base}` — grep-able
+with `git for-each-ref '**/kata-pr/*'`, listable via
+`jj bookmark list --remote <remote>`, and survive `jj util gc`.
+Manifest records the `remote_name` at import time so review
+deletion scopes the ref cleanup to the right remote — without
+it, two PRs sharing a number across different remotes would
+clobber each other's refs on delete. Abandoning a kata review
+without deleting it leaves both bookmarks in place until the
+operator cleans up manually.
+
+### 21.6 Explicitly out of scope (this iteration)
+
+These are not bugs, they're deliberate cuts kata makes to keep
+the integration narrow:
+
+- **Multi-tenant deployments.** Every github.com action attributes
+  to whoever ran `gh auth login` on the kata host. Sharing one
+  kata server across users would attribute everybody's reviews
+  to that one identity. Add per-user OAuth (the originally-
+  drafted phase-1) to support team deployments.
+- **GitHub Enterprise.** github.com only.
+- **Webhook-driven sync.** Refresh is pull-only (re-import).
+- **Merging the PR from kata.** Use github.com.
+- **Editing or deleting imported comments from kata.** Replies
+  and resolves only.
+- **Approving / requesting changes from the UI.** The API
+  supports it; the SPA doesn't yet wire it up.
+- **Resolve/unresolve thread mutations on publish.** Imported
+  thread state is read-only on the github.com side for now.
+- **Suggestion-block round-trip.** GitHub's `suggestion` code
+  fences import as plain text; publishing them back is the
+  same.
+- **PRs from forks where the head repo differs from the base.**
+  The `refs/pull/<n>/head` ref on the base repo points at the
+  fork head, so the fetch works, but kata's resolver matches
+  against the base repo's remote URL only. Fork-specific
+  handling would need its own pass.

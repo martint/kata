@@ -26,7 +26,10 @@ before it lands. Kata is built around that:
 ## Try it
 
 Requires Rust 1.95+ and [`bun`](https://bun.com/) for the embedded
-web bundle.
+web bundle. A `git` binary on `PATH` is required at runtime
+(kata's jj backend shells out for fetches). The optional GitHub PR
+integration additionally requires the [`gh`](https://cli.github.com/)
+CLI to be installed and authenticated (`gh auth login`).
 
 ```sh
 cargo build --release
@@ -67,6 +70,26 @@ The default bind is loopback-only and the default auth trusts
 client-supplied identity — fine for a single-user laptop, **wrong
 for anything shared**. For team deployments — TLS, OIDC, header-
 based auth, agent API tokens — see [`docs/deploying.md`](docs/deploying.md).
+
+## Reviewing GitHub pull requests
+
+Kata can host the full review cycle on a github.com PR — import the
+discussion, draft locally, publish back as a GitHub review — without
+leaving kata. Prerequisites: `gh` installed and authenticated, and a
+registered `--workspace` whose git remote (`origin` or otherwise)
+points at the PR's repo.
+
+On the home screen, paste a PR URL into the "Import from GitHub PR"
+card. Kata fetches the PR head into the matching workspace, creates
+a review pinned to `<base>..<head>`, and pulls existing PR
+discussion in as published kata comments (ghost-attributed to the
+original GitHub authors). When you publish your drafts, the
+toolbar's button becomes "Publish to GitHub" — replies thread onto
+the right conversations on github.com, new inline comments bundle
+into a fresh GH review, and the local kata session publishes
+in lockstep. Spec details in [`docs/SPEC.md`](docs/SPEC.md) §21;
+deployment notes (single-user model, what's out of scope) in
+[`docs/deploying.md`](docs/deploying.md).
 
 ## How a review works
 

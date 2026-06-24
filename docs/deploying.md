@@ -288,3 +288,116 @@ Operational implications:
   refs), the review degrades gracefully rather than failing — it
   loads with comments intact and a "diff unavailable" banner
   instead of erroring out. See `docs/SPEC.md` §10.4.
+
+## GitHub PR integration
+
+Kata can drive the full review cycle on a github.com pull request:
+paste the PR URL, kata imports the discussion, you draft in kata,
+publish back as a GitHub review. Full spec in `docs/SPEC.md` §21;
+deployment-specific notes follow.
+
+### How auth works (and why this is single-user)
+
+Kata delegates *every* GitHub API call to the
+[`gh`](https://cli.github.com/) CLI on the host. There is no
+in-process OAuth client, no callback URL, and kata stores zero
+GitHub credentials. The operator runs `gh auth login` once on the
+machine kata runs on; kata reuses that authenticated session for
+every read and write it makes against github.com.
+
+The trade kata makes:
+
+- **Pre-approved OAuth app.** `gh` ships under GitHub's own
+  pre-approved OAuth App, so it sidesteps the per-org policy
+  gauntlet a custom OAuth app would otherwise face (SAML SSO
+  authorize step, OAuth-App access restrictions). Practically:
+  if `gh api repos/<your-org>/<your-repo>/pulls/<n>` works at the
+  command line, kata's import will work too. If it doesn't, fix
+  it at the `gh` level (`gh auth login --hostname github.com`,
+  `gh auth refresh -s repo`, click the SAML authorize link `gh`
+  prints, ask an org owner to approve the app, etc.) — kata
+  inherits whatever you've authorized for `gh`.
+
+- **Per-machine, not per-user.** Every action kata posts to
+  github.com attributes to whoever ran `gh auth login` on the
+  kata host. There is no per-user identity layer inside kata
+  for the GitHub side — the kata HTTP `--auth-mode` controls
+  who can drive *kata*, but every github.com action is signed
+  by the single configured `gh` identity. This is fine for a
+  single-user, locally-hosted kata. **Do not deploy this mode
+  for a shared kata server**: multiple kata users would
+  collapse onto one github identity, attributing everyone's
+  reviews to the gh-auth account.
+
+Shared-team deployments would need per-user GitHub OAuth, which
+isn't currently wired up (an earlier draft of this integration
+went there and was deliberately scoped out — see the §21.6
+out-of-scope list in `docs/SPEC.md`).
+
+### Operator checklist
+
+1. Install `gh`:
+   `brew install gh` / `apt install gh` / etc., or see
+   [cli.github.com](https://cli.github.com/).
+2. Authenticate: `gh auth login`. Choose `github.com`, HTTPS,
+   "login with a web browser" is the standard path. After it
+   completes, `gh auth status` should report you're logged in,
+   and `gh api user` should return your profile JSON.
+3. Ensure the workspaces kata reviews live in have a git remote
+   pointing at the github.com repo whose PRs you intend to
+   import. `git remote -v` from the workspace should list
+   `https://github.com/<owner>/<repo>(.git)?` or
+   `git@github.com:<owner>/<repo>(.git)?`. Either form works.
+4. Restart kata (no new flags — kata probes `gh` lazily). The
+   home screen's "Import from GitHub PR" card appears when
+   `gh api user` succeeds; if it doesn't, the card shows a
+   precise reason ("install gh" vs "run `gh auth login`").
+
+### When import fails
+
+Common failure modes and what to check, in roughly the order
+you'll hit them:
+
+- **"no registered workspace has a git remote pointing at
+  github.com/&lt;o&gt;/&lt;r&gt;"** — kata won't auto-clone unknown
+  repos. Register the workspace with
+  `--workspace <name>=<path>` at startup; the workspace must be
+  a jj/git workspace whose `git remote -v` lists that repo.
+- **"the `gh` CLI is not authenticated"** — run
+  `gh auth login`.
+- **"GitHub returned 403 ... organization has enabled OAuth App
+  access restrictions"** — your org restricts third-party OAuth
+  Apps and `gh` hasn't been approved. Almost always already-
+  approved in practice; if not, an org owner needs to approve
+  the GitHub CLI app at
+  `https://github.com/orgs/<your-org>/policies/applications`.
+- **"SAML SSO authorization required"** — your org enforces
+  SAML SSO and your `gh` token hasn't been SSO-authorized for
+  it. Run `gh auth refresh -s <scope>` or click the per-org
+  authorize URL `gh` prints in the error. After re-running,
+  retry the kata import.
+- **"the PR head moved since import"** on publish — the PR was
+  force-pushed or rebased after you imported. Re-import the
+  PR (paste the same URL again) to anchor inline comments
+  against the new head, then publish.
+
+### Workspace housekeeping
+
+Each imported PR creates two remote-tracking bookmarks per PR
+on the matching workspace — `kata-pr/<n>/head@<remote>` and
+`kata-pr/<n>/base@<remote>`. Deleting the kata review drops
+both (scoped to the recorded remote so same-numbered PRs from
+different remotes don't collide). Abandoning a review without
+deleting leaves them in place. To clean up manually:
+
+```sh
+jj bookmark forget --include-remotes 'glob:kata-pr/*'
+```
+
+Or via git directly:
+
+```sh
+git -C <workspace> for-each-ref --format='%(refname)' '**/kata-pr/*' \
+  | xargs -r -n1 git -C <workspace> update-ref -d
+jj git import   # so jj's view drops the removed bookmarks
+```
