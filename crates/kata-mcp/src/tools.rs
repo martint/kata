@@ -197,6 +197,7 @@ impl ReviewMcp {
                     bookmark,
                     created_by: self.author.clone(),
                     summary,
+                    github_pr: None,
                 },
             )
             .await

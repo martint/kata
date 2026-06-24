@@ -12,6 +12,7 @@ mod author;
 mod browse;
 mod comments;
 mod events;
+mod github;
 mod responses;
 mod reviews;
 mod sessions;
@@ -19,7 +20,7 @@ mod sessions;
 pub use author::{Actor, ViewerAuthor};
 
 pub fn router(state: AppState) -> Router {
-    attach_oidc_routes(api_routes(), &state)
+    attach_github_routes(attach_oidc_routes(api_routes(), &state))
         .with_state(state)
         .layer(TraceLayer::new_for_http())
 }
@@ -27,14 +28,14 @@ pub fn router(state: AppState) -> Router {
 pub fn router_with_assets(state: AppState, web_dir: &Path) -> Router {
     let index = web_dir.join("index.html");
     let serve_dir = ServeDir::new(web_dir).not_found_service(ServeFile::new(index));
-    attach_oidc_routes(api_routes(), &state)
+    attach_github_routes(attach_oidc_routes(api_routes(), &state))
         .fallback_service(get_service(serve_dir))
         .with_state(state)
         .layer(TraceLayer::new_for_http())
 }
 
 pub fn router_with_embedded_assets(state: AppState) -> Router {
-    attach_oidc_routes(api_routes(), &state)
+    attach_github_routes(attach_oidc_routes(api_routes(), &state))
         .fallback(axum::routing::get(crate::embedded::handler))
         .with_state(state)
         .layer(TraceLayer::new_for_http())
@@ -57,6 +58,14 @@ fn attach_oidc_routes(api: Router<AppState>, state: &AppState) -> Router<AppStat
         .route("/auth/logout", get(crate::oidc::logout))
         .with_state(rt);
     api.merge(oidc)
+}
+
+/// `/api/github/{status,import}`. All GitHub I/O delegates to the
+/// `gh` CLI (see [`kata_service::github`]) — there is no per-user
+/// OAuth state and no callback URL.
+fn attach_github_routes(api: Router<AppState>) -> Router<AppState> {
+    api.route("/api/github/status", get(github::status))
+        .route("/api/github/import", post(github::import))
 }
 
 fn api_routes() -> Router<AppState> {

@@ -737,6 +737,7 @@ impl ReviewService {
             bookmark,
             created_by,
             summary,
+            github_pr,
         } = params;
         let range = jj.resolve_range(&revset).await?;
         let now = Utc::now();
@@ -765,7 +766,7 @@ impl ReviewService {
             }],
             current_patchset: 1,
             archived_at: None,
-            github_pr: None,
+            github_pr,
         };
         let manifest = self.storage.create_review(repo, &manifest).await?;
         self.pin_review_commits(&*jj, &manifest).await;
@@ -1693,6 +1694,7 @@ impl ReviewService {
     ) -> ServiceResult<()> {
         let manifest = self.storage.open_review(repo, review).await?;
         ensure_creator_or_admin(actor, is_admin, &manifest, "delete it")?;
+        let github_pr = manifest.github_pr.clone();
         self.storage.delete_review(repo, review).await?;
         // Drop the review's pin refs so its now-orphaned commits become
         // collectable again. Best-effort: an unregistered repo or a
@@ -1701,6 +1703,22 @@ impl ReviewService {
         if let Ok(jj) = self.jj_for(repo) {
             if let Err(e) = jj.unpin_review(review).await {
                 tracing::warn!(review = %review, error = ?e, "failed to unpin deleted review");
+            }
+            // If this was a GH-PR review, drop the kata/pr/<n> ref
+            // and the corresponding jj bookmark so the workspace
+            // doesn't accumulate orphans. Best-effort, same as
+            // unpin.
+            if let Some(pr) = github_pr.as_ref() {
+                // `None` for manifests written before the remote
+                // was recorded; the impl falls back to an all-
+                // remotes scan in that case.
+                let remote = (!pr.remote_name.is_empty()).then(|| pr.remote_name.as_str());
+                if let Err(e) = jj.git_delete_pr_head(remote, pr.number).await {
+                    tracing::warn!(
+                        review = %review, pr = pr.number, error = ?e,
+                        "failed to drop kata/pr branch for deleted review",
+                    );
+                }
             }
         }
         let repo_name = self.repo_name(repo).unwrap_or_default();
@@ -1887,6 +1905,365 @@ impl ReviewService {
         Ok(())
     }
 
+    /// Match `pr` against the registered workspaces by git-remote
+    /// URL. Returns the first workspace whose remotes include one
+    /// pointing at `pr.owner/pr.repo`. Errors with
+    /// [`ServiceError::BadRequest`] when no workspace matches — per
+    /// the MVP scope, kata does not auto-clone unknown repos. The
+    /// operator must have already registered the workspace via
+    /// `--workspace` at startup.
+    ///
+    /// Determinism: workspaces are visited in registration order;
+    /// each workspace's remotes are visited in alphabetical name
+    /// order (see [`kata_jj::JjBackend::git_remotes`]).
+    pub async fn resolve_pr_workspace(
+        &self,
+        pr: &github::PullRequestRef,
+    ) -> ServiceResult<github::ResolvedPrWorkspace> {
+        // Snapshot entries up front so we don't hold the ArcSwap
+        // guard across `.await` (mirrors `repos_containing_commit`).
+        let entries: Vec<RepoEntry> = {
+            let snap = self.registry.load();
+            snap.by_name
+                .iter()
+                .filter_map(|(_, id)| snap.repos.get(id).cloned())
+                .collect()
+        };
+        for entry in entries {
+            let remotes = match entry.jj.git_remotes().await {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::debug!(
+                        repo = %entry.summary.name, error = ?e,
+                        "resolve_pr_workspace: git_remotes failed; skipping",
+                    );
+                    continue;
+                }
+            };
+            for remote in remotes {
+                let Some(parsed) = github::parse_github_remote(&remote.fetch_url) else {
+                    continue;
+                };
+                if parsed.matches(pr) {
+                    return Ok(github::ResolvedPrWorkspace {
+                        repo: entry.summary.repo_id.clone(),
+                        repo_name: entry.summary.name.clone(),
+                        remote_name: remote.name,
+                    });
+                }
+            }
+        }
+        Err(ServiceError::BadRequest(format!(
+            "no registered workspace has a git remote pointing at \
+             github.com/{}/{}. Register it with --workspace <name>=<path> \
+             where <path> is a jj/git workspace whose `git remote -v` lists \
+             that repo, then retry.",
+            pr.owner, pr.repo,
+        )))
+    }
+
+    /// Find the kata review (if any) in `repo` whose `github_pr`
+    /// matches `pr_ref`'s `(owner, repo, number)`. Case-insensitive
+    /// on owner+repo to align with github.com's own canonicalisation.
+    /// Returns the first match in registration order; in practice
+    /// at most one review is ever bound to a given PR.
+    pub async fn find_review_for_pr(
+        &self,
+        repo: &RepoId,
+        pr_ref: &github::PullRequestRef,
+    ) -> ServiceResult<Option<ReviewManifest>> {
+        let listings = self.storage.list_reviews(repo).await?;
+        let want_owner = pr_ref.owner.to_lowercase();
+        let want_repo = pr_ref.repo.to_lowercase();
+        for summary in listings {
+            let Some(gh) = summary.manifest.github_pr.as_ref() else {
+                continue;
+            };
+            if gh.number == pr_ref.number
+                && gh.owner.to_lowercase() == want_owner
+                && gh.repo.to_lowercase() == want_repo
+            {
+                return Ok(Some(summary.manifest));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Fetch `refs/pull/<n>/head` + the PR's `base_sha` from
+    /// `remote` into the given workspace. Both endpoints have to
+    /// be visible to jj before a `<base>..<head>` revset will
+    /// resolve — the head is fetched as a local kata/pr/<n>
+    /// bookmark, the base by direct fetch-by-SHA. Idempotent.
+    pub async fn fetch_github_pr_head(
+        &self,
+        repo: &RepoId,
+        remote: &str,
+        pr_number: u32,
+        base_sha: &str,
+    ) -> ServiceResult<()> {
+        let jj = self.jj_for(repo)?;
+        jj.git_fetch_pr_head(remote, pr_number, base_sha).await?;
+        Ok(())
+    }
+
+    /// End-to-end import of a github.com PR as a kata review:
+    /// parse the URL, find the matching workspace, fetch the PR
+    /// head into it, hit the GitHub API for metadata, and create
+    /// a kata review pinned to `<base_sha>..<head_sha>` with
+    /// `github_pr` populated. Returns the freshly-created manifest;
+    /// the caller is responsible for turning that into an HTTP /
+    /// MCP response shape.
+    ///
+    /// Phase 5 will extend this to also pull existing PR comments
+    /// in as published kata comments; this phase creates the empty
+    /// kata review.
+    pub async fn import_github_pr(
+        &self,
+        author: &Author,
+        pr_url: &str,
+    ) -> ServiceResult<ImportedGithubPr> {
+        let pr_ref = github::parse_pull_request_url(pr_url)
+            .map_err(|e| ServiceError::BadRequest(e.to_string()))?;
+        let workspace = self.resolve_pr_workspace(&pr_ref).await?;
+        // Idempotency: if a kata review for this exact PR
+        // (workspace + owner/repo/number) already exists, re-use it
+        // instead of creating a duplicate. The per-comment dedup in
+        // `import_pr_discussion` then makes the second pass a
+        // refresh (only new GH comments since the last import land).
+        if let Some(mut existing) =
+            self.find_review_for_pr(&workspace.repo, &pr_ref).await?
+        {
+            tracing::info!(
+                pr = pr_ref.number,
+                review = %existing.review_id,
+                "reusing existing kata review for PR; running discussion refresh",
+            );
+            let client = github::GithubClient::new();
+            // Fetch live PR metadata so we know whether head/base
+            // moved since the last import. This drives the patchset
+            // advance + github_pr SHA update below — without those,
+            // a subsequent publish-to-github hits the head-drift
+            // refusal even after a "re-import" (the manifest still
+            // remembers the old head).
+            let meta = client.fetch_pr(&pr_ref).await.map_err(github_error_to_service)?;
+            // Re-fetch the PR head into the kata/pr/<n> ref so jj
+            // sees the new commits.
+            let _ = self
+                .fetch_github_pr_head(
+                    &workspace.repo,
+                    &workspace.remote_name,
+                    pr_ref.number,
+                    &meta.base.sha,
+                )
+                .await;
+            // Advance the patchset when the head or base SHA moved.
+            // Mirrors `refresh_review`'s patchset-append logic so the
+            // GH-PR path participates in kata's normal drift-handling
+            // (the previous patchset's comments stay anchored to the
+            // old head; new comments anchor to the new head).
+            let jj = self.jj_for(&workspace.repo)?;
+            let old_head = existing
+                .github_pr
+                .as_ref()
+                .map(|p| p.original_head_sha.clone())
+                .unwrap_or_default();
+            let head_moved = meta.head.sha != old_head;
+            if head_moved {
+                let new_revset = format!("{}..{}", meta.base.sha, meta.head.sha);
+                let range = jj.resolve_range(&RevSet::new(new_revset.clone())).await?;
+                let current = existing.current().clone();
+                let same_tip_change = range.tip.change_id == current.tip_change;
+                let descends = jj
+                    .is_ancestor(&current.tip_commit, &range.tip.commit_id)
+                    .await
+                    .unwrap_or(false);
+                let parent_patchset = if same_tip_change || descends {
+                    Some(current.n)
+                } else {
+                    None
+                };
+                let next_n = existing.patchsets.iter().map(|p| p.n).max().unwrap_or(0) + 1;
+                existing.patchsets.push(Patchset {
+                    n: next_n,
+                    base_change: range.base.change_id,
+                    base_commit: range.base.commit_id,
+                    tip_change: range.tip.change_id,
+                    tip_commit: range.tip.commit_id,
+                    recorded_at: Utc::now(),
+                    parent_patchset,
+                });
+                existing.current_patchset = next_n;
+                existing.revset = RevSet::new(new_revset);
+                if let Some(gh) = existing.github_pr.as_mut() {
+                    gh.original_head_sha = meta.head.sha.clone();
+                    gh.original_base_sha = meta.base.sha.clone();
+                    gh.html_url = meta.html_url.clone();
+                    // Refresh the remote name too — a workspace
+                    // can in principle rename its remote between
+                    // imports; the manifest should reflect the
+                    // remote used right now.
+                    gh.remote_name = workspace.remote_name.clone();
+                }
+                self.storage.update_review(&workspace.repo, &existing).await?;
+                self.pin_review_commits(&*jj, &existing).await;
+                let repo_name = self.repo_name(&workspace.repo).unwrap_or_default();
+                self.emit(Event::ReviewUpdated {
+                    repo: repo_name,
+                    review_id: existing.review_id.clone(),
+                });
+            }
+            match github::comments::import_pr_discussion(
+                &*self.storage,
+                &*jj,
+                &client,
+                &workspace.repo,
+                &existing,
+                &pr_ref,
+            )
+            .await
+            {
+                Ok(counts) => tracing::info!(
+                    pr = pr_ref.number,
+                    head_moved,
+                    issue_comments = counts.issue_comments,
+                    review_summaries = counts.review_summaries,
+                    threads = counts.threads,
+                    thread_replies = counts.thread_replies,
+                    skipped = counts.skipped_already_mapped,
+                    "refresh: imported new PR discussion items",
+                ),
+                Err(e) => tracing::warn!(
+                    pr = pr_ref.number, error = ?e,
+                    "refresh: discussion import failed",
+                ),
+            }
+            return Ok(ImportedGithubPr {
+                repo_name: workspace.repo_name,
+                review: existing,
+            });
+        }
+        // All GitHub I/O delegates to the host's `gh` CLI — no
+        // per-user token plumbing inside kata. `gh` carries the
+        // user's own identity and org authorizations.
+        let client = github::GithubClient::new();
+        let meta = client
+            .fetch_pr(&pr_ref)
+            .await
+            .map_err(github_error_to_service)?;
+        // Fetch BEFORE resolve_range — the revset references the
+        // head SHA, and that object only lands in the local store
+        // after `git fetch`.
+        self.fetch_github_pr_head(
+            &workspace.repo,
+            &workspace.remote_name,
+            pr_ref.number,
+            &meta.base.sha,
+        )
+        .await?;
+        let revset_expr = format!("{}..{}", meta.base.sha, meta.head.sha);
+        let github_pr = kata_core::GithubPr {
+            owner: pr_ref.owner.clone(),
+            repo: pr_ref.repo.clone(),
+            number: pr_ref.number,
+            html_url: meta.html_url.clone(),
+            original_head_sha: meta.head.sha.clone(),
+            original_base_sha: meta.base.sha.clone(),
+            remote_name: workspace.remote_name.clone(),
+        };
+        let params = CreateReviewParams {
+            // Distinct from a native review name: leading `PR #N: `
+            // makes the home-screen listing self-explanatory.
+            name: format!("PR #{}: {}", pr_ref.number, meta.title),
+            revset: RevSet::new(revset_expr),
+            // Reuse the PR head branch name as the kata bookmark
+            // hint. Cosmetic; the bookmark isn't the source of
+            // truth for what's in the review.
+            bookmark: Some(meta.head.ref_name.clone()),
+            created_by: author.clone(),
+            summary: meta.body.clone().filter(|s| !s.is_empty()),
+            github_pr: Some(github_pr),
+        };
+        let manifest = self.create_review(&workspace.repo, params).await?;
+        // Best-effort: pull existing PR discussion into the new
+        // kata review so the reviewer lands on a populated thread,
+        // not an empty one. A failure here doesn't roll the review
+        // back — the user can refresh in a follow-up.
+        let jj = self.jj_for(&workspace.repo)?;
+        match github::comments::import_pr_discussion(
+            &*self.storage,
+            &*jj,
+            &client,
+            &workspace.repo,
+            &manifest,
+            &pr_ref,
+        )
+        .await
+        {
+            Ok(counts) => {
+                tracing::info!(
+                    pr = pr_ref.number,
+                    issue_comments = counts.issue_comments,
+                    review_summaries = counts.review_summaries,
+                    threads = counts.threads,
+                    thread_replies = counts.thread_replies,
+                    "imported PR discussion",
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    pr = pr_ref.number,
+                    error = ?e,
+                    "PR discussion import failed; review created without comments",
+                );
+            }
+        }
+        Ok(ImportedGithubPr {
+            repo_name: workspace.repo_name,
+            review: manifest,
+        })
+    }
+}
+
+/// Bundle returned by [`ReviewService::import_github_pr`]. The
+/// `repo_name` is the workspace slug (URL path component), captured
+/// during the resolve step so the HTTP layer can navigate the user
+/// to `/r/<repo_name>/<review.number>` without re-resolving.
+#[derive(Debug, Clone)]
+pub struct ImportedGithubPr {
+    pub repo_name: String,
+    pub review: ReviewManifest,
+}
+
+/// Map [`github::GithubError`] into the right [`ServiceError`] —
+/// kept at module scope (not in `github::client`) because the
+/// mapping is a service-layer policy, not a transport concern.
+fn github_error_to_service(err: github::GithubError) -> ServiceError {
+    match err {
+        github::GithubError::NotInstalled => ServiceError::BadRequest(
+            "the `gh` CLI is not installed on the kata host; \
+             install it from https://cli.github.com/"
+                .into(),
+        ),
+        github::GithubError::NotAuthenticated => ServiceError::Unauthorized(
+            "the `gh` CLI is not authenticated; \
+             run `gh auth login` on the kata host and retry"
+                .into(),
+        ),
+        github::GithubError::NotFound { what } => ServiceError::NotFound(format!(
+            "GitHub couldn't find {what} (or your gh identity can't see it)",
+        )),
+        github::GithubError::Api { stderr } => {
+            ServiceError::Internal(format!("gh: {stderr}"))
+        }
+        github::GithubError::Spawn(e) => {
+            ServiceError::Internal(format!("failed to invoke gh: {e}"))
+        }
+        github::GithubError::Parse(e) => ServiceError::Internal(format!("gh parse: {e}")),
+    }
+}
+
+impl ReviewService {
+
     // ---- sessions ------------------------------------------------------
 
     pub async fn start_session(
@@ -1928,6 +2305,7 @@ impl ReviewService {
         });
         Ok(())
     }
+
 
     pub async fn discard_session(
         &self,
@@ -1978,6 +2356,7 @@ impl ReviewService {
             review_wide: input.review_wide,
             flag: input.flag,
             body: input.body,
+            // Native kata-authored draft — no external attribution.
             external_author: None,
         };
         self.storage.upsert_draft_comment(repo, &comment).await?;
@@ -2170,6 +2549,12 @@ pub struct CreateReviewParams {
     /// the manifest and displayed at the top of the review.
     #[serde(default)]
     pub summary: Option<String>,
+    /// GitHub PR provenance when the review is being created via the
+    /// `/api/github/import` endpoint. `None` for native kata reviews.
+    /// Threaded through to [`ReviewManifest::github_pr`] verbatim;
+    /// kata never mutates it after create time.
+    #[serde(default)]
+    pub github_pr: Option<kata_core::GithubPr>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -2890,6 +3275,7 @@ mod annotation_creator_only_tests {
             }],
             current_patchset: 1,
             archived_at: None,
+            github_pr: None,
         };
         let manifest = storage.create_review(&repo, &manifest).await.unwrap();
         (repo, manifest, creator)

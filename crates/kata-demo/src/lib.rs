@@ -206,6 +206,7 @@ async fn seed_reviews(
                      cover them with tests. Open for review."
                         .into(),
                 ),
+                github_pr: None,
             },
         )
         .await
