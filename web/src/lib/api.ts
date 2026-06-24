@@ -11,6 +11,7 @@ import type {
   DraftCommentInput,
   DraftResponseInput,
   FileChange,
+  GithubStatus,
   LogPage,
   LogRow,
   PatchsetCompareView,
@@ -27,6 +28,12 @@ export class ApiError extends Error {
   constructor(
     public status: number,
     public detail: string,
+    /** Machine-readable discriminator for typed conflicts. Set by
+     *  the server's `Conflict` variant (currently `"head_drift"`
+     *  on publish-to-GitHub when the PR endpoints moved since
+     *  import). UI code branches on this rather than substring-
+     *  matching the prose. */
+    public kind?: string,
   ) {
     super(detail);
   }
@@ -36,13 +43,15 @@ async function fetchText(path: string): Promise<string> {
   const res = await fetch(path);
   if (!res.ok) {
     let detail = res.statusText;
+    let kind: string | undefined;
     try {
-      const json = (await res.json()) as { error?: string };
+      const json = (await res.json()) as { error?: string; error_kind?: string };
       detail = json.error ?? detail;
+      kind = json.error_kind;
     } catch {
       // not JSON; keep statusText
     }
-    throw new ApiError(res.status, detail);
+    throw new ApiError(res.status, detail, kind);
   }
   return await res.text();
 }
@@ -79,13 +88,15 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   const res = await fetch(path, init);
   if (!res.ok) {
     let detail = res.statusText;
+    let kind: string | undefined;
     try {
-      const json = (await res.json()) as { error?: string };
+      const json = (await res.json()) as { error?: string; error_kind?: string };
       detail = json.error ?? detail;
+      kind = json.error_kind;
     } catch {
       // body wasn't JSON; fall back to statusText
     }
-    throw new ApiError(res.status, detail);
+    throw new ApiError(res.status, detail, kind);
   }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
@@ -300,6 +311,33 @@ export const api = {
     request<void>(
       'POST',
       `${repoBase(repo)}/reviews/${number}/sessions/${enc(sid)}/publish`,
+    ),
+
+  /** GitHub PR integration — all I/O goes through the host's `gh`
+   *  CLI; the SPA just calls these endpoints. */
+  githubStatus: () => request<GithubStatus>('GET', '/api/github/status'),
+  importGithubPr: (url: string) =>
+    request<{ repo_name: string; review: ReviewManifest }>(
+      'POST',
+      '/api/github/import',
+      { url },
+    ),
+  publishToGithub: (
+    repo: string,
+    number: number,
+    sid: string,
+    event: 'COMMENT' | 'APPROVE' | 'REQUEST_CHANGES',
+    body?: string,
+  ) =>
+    request<{
+      new_inline_comments: number;
+      replies: number;
+      issue_comments: number;
+      event: string;
+    }>(
+      'POST',
+      `${repoBase(repo)}/reviews/${number}/sessions/${enc(sid)}/publish-github`,
+      { event, body },
     ),
   discardSession: (repo: string, number: number, sid: string) =>
     request<void>(

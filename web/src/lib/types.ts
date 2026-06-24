@@ -149,6 +149,22 @@ export interface Comment {
   review_wide?: boolean;
   flag: Flag;
   body: string;
+  /** Identity of the original author when this comment was imported
+   *  from a non-kata source (currently only GitHub PRs). `undefined`
+   *  for native kata-authored comments — the UI then renders the
+   *  structural `author` instead. */
+  external_author?: ExternalAuthor;
+}
+
+export interface ExternalAuthor {
+  /** Source identifier. `"github"` today. */
+  source: string;
+  login: string;
+  /** Stable numeric identity on the source. */
+  id: number;
+  avatar_url?: string;
+  /** Profile URL on the source. */
+  html_url?: string;
 }
 
 /** Author-written annotation attached to a code region (or to the
@@ -229,6 +245,30 @@ export interface ReviewManifest {
    *  reviews are hidden from the home screen by default and reject new
    *  draft sessions. */
   archived_at?: string;
+  /** GitHub PR this review is bound to, when created via
+   *  `/api/github/import`. Drives the "Publish to GitHub" UI
+   *  affordance and links back to the source PR. `undefined` for
+   *  native kata reviews. */
+  github_pr?: GithubPr;
+}
+
+export interface GithubPr {
+  owner: string;
+  repo: string;
+  number: number;
+  html_url: string;
+  original_head_sha: string;
+  original_base_sha: string;
+}
+
+/** Returned by `/api/github/status`. Drives whether the home
+ *  screen offers the GitHub import card. */
+export interface GithubStatus {
+  connected: boolean;
+  github_login?: string;
+  /** Human-readable explanation when `connected` is false —
+   *  distinguishes "install gh" from "run `gh auth login`". */
+  error?: string;
 }
 
 export interface ReviewSummary {

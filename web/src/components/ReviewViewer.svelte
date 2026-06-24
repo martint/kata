@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, setContext, tick, untrack } from 'svelte';
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
-  import { api } from '../lib/api';
+  import { ApiError, api } from '../lib/api';
   import { subscribe as subscribeEvents } from '../lib/events';
   import type {
     AnnotationInput,
@@ -54,7 +54,15 @@
     /** Compact review identity for the row-2 left side: `#N name` plus
      *  whether to render the Archived pill. Replaces the in-body header
      *  `<h2>` so the title is visible while the user scrolls. */
-    title: { number: number; name: string; archived: boolean } | null;
+    title: {
+      number: number;
+      name: string;
+      archived: boolean;
+      /** PR provenance, when the review was created via the
+       *  GitHub PR import flow. Drives the "View on GitHub" link
+       *  in the review header. `null` for native kata reviews. */
+      githubPr: { number: number; html_url: string } | null;
+    } | null;
     /** Draft session controls. Null when the user has no open drafts
      *  at all (neither draft comments nor draft replies). `count` is
      *  the combined total — comments + replies — so the user sees a
@@ -69,6 +77,19 @@
       count: number;
       saving: boolean;
       publish: () => Promise<void>;
+      /** Set when the review is bound to a GitHub PR
+       *  (`manifest.github_pr` is present). The toolbar swaps the
+       *  generic Publish button for a "Publish to GitHub" path
+       *  that prompts for the GH review event + optional body and
+       *  posts via the publish-github endpoint. `null` for native
+       *  kata reviews. */
+      publishToGithub:
+        | ((event: 'COMMENT' | 'APPROVE' | 'REQUEST_CHANGES', body?: string) => Promise<void>)
+        | null;
+      /** PR URL on github.com for the "View on GitHub" affordance
+       *  in the toolbar. Mirrors `publishToGithub`'s presence —
+       *  null for native reviews. */
+      githubPrUrl: string | null;
       discard: () => Promise<void>;
       nav: {
         position: number;
@@ -1513,6 +1534,12 @@
         number: current.manifest.number,
         name: current.manifest.name,
         archived: !!current.manifest.archived_at,
+        githubPr: current.manifest.github_pr
+          ? {
+              number: current.manifest.github_pr.number,
+              html_url: current.manifest.github_pr.html_url,
+            }
+          : null,
       },
       actions: viewer
         ? {
@@ -1528,6 +1555,8 @@
             count: draftComments + writtenReplies,
             saving,
             publish,
+            publishToGithub: current.manifest.github_pr ? publishToGithub : null,
+            githubPrUrl: current.manifest.github_pr?.html_url ?? null,
             discard,
             nav:
               draftComments > 0
@@ -3011,6 +3040,73 @@
       await refresh();
     } catch (e) {
       error = (e as Error).message;
+    } finally {
+      saving = false;
+    }
+  }
+
+  /** Publish the current session as a GitHub PR review. Only
+   *  reachable when `manifest.github_pr` is set; the toolbar
+   *  guards this in `publishToGithub`'s presence.
+   *
+   *  Head-drift recovery: when the server refuses because the PR
+   *  head moved (a force-push or rebase since import), we offer to
+   *  re-import + retry in one click. Without this, the user has to
+   *  manually navigate home, paste the URL, and come back — which
+   *  loses their session context. */
+  async function publishToGithub(
+    event: 'COMMENT' | 'APPROVE' | 'REQUEST_CHANGES',
+    body?: string,
+  ) {
+    if (!current.drafts.session) return;
+    const gh = current.manifest.github_pr;
+    if (!gh) return;
+    saving = true;
+    error = null;
+    try {
+      await api.publishToGithub(
+        repo,
+        current.manifest.number,
+        current.drafts.session.session_id,
+        event,
+        body,
+      );
+      await refresh();
+    } catch (e) {
+      const msg = (e as Error).message;
+      // Head-drift refusal is the only failure with a one-click
+      // recovery — offer it explicitly. We match on the typed
+      // `error_kind` discriminator the server emits, not the
+      // prose, so re-wording the message doesn't silently break
+      // the recovery path.
+      if (e instanceof ApiError && e.kind === 'head_drift') {
+        const ok = confirm(
+          `${msg}\n\nRe-import this PR now and retry publishing? ` +
+          `(Existing imported discussion stays; only the head SHA + ` +
+          `any new GitHub comments are refreshed.)`,
+        );
+        if (ok) {
+          try {
+            await api.importGithubPr(gh.html_url);
+            await refresh();
+            await api.publishToGithub(
+              repo,
+              current.manifest.number,
+              current.drafts.session.session_id,
+              event,
+              body,
+            );
+            await refresh();
+            error = null;
+          } catch (e2) {
+            error = (e2 as Error).message;
+          }
+        } else {
+          error = msg;
+        }
+      } else {
+        error = msg;
+      }
     } finally {
       saving = false;
     }

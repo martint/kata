@@ -331,7 +331,30 @@
             data-tour="thread-fold"
           ><Chevron dir={collapsed ? 'right' : 'down'} size={10} filled /></button>
         {/if}
-        <strong>{c.author}</strong>
+        {#if c.external_author}
+          {@const ea = c.external_author}
+          {#if ea.avatar_url}
+            <img
+              src={ea.avatar_url}
+              alt=""
+              class="external-avatar"
+              width="16"
+              height="16"
+            />
+          {/if}
+          <strong>
+            {#if ea.html_url}
+              <a href={ea.html_url} target="_blank" rel="noopener noreferrer"
+                >@{ea.login}</a>
+            {:else}
+              @{ea.login}
+            {/if}
+          </strong>
+          <span class="badge external-source" title="Imported from {ea.source}"
+            >from {ea.source}</span>
+        {:else}
+          <strong>{c.author}</strong>
+        {/if}
         <!-- Flag chip suppressed when it equals the default
              (`must-do`): most comments are must-do, so showing it
              on every row is noise. Suggestion / question still
@@ -412,7 +435,19 @@
           {#each replies as r (r.response_id)}
             <li class="reply {r.draft ? 'draft' : ''}" data-response-id={r.response_id}>
               <header>
-                <strong>{r.author}</strong>
+                {#if r.author.startsWith('gh:')}
+                  {@const ghLogin = r.author.slice(3)}
+                  <strong>
+                    <a
+                      href={`https://github.com/${ghLogin}`}
+                      target="_blank"
+                      rel="noopener noreferrer">@{ghLogin}</a>
+                  </strong>
+                  <span class="badge external-source" title="Imported from github"
+                    >from github</span>
+                {:else}
+                  <strong>{r.author}</strong>
+                {/if}
                 <span class="action">{actionLabel(r.action)}</span>
                 <!-- No explicit `draft` chip: the `.reply.draft`
                      row tag now carries the same attention styling
@@ -523,6 +558,22 @@
 </ul>
 
 <style>
+  .external-avatar {
+    border-radius: 50%;
+    vertical-align: text-bottom;
+    margin-right: 4px;
+  }
+  .badge.external-source {
+    /* Distinct from kata's internal `.badge.*` colors — readers
+       should be able to tell at a glance that the comment came
+       from outside kata. */
+    background: rgba(110, 130, 200, 0.18);
+    border: 1px solid rgba(110, 130, 200, 0.35);
+    color: var(--text-muted, #555);
+    font-size: 10px;
+    text-transform: lowercase;
+  }
+
   .thread {
     list-style: none;
     margin: 0;
