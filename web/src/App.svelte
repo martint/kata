@@ -372,6 +372,22 @@
     }
   }
 
+  /** Navigate to a review created via the GitHub PR import flow.
+   *  The imported review may live in a workspace other than the
+   *  one currently selected, so we switch first if needed; then
+   *  push the path and re-sync. */
+  async function importedReview(repoName: string, number: number) {
+    if (repoName !== repo) {
+      await switchRepo(repoName);
+    }
+    const path = pathForReview(repoName, number);
+    if (location.pathname + location.search !== path) {
+      history.pushState({}, '', path);
+    }
+    rememberNavUrl();
+    await showReview(repoName, number, undefined, undefined, undefined, undefined, false);
+  }
+
   /** Navigate to a review (called by user click — pushes history). */
   async function openReview(number: number) {
     const path = pathForReview(repo, number);
@@ -692,9 +708,21 @@
           {/if}
         </div>
         <button onclick={drafts.discard} disabled={drafts.saving}>Discard</button>
-        <button class="primary" onclick={drafts.publish} disabled={drafts.saving}>
-          {drafts.saving ? 'Publishing…' : 'Publish'}
-        </button>
+        {#if drafts.publishToGithub}
+          <button
+            class="primary"
+            onclick={() => drafts.publishToGithub?.('COMMENT')}
+            disabled={drafts.saving}
+            title="Publish drafts as a GitHub PR review (event=COMMENT)"
+            data-tour="publish-to-github"
+          >
+            {drafts.saving ? 'Publishing…' : 'Publish to GitHub'}
+          </button>
+        {:else}
+          <button class="primary" onclick={drafts.publish} disabled={drafts.saving}>
+            {drafts.saving ? 'Publishing…' : 'Publish'}
+          </button>
+        {/if}
       </div>
     {/if}
   {/snippet}
@@ -832,6 +860,15 @@
           {#if t.title.archived}
             <span class="archived-badge" title="Archived — read-only until unarchived">Archived</span>
           {/if}
+          {#if t.title.githubPr}
+            <a
+              class="gh-pr-link"
+              href={t.title.githubPr.html_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              title="Open this pull request on github.com"
+            >PR #{t.title.githubPr.number} ↗</a>
+          {/if}
         </span>
       {/if}
       {#if loading}<span class="spinner" aria-label="loading"></span>{/if}
@@ -938,6 +975,15 @@
           <span class="archived-badge" title="Archived — read-only until unarchived">
             Archived
           </span>
+        {/if}
+        {#if title.githubPr}
+          <a
+            class="gh-pr-link"
+            href={title.githubPr.html_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Open this pull request on github.com"
+          >GitHub PR #{title.githubPr.number} ↗</a>
         {/if}
         {#if toolbar.actions}
           {@const a = toolbar.actions}
@@ -1103,6 +1149,7 @@
       prefillRevset={prefill}
       onchangerepo={switchRepo}
       onopen={openReview}
+      onimport={importedReview}
     />
   {:else if screen.kind === 'browse'}
     {#key `${popstateGen}|${screen.repo}|${screen.initialCommit ?? ''}|${screen.initialChange ?? ''}|${screen.initialPath ?? ''}|${screen.initialRevset ?? ''}`}

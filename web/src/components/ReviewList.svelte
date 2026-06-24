@@ -1,7 +1,13 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { api } from '../lib/api';
   import { renderMarkdown } from '../lib/markdown';
-  import type { Bookmark, RepoSummary, ReviewSummary } from '../lib/types';
+  import type {
+    Bookmark,
+    GithubStatus,
+    RepoSummary,
+    ReviewSummary,
+  } from '../lib/types';
   import ActionsMenu from './ActionsMenu.svelte';
 
   interface Props {
@@ -20,6 +26,11 @@
     prefillRevset?: string;
     onchangerepo: (name: string) => void;
     onopen: (number: number) => void;
+    /** Cross-repo navigation handler used by the GitHub PR import
+     *  flow — the imported review may live in a workspace other
+     *  than the one currently selected, so we can't reuse `onopen`
+     *  (which assumes `repo`). */
+    onimport: (repoName: string, number: number) => void;
   }
   const {
     repos,
@@ -31,7 +42,47 @@
     prefillRevset,
     onchangerepo,
     onopen,
+    onimport,
   }: Props = $props();
+
+  // GitHub PR import state. `null` until the status probe returns;
+  // hidden entirely if `gh` isn't installed on the host (the
+  // status endpoint returns connected: false in that case too).
+  let githubStatus: GithubStatus | null = $state(null);
+  let importUrl: string = $state('');
+  let importing: boolean = $state(false);
+  let importError: string | null = $state(null);
+  let importExpanded: boolean = $state(false);
+
+  onMount(async () => {
+    try {
+      githubStatus = await api.githubStatus();
+    } catch (e) {
+      // Endpoint should always succeed (handler swallows gh failures
+      // into the `error` field), but defend against a wholly missing
+      // server-side route so the home screen still renders.
+      githubStatus = {
+        connected: false,
+        error: `status probe failed: ${(e as Error).message}`,
+      };
+    }
+  });
+
+  async function submitImport(e: Event) {
+    e.preventDefault();
+    const url = importUrl.trim();
+    if (!url) return;
+    importing = true;
+    importError = null;
+    try {
+      const { repo_name, review } = await api.importGithubPr(url);
+      onimport(repo_name, review.number);
+    } catch (err) {
+      importError = (err as Error).message;
+    } finally {
+      importing = false;
+    }
+  }
 
   let bookmarks: Bookmark[] = $state([]);
   let bookmarksLoading: boolean = $state(true);
@@ -953,6 +1004,65 @@
     </ul>
   {/if}
 </section>
+
+{#if githubStatus}
+  <section class="home-section gh-import-section" data-tour="import-gh-pr">
+    {#if githubStatus.connected}
+      {#if !importExpanded}
+        <button
+          type="button"
+          class="new-review-btn"
+          onclick={() => (importExpanded = true)}
+        >+ Import from GitHub PR</button>
+      {:else}
+        <h3>
+          Import from GitHub PR
+          <button
+            type="button"
+            class="collapse-form"
+            onclick={() => {
+              importExpanded = false;
+              importError = null;
+            }}
+          >Hide</button>
+        </h3>
+        <p class="muted">
+          Paste a github.com PR link. Kata fetches the PR head into
+          the matching workspace, creates a review pinned to
+          <code>&lt;base&gt;..&lt;head&gt;</code>, and imports the
+          existing discussion. Re-importing the same PR refreshes
+          the discussion in place. Acting as
+          <code>@{githubStatus.github_login}</code>.
+        </p>
+        <form class="create-card" onsubmit={submitImport}>
+          <label class="revset-field" style="width: 100%">
+            PR URL
+            <input
+              type="url"
+              bind:value={importUrl}
+              placeholder="https://github.com/owner/repo/pull/123"
+              required
+              disabled={importing}
+            />
+          </label>
+          {#if importError}
+            <p class="error" style="margin-top: 0.5rem">{importError}</p>
+          {/if}
+          <div class="actions" style="margin-top: 0.75rem">
+            <button type="submit" disabled={importing || !importUrl.trim()}>
+              {importing ? 'Importing…' : 'Import PR'}
+            </button>
+          </div>
+        </form>
+      {/if}
+    {:else}
+      <p class="muted gh-disabled-note">
+        GitHub PR import is disabled —
+        {githubStatus.error ?? 'gh CLI not available'}.
+      </p>
+    {/if}
+  </section>
+{/if}
 
 <section class="home-section">
   {#if !showCreateForm}

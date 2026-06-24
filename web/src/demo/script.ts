@@ -43,6 +43,22 @@ export const tour: TourStep[] = [
       "push, no losing thread anchors.",
   },
   {
+    id: 'import-gh-pr',
+    page: '/',
+    target: '[data-tour=import-gh-pr]',
+    placement: 'bottom',
+    title: 'Import a GitHub PR',
+    body:
+      "Paste a github.com pull-request URL and kata creates a review " +
+      "from it, pulling the PR head into the matching workspace and " +
+      "importing the existing discussion. When you publish your " +
+      "drafts the toolbar's button becomes 'Publish to GitHub' — " +
+      "kata posts the review back, threading replies onto the same " +
+      "conversations they came from. The whole PR review cycle " +
+      "happens in kata; github.com is only for auth (via the " +
+      "`gh` CLI on your machine).",
+  },
+  {
     id: 'open-review',
     page: '/r/demo/1',
     target: '[data-tour=review-summary]',
@@ -226,10 +242,10 @@ export const tour: TourStep[] = [
     title: "That's it for the tour",
     body:
       "You've seen the main moving parts: reviews, patchsets, the " +
-      "diff, threads, annotations, folding, filtering, search, and " +
-      "navigation. Press ? at any time to see the full list of " +
-      "keyboard shortcuts. Poke around — everything you saw is real " +
-      "data the demo wrote through the normal service APIs. Hit Done " +
-      "to leave the tour.",
+      "diff, threads, annotations, folding, filtering, search, " +
+      "navigation, and GitHub PR import/publish. Press ? at any " +
+      "time to see the full list of keyboard shortcuts. Poke " +
+      "around — everything you saw is real data the demo wrote " +
+      "through the normal service APIs. Hit Done to leave the tour.",
   },
 ];
