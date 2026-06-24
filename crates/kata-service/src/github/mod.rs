@@ -12,6 +12,7 @@
 //!   user's identity and org authorizations.
 
 pub mod client;
+pub mod comments;
 pub mod resolver;
 pub mod url;
 
