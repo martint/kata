@@ -28,7 +28,7 @@ use kata_core::{
     FileStatus, OpId, ReviewId,
 };
 
-use crate::backend::{Endpoint, JjBackend, ReviewRange};
+use crate::backend::{Endpoint, GitRemote, JjBackend, ReviewRange};
 
 /// Git ref namespace under which kata keeps its reviews' pinned
 /// patchset commits reachable. A pin lives at
@@ -1425,6 +1425,226 @@ impl JjBackend for JjLib {
         })
         .await
         .map_err(|e| Error::Parse(format!("spawn_blocking: {e}")))?
+    }
+
+    async fn git_remotes(&self) -> Result<Vec<GitRemote>> {
+        let cache = self.cache.clone();
+        tokio::task::spawn_blocking(move || -> Result<Vec<GitRemote>> {
+            let repo = cache.load_at_head()?;
+            let git_repo = jj_lib::git::get_git_repo(repo.store())
+                .map_err(|e| Error::Parse(format!("libjj get_git_repo: {e}")))?;
+            let mut out = Vec::new();
+            for name in git_repo.remote_names() {
+                // Reading via `find_remote_without_url_rewrite` so the
+                // URL we return matches `.git/config` literally —
+                // remote-URL matching against PR owners/repos uses
+                // the configured value, not whatever insteadOf rewrite
+                // might point local cloning at.
+                let remote = match git_repo.try_find_remote_without_url_rewrite(name.as_ref()) {
+                    Some(Ok(r)) => r,
+                    Some(Err(e)) => {
+                        tracing::warn!(remote = %name, error = %e, "skip remote: load failed");
+                        continue;
+                    }
+                    None => continue,
+                };
+                let url = remote.url(gix::remote::Direction::Fetch);
+                let Some(url) = url else { continue };
+                out.push(GitRemote {
+                    name: name.to_string(),
+                    fetch_url: url.to_bstring().to_string(),
+                });
+            }
+            // Stable ordering — useful for the resolver's "first match
+            // wins" semantic to be deterministic across restarts.
+            out.sort_by(|a, b| a.name.cmp(&b.name));
+            Ok(out)
+        })
+        .await
+        .map_err(|e| Error::Parse(format!("spawn_blocking: {e}")))?
+    }
+
+    async fn git_fetch_pr_head(
+        &self,
+        remote: &str,
+        pr_number: u32,
+        base_sha: &str,
+    ) -> Result<()> {
+        // Discover the git dir kata's jj store hosts: `jj_lib::git::
+        // get_git_repo` returns a `gix::Repository`; its `.path()`
+        // is the bare `.git` directory we hand to `git --git-dir`.
+        let cache = self.cache.clone();
+        let git_dir = tokio::task::spawn_blocking(move || -> Result<PathBuf> {
+            let repo = cache.load_at_head()?;
+            let git_repo = jj_lib::git::get_git_repo(repo.store())
+                .map_err(|e| Error::Parse(format!("libjj get_git_repo: {e}")))?;
+            Ok(git_repo.path().to_path_buf())
+        })
+        .await
+        .map_err(|e| Error::Parse(format!("spawn_blocking: {e}")))??;
+
+        // Force-update (`+`) because PRs get force-pushed. Two
+        // refspecs in one fetch:
+        //   * head → `refs/remotes/<remote>/kata-pr/<n>/head`
+        //   * base → `refs/remotes/<remote>/kata-pr/<n>/base`
+        // The base is fetched by SHA (github supports
+        // uploadpack.allowAnySHA1InWant) and stored under a
+        // *named* ref rather than a raw-SHA fetch. That matters at
+        // delete time: a raw-SHA fetch leaves the object as a
+        // standalone head in jj's view with no ref to anchor it,
+        // and abandon-unreachable-on-delete never collects it.
+        // Putting both under the same `kata-pr/<n>/*` prefix means
+        // one prefix-scoped delete cleans up everything.
+        let head_refspec =
+            format!("+refs/pull/{pr_number}/head:refs/remotes/{remote}/kata-pr/{pr_number}/head");
+        let base_refspec =
+            format!("+{base_sha}:refs/remotes/{remote}/kata-pr/{pr_number}/base");
+        tracing::info!(
+            %remote, head = %head_refspec, base = %base_refspec,
+            git_dir = %git_dir.display(), "git fetch PR head + base",
+        );
+        let output = tokio::process::Command::new("git")
+            .arg("--git-dir")
+            .arg(&git_dir)
+            .arg("fetch")
+            .arg("--no-tags")
+            // `--quiet` keeps the stderr surface bounded; failures
+            // still produce diagnostics, which is what we want.
+            .arg("--quiet")
+            .arg(remote)
+            .arg(&head_refspec)
+            .arg(&base_refspec)
+            .output()
+            .await
+            .map_err(|e| {
+                Error::Parse(format!("git fetch spawn failed (is git installed?): {e}"))
+            })?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(Error::Parse(format!(
+                "git fetch {remote} ({head_refspec}, {base_refspec}) failed: {}",
+                stderr.trim()
+            )));
+        }
+
+        // Sync jj's view with the new git refs. `import_refs` picks
+        // up everything that's changed in the git store since the
+        // last import — both `kata-pr/<n>/head@<remote>` and
+        // `kata-pr/<n>/base@<remote>` end up as bookmarks jj knows
+        // about, which keeps the base subtree GC-collectable on
+        // delete. `auto_local_bookmark: false` keeps the import
+        // scoped to the tracking refs.
+        //
+        // All jj-side work happens inside `spawn_blocking` because
+        // jj-lib's `MutableRepo` contains `RefCell` / `OnceCell`
+        // fields that aren't `Send`. The outer trait future has to
+        // be `Send`, so we use `Handle::block_on` *inside* the
+        // dedicated blocking thread to drive jj's async writes
+        // without leaking non-Send state across the outer
+        // function's await points.
+        let cache = self.cache.clone();
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            let repo = cache.load_at_head()?;
+            let handle = tokio::runtime::Handle::current();
+            let import_options = jj_lib::git::GitImportOptions {
+                auto_local_bookmark: false,
+                abandon_unreachable_commits: false,
+                remote_auto_track_bookmarks: Default::default(),
+            };
+            let mut tx = repo.start_transaction();
+            handle
+                .block_on(jj_lib::git::import_refs(tx.repo_mut(), &import_options))
+                .map_err(|e| Error::Parse(format!("libjj import_refs: {e}")))?;
+            handle
+                .block_on(tx.commit(format!("kata: import PR #{pr_number} head+base")))
+                .map_err(|e| Error::Parse(format!("libjj tx commit: {e}")))?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| Error::Parse(format!("spawn_blocking: {e}")))??;
+
+        Ok(())
+    }
+
+    async fn git_delete_pr_head(
+        &self,
+        remote: Option<&str>,
+        pr_number: u32,
+    ) -> Result<()> {
+        // Drop every ref under `refs/remotes/<remote>/kata-pr/<n>/`
+        // (head + base) and let jj's normal `import_refs` path
+        // notice they're gone. When `remote` is `None` (e.g.
+        // manifests written before the field was recorded), fall
+        // back to scanning every remote's `kata-pr/<n>/*` —
+        // imperfect (same-numbered PRs from different remotes
+        // would collide), but unblocks cleanup for older imports.
+        // Missing refs are not an error — best-effort cleanup on
+        // review delete.
+        let cache = self.cache.clone();
+        // Scoped prefix when remote is known (no cross-remote
+        // collisions); broader pattern when it isn't.
+        let scoped_prefix = remote.map(|r| format!("refs/remotes/{r}/kata-pr/{pr_number}/"));
+        let fallback_marker = format!("/kata-pr/{pr_number}/");
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            let repo = cache.load_at_head()?;
+            let git_repo = jj_lib::git::get_git_repo(repo.store())
+                .map_err(|e| Error::Parse(format!("libjj get_git_repo: {e}")))?;
+            let references = git_repo
+                .references()
+                .map_err(|e| Error::Parse(format!("libjj references: {e}")))?;
+            let mut edits = Vec::new();
+            for r in references
+                .prefixed("refs/remotes/")
+                .map_err(|e| Error::Parse(format!("libjj prefixed: {e}")))?
+            {
+                let r = r.map_err(|e| Error::Parse(format!("libjj ref iter: {e}")))?;
+                let name = r.name().as_bstr().to_string();
+                let matched = match &scoped_prefix {
+                    Some(p) => name.starts_with(p),
+                    None => name.contains(&fallback_marker),
+                };
+                if !matched {
+                    continue;
+                }
+                edits.push(gix::refs::transaction::RefEdit {
+                    change: gix::refs::transaction::Change::Delete {
+                        log: gix::refs::transaction::RefLog::AndReference,
+                        expected: gix::refs::transaction::PreviousValue::Any,
+                    },
+                    name: name
+                        .clone()
+                        .try_into()
+                        .map_err(|e| Error::Parse(format!("ref name {name}: {e}")))?,
+                    deref: false,
+                });
+            }
+            if !edits.is_empty()
+                && let Err(e) = git_repo.edit_references(edits)
+            {
+                return Err(Error::Parse(format!("libjj delete refs: {e}")));
+            }
+            // Re-import so jj's view drops the now-missing bookmarks.
+            // `abandon_unreachable_commits: true` lets jj treat the
+            // PR head + its ancestors-not-on-trunk as collectable
+            // once the only ref pointing at them is gone.
+            let handle = tokio::runtime::Handle::current();
+            let import_options = jj_lib::git::GitImportOptions {
+                auto_local_bookmark: false,
+                abandon_unreachable_commits: true,
+                remote_auto_track_bookmarks: Default::default(),
+            };
+            let mut tx = repo.start_transaction();
+            handle
+                .block_on(jj_lib::git::import_refs(tx.repo_mut(), &import_options))
+                .map_err(|e| Error::Parse(format!("libjj import_refs: {e}")))?;
+            handle
+                .block_on(tx.commit(format!("kata: drop PR #{pr_number} head")))
+                .map_err(|e| Error::Parse(format!("libjj tx commit: {e}")))?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| Error::Parse(format!("spawn_blocking: {e}")))??;
+        Ok(())
     }
 }
 

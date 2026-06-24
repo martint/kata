@@ -13,7 +13,7 @@ pub mod libjj;
 pub mod log_graph;
 
 pub use anchor::{AnchorResolution, FileCache, resolve_anchor};
-pub use backend::{Endpoint, JjBackend, ReviewRange};
+pub use backend::{Endpoint, GitRemote, JjBackend, ReviewRange};
 pub use diff::{build_diff, build_diff_metadata, compute_one_file_hunks};
 pub use error::{Error, Result};
 pub use libjj::JjLib;
