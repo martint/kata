@@ -17,6 +17,7 @@
 use std::io;
 use std::process::Stdio;
 
+use async_trait::async_trait;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use tokio::io::AsyncWriteExt;
@@ -42,6 +43,13 @@ pub enum GithubError {
     /// both for privacy), so the message is intentionally vague.
     #[error("GitHub returned 404: {what}")]
     NotFound { what: String },
+    /// 422 from github.com — the request was well-formed but the
+    /// API refused it. The publish path treats this as a recoverable
+    /// signal (e.g. a LEFT-side inline comment whose line doesn't
+    /// line up in the diff at the wrapping commit) and falls back
+    /// to posting as an issue comment with file:line context.
+    #[error("GitHub returned 422: {stderr}")]
+    Validation { stderr: String },
     /// Any other non-zero `gh` exit. The stderr is propagated
     /// verbatim — `gh`'s error messages are usually actionable on
     /// their own.
@@ -58,40 +66,134 @@ pub enum GithubError {
 
 pub type GithubResult<T> = Result<T, GithubError>;
 
-/// Stateless — every call invokes `gh api ...`. Clone is free.
-#[derive(Clone, Default)]
-pub struct GithubClient;
+/// The GitHub I/O surface kata's service layer depends on.
+///
+/// Carving this out as a trait (vs. calling the concrete `gh`
+/// wrapper directly) exists for one reason: end-to-end tests of
+/// the import / publish flows. The real impl shells out to `gh`,
+/// which needs a logged-in user, network, and a live PR — none
+/// of which belong in `cargo test`. Tests inject a fake that
+/// scripts canned responses for `graphql` / `post` / etc.
+///
+/// All methods return `serde_json::Value`-typed shapes via the
+/// concrete REST/GraphQL helpers so the trait surface stays small.
+/// `Send + Sync` so axum handlers and the service layer can hold
+/// it behind `Arc<dyn GithubClient>`.
+#[async_trait]
+pub trait GithubClient: Send + Sync {
+    /// `gh api repos/{owner}/{repo}/pulls/{number}` → typed PR
+    /// metadata. The REST shape; `gh` is just the transport.
+    async fn fetch_pr(&self, pr: &PullRequestRef) -> GithubResult<PullRequest>;
 
-impl GithubClient {
+    /// GitHub GraphQL. The result is deserialised from `data` (the
+    /// envelope's `errors[]` is checked first and surfaced as
+    /// [`GithubError::Api`]).
+    async fn graphql_raw(
+        &self,
+        query: &str,
+        variables: serde_json::Value,
+    ) -> GithubResult<serde_json::Value>;
+
+    /// `gh auth status` shaped as "who am I currently logged in
+    /// as." Used by the connect/disconnect flows in the SPA.
+    async fn auth_status(&self) -> GithubResult<AuthStatus>;
+
+    /// Typed GET against a REST endpoint.
+    async fn get_raw(&self, endpoint: &str) -> GithubResult<serde_json::Value>;
+
+    /// Typed POST against a REST endpoint. The body is JSON,
+    /// the response is JSON.
+    async fn post_raw(
+        &self,
+        endpoint: &str,
+        body: &serde_json::Value,
+    ) -> GithubResult<serde_json::Value>;
+}
+
+/// Convenience helpers layered over the raw `Value`-returning
+/// trait methods so call sites can stay typed. Implemented for
+/// every `T: GithubClient + ?Sized` so it covers both concrete
+/// impls and `&dyn GithubClient`.
+#[async_trait]
+pub trait GithubClientExt: GithubClient {
+    async fn graphql<T: DeserializeOwned>(
+        &self,
+        query: &str,
+        variables: serde_json::Value,
+    ) -> GithubResult<T> {
+        let v = self.graphql_raw(query, variables).await?;
+        serde_json::from_value(v)
+            .map_err(|e| GithubError::Parse(format!("graphql decode: {e}")))
+    }
+
+    async fn get<T: DeserializeOwned>(&self, endpoint: &str) -> GithubResult<T> {
+        let v = self.get_raw(endpoint).await?;
+        serde_json::from_value(v)
+            .map_err(|e| GithubError::Parse(format!("get {endpoint}: {e}")))
+    }
+
+    async fn post<T: DeserializeOwned>(
+        &self,
+        endpoint: &str,
+        body: &serde_json::Value,
+    ) -> GithubResult<T> {
+        let v = self.post_raw(endpoint, body).await?;
+        serde_json::from_value(v)
+            .map_err(|e| GithubError::Parse(format!("post {endpoint}: {e}")))
+    }
+}
+
+impl<T: GithubClient + ?Sized> GithubClientExt for T {}
+
+/// Production implementation: shells out to the `gh` CLI binary.
+/// Stateless — every call spawns a subprocess. Clone is free.
+#[derive(Clone, Default)]
+pub struct GhCliClient;
+
+impl GhCliClient {
     pub fn new() -> Self {
         Self
     }
 
-    /// `gh api repos/{owner}/{repo}/pulls/{number}` → typed PR
-    /// metadata. Same shape as the REST API; `gh` is just the
-    /// transport.
-    pub async fn fetch_pr(&self, pr: &PullRequestRef) -> GithubResult<PullRequest> {
+    async fn api_get(&self, endpoint: &str) -> GithubResult<Vec<u8>> {
+        let mut cmd = tokio::process::Command::new("gh");
+        cmd.arg("api").arg(endpoint);
+        run(cmd, None).await
+    }
+
+    async fn api_stdin(
+        &self,
+        endpoint: &str,
+        body: &serde_json::Value,
+    ) -> GithubResult<Vec<u8>> {
+        let mut cmd = tokio::process::Command::new("gh");
+        cmd.arg("api").arg(endpoint).arg("--input").arg("-");
+        let bytes = serde_json::to_vec(body)
+            .expect("Value -> JSON bytes is infallible");
+        run(cmd, Some(bytes)).await
+    }
+}
+
+#[async_trait]
+impl GithubClient for GhCliClient {
+    async fn fetch_pr(&self, pr: &PullRequestRef) -> GithubResult<PullRequest> {
         let endpoint = format!("repos/{}/{}/pulls/{}", pr.owner, pr.repo, pr.number);
         let bytes = self.api_get(&endpoint).await?;
         serde_json::from_slice(&bytes)
             .map_err(|e| GithubError::Parse(format!("fetch_pr: {e}")))
     }
 
-    /// GitHub GraphQL via `gh api graphql --input -`. The query +
-    /// variables go in via stdin as a single JSON blob; this
-    /// sidesteps shell-escaping for complex variable objects (which
-    /// the phase-5 import query needs).
-    pub async fn graphql<T: DeserializeOwned>(
+    async fn graphql_raw(
         &self,
         query: &str,
         variables: serde_json::Value,
-    ) -> GithubResult<T> {
+    ) -> GithubResult<serde_json::Value> {
         let body = serde_json::json!({
             "query": query,
             "variables": variables,
         });
         let bytes = self.api_stdin("graphql", &body).await?;
-        let env: GraphQlEnvelope<T> = serde_json::from_slice(&bytes)
+        let env: GraphQlEnvelope<serde_json::Value> = serde_json::from_slice(&bytes)
             .map_err(|e| GithubError::Parse(format!("graphql envelope: {e}")))?;
         if let Some(errs) = env.errors
             && !errs.is_empty()
@@ -105,35 +207,24 @@ impl GithubClient {
             .ok_or_else(|| GithubError::Parse("graphql response missing `data`".into()))
     }
 
-    /// Used by `/api/github/status` to render "Connected as @x"
-    /// without doing a full PR fetch. Cheap.
-    pub async fn auth_status(&self) -> GithubResult<AuthStatus> {
+    async fn auth_status(&self) -> GithubResult<AuthStatus> {
         let bytes = self.api_get("user").await?;
         let user: AuthStatus = serde_json::from_slice(&bytes)
             .map_err(|e| GithubError::Parse(format!("auth_status: {e}")))?;
         Ok(user)
     }
 
-    async fn api_get(&self, endpoint: &str) -> GithubResult<Vec<u8>> {
-        let mut cmd = tokio::process::Command::new("gh");
-        cmd.arg("api").arg(endpoint);
-        run(cmd, None).await
-    }
-
-    /// Typed `gh api <endpoint>` (GET). Symmetric with [`Self::post`].
-    pub async fn get<T: DeserializeOwned>(&self, endpoint: &str) -> GithubResult<T> {
+    async fn get_raw(&self, endpoint: &str) -> GithubResult<serde_json::Value> {
         let bytes = self.api_get(endpoint).await?;
-        serde_json::from_slice(&bytes).map_err(|e| GithubError::Parse(format!("get {endpoint}: {e}")))
+        serde_json::from_slice(&bytes)
+            .map_err(|e| GithubError::Parse(format!("get {endpoint}: {e}")))
     }
 
-    /// `gh api <endpoint> --method POST --input -` — request body
-    /// piped in as JSON. Used by phase 6 (publish review, post
-    /// reply, post issue comment). Returns the typed response.
-    pub async fn post<T: DeserializeOwned>(
+    async fn post_raw(
         &self,
         endpoint: &str,
         body: &serde_json::Value,
-    ) -> GithubResult<T> {
+    ) -> GithubResult<serde_json::Value> {
         let mut cmd = tokio::process::Command::new("gh");
         cmd.arg("api")
             .arg(endpoint)
@@ -143,19 +234,8 @@ impl GithubClient {
             .arg("-");
         let bytes = serde_json::to_vec(body).expect("Value -> JSON bytes is infallible");
         let out = run(cmd, Some(bytes)).await?;
-        serde_json::from_slice(&out).map_err(|e| GithubError::Parse(format!("post {endpoint}: {e}")))
-    }
-
-    async fn api_stdin(
-        &self,
-        endpoint: &str,
-        body: &serde_json::Value,
-    ) -> GithubResult<Vec<u8>> {
-        let mut cmd = tokio::process::Command::new("gh");
-        cmd.arg("api").arg(endpoint).arg("--input").arg("-");
-        let bytes = serde_json::to_vec(body)
-            .expect("Value -> JSON bytes is infallible");
-        run(cmd, Some(bytes)).await
+        serde_json::from_slice(&out)
+            .map_err(|e| GithubError::Parse(format!("post {endpoint}: {e}")))
     }
 }
 
@@ -211,6 +291,16 @@ fn classify_gh_failure(stderr: &str) -> GithubError {
     if stderr.contains("HTTP 404") || stderr.contains("Not Found") {
         return GithubError::NotFound {
             what: extract_first_line(stderr),
+        };
+    }
+    // 422 typically comes from `POST /pulls/N/reviews` or
+    // `POST /pulls/N/comments` when an inline anchor doesn't line
+    // up in the diff (LEFT-side line with no matching hunk, etc).
+    // The publish path treats this as recoverable and falls back
+    // to an issue comment.
+    if stderr.contains("HTTP 422") || stderr.contains("Unprocessable") {
+        return GithubError::Validation {
+            stderr: stderr.trim().to_owned(),
         };
     }
     GithubError::Api {

@@ -6,7 +6,7 @@ use axum::Json;
 use axum::extract::{Path, State};
 use kata_core::{ReviewManifest, SessionId};
 use kata_service::github::publish::{PublishCounts, PublishEvent};
-use kata_service::github::{AuthStatus, GithubClient, GithubError};
+use kata_service::github::{AuthStatus, GhCliClient, GithubClient as _, GithubError};
 use serde::{Deserialize, Serialize};
 
 use crate::error::AppResult;
@@ -99,7 +99,7 @@ pub async fn publish_to_github(
 /// poll on the home screen). Replaces the per-user OAuth-state
 /// endpoint we used to have.
 pub async fn status(State(_state): State<AppState>) -> Json<GithubStatusResponse> {
-    let client = GithubClient::new();
+    let client = GhCliClient::new();
     let resp = match client.auth_status().await {
         Ok(AuthStatus { login, .. }) => GithubStatusResponse {
             connected: true,

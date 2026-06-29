@@ -17,6 +17,9 @@ pub mod publish;
 pub mod resolver;
 pub mod url;
 
-pub use client::{AuthStatus, GithubClient, GithubError, PullRef, PullRequest, PullState};
+pub use client::{
+    AuthStatus, GhCliClient, GithubClient, GithubClientExt, GithubError, PullRef, PullRequest,
+    PullState,
+};
 pub use resolver::{GithubRemote, ResolvedPrWorkspace, parse_github_remote};
 pub use url::{ParsePullRequestUrlError, PullRequestRef, parse_pull_request_url};

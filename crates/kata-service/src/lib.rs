@@ -5,6 +5,7 @@
 pub mod error;
 pub mod events;
 pub mod github;
+use crate::github::GithubClient as _;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -2038,7 +2039,7 @@ impl ReviewService {
                 review = %existing.review_id,
                 "reusing existing kata review for PR; running discussion refresh",
             );
-            let client = github::GithubClient::new();
+            let client = github::GhCliClient::new();
             // Fetch live PR metadata so we know whether head/base
             // moved since the last import. This drives the patchset
             // advance + github_pr SHA update below — without those,
@@ -2145,7 +2146,7 @@ impl ReviewService {
         // All GitHub I/O delegates to the host's `gh` CLI — no
         // per-user token plumbing inside kata. `gh` carries the
         // user's own identity and org authorizations.
-        let client = github::GithubClient::new();
+        let client = github::GhCliClient::new();
         let meta = client
             .fetch_pr(&pr_ref)
             .await
@@ -2252,6 +2253,12 @@ fn github_error_to_service(err: github::GithubError) -> ServiceError {
         github::GithubError::NotFound { what } => ServiceError::NotFound(format!(
             "GitHub couldn't find {what} (or your gh identity can't see it)",
         )),
+        github::GithubError::Validation { stderr } => {
+            // Publish-path callers handle this variant directly
+            // (they fall back to an issue comment); if it leaks
+            // through to here, surface it like any other API error.
+            ServiceError::BadRequest(format!("GitHub 422: {stderr}"))
+        }
         github::GithubError::Api { stderr } => {
             ServiceError::Internal(format!("gh: {stderr}"))
         }
@@ -2326,7 +2333,7 @@ impl ReviewService {
                 "this review is not bound to a GitHub PR; use the regular Publish action".into(),
             ));
         }
-        let client = github::GithubClient::new();
+        let client = github::GhCliClient::new();
         let counts = github::publish::publish_session_to_github(
             &*self.storage,
             &client,
