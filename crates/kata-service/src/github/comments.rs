@@ -41,7 +41,7 @@ use kata_jj::JjBackend;
 use kata_storage::{GithubCommentMapping, Storage};
 use serde::Deserialize;
 
-use super::client::{GithubClient, GithubError};
+use super::client::{GithubClient, GithubClientExt, GithubError};
 use super::url::PullRequestRef;
 use crate::error::{ServiceError, ServiceResult};
 
@@ -233,7 +233,7 @@ pub struct ImportCounts {
 pub async fn import_pr_discussion(
     storage: &dyn Storage,
     jj: &dyn JjBackend,
-    client: &GithubClient,
+    client: &dyn GithubClient,
     repo: &kata_core::RepoId,
     review: &ReviewManifest,
     pr_ref: &PullRequestRef,

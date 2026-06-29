@@ -35,7 +35,7 @@ use kata_core::{
 use kata_storage::{GithubCommentMapping, Storage};
 use serde::Deserialize;
 
-use super::client::{GithubClient, GithubError};
+use super::client::{GithubClient, GithubClientExt, GithubError};
 use super::url::PullRequestRef;
 use crate::error::{ServiceError, ServiceResult};
 
@@ -47,6 +47,13 @@ pub struct PublishCounts {
     pub new_inline_comments: usize,
     pub replies: usize,
     pub issue_comments: usize,
+    /// Drafts skipped because a `github_comment_map` row already
+    /// exists for them — i.e. an earlier publish attempt landed
+    /// them on github.com but the surrounding session never moved
+    /// to Published (mid-publish failure). The retry skips them
+    /// instead of double-posting.
+    #[serde(default)]
+    pub skipped_already_published: usize,
     /// The GH `event` we submitted the review with — echoed back
     /// so the SPA can confirm the choice without parsing the body.
     pub event: String,
@@ -76,6 +83,8 @@ impl PublishEvent {
 struct CreatedReview {
     #[serde(default)]
     id: Option<i64>,
+    #[serde(default)]
+    node_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -112,11 +121,16 @@ struct PostedReviewComment {
 /// inline comment. We match on `(path, end-line, side, body)` —
 /// the body is the strongest signal (it was the reviewer's
 /// freshly-typed text) but path+line guard against unlikely
-/// duplicate-body cases. Returns `None` when no match is found,
-/// which causes the mapping to be skipped (with a warn log).
+/// duplicate-body cases. `consumed` filters out posted comments
+/// already matched earlier in the loop, so two kata comments with
+/// identical `(path, line, side, body)` map to two distinct
+/// posted comments instead of collapsing onto the first one.
+/// Returns `None` when no match is found, which causes the
+/// mapping to be skipped (with a warn log).
 fn match_posted_comment<'a>(
     kata: &Comment,
     posted: &'a [PostedReviewComment],
+    consumed: &std::collections::HashSet<&str>,
 ) -> Option<&'a PostedReviewComment> {
     let want_path = kata.file.as_deref()?;
     let want_lines = kata.lines.as_ref()?;
@@ -125,7 +139,8 @@ fn match_posted_comment<'a>(
         _ => "RIGHT",
     };
     posted.iter().find(|p| {
-        p.path == want_path
+        !consumed.contains(p.node_id.as_str())
+            && p.path == want_path
             && p.body == kata.body
             && p.side.as_deref().unwrap_or("RIGHT") == want_side
             && {
@@ -141,7 +156,7 @@ fn match_posted_comment<'a>(
 #[allow(clippy::too_many_arguments)]
 pub async fn publish_session_to_github(
     storage: &dyn Storage,
-    client: &GithubClient,
+    client: &dyn GithubClient,
     repo: &RepoId,
     review: &ReviewManifest,
     session_id: &SessionId,
@@ -163,32 +178,32 @@ pub async fn publish_session_to_github(
     };
 
     // ---- 1. Drift check -----------------------------------------
-    // Refuses if either endpoint moved since import. Head drift is
-    // the dangerous case (inline comments would land against the
-    // wrong lines); base drift is the symmetric "the target branch
-    // moved" case captured for the same reason. Returned as a
-    // typed Conflict so the SPA can offer one-click re-import
-    // recovery without substring-matching the prose.
+    // Only head drift is a hard refusal — the bundled review
+    // anchors inline comments to `head.sha`, so a moved head would
+    // mis-place them. Base drift is normal traffic on an active
+    // target branch and doesn't affect what we post, so it gets a
+    // warn log and the publish proceeds.
     let live_pr = client.fetch_pr(&pr_ref).await.map_err(github_to_service)?;
-    let head_drifted = live_pr.head.sha != github_pr.original_head_sha;
-    let base_drifted = live_pr.base.sha != github_pr.original_base_sha;
-    if head_drifted || base_drifted {
-        let endpoint = if head_drifted { "head" } else { "base" };
-        let (old, new) = if head_drifted {
-            (&github_pr.original_head_sha, &live_pr.head.sha)
-        } else {
-            (&github_pr.original_base_sha, &live_pr.base.sha)
-        };
+    if live_pr.head.sha != github_pr.original_head_sha {
         return Err(ServiceError::Conflict {
             kind: "head_drift".into(),
             message: format!(
-                "the PR {endpoint} moved since import (was {}, now {}). \
+                "the PR head moved since import (was {}, now {}). \
                  Re-import the PR to anchor inline comments against the new \
-                 {endpoint}, then publish.",
-                short(old),
-                short(new),
+                 head, then publish.",
+                short(&github_pr.original_head_sha),
+                short(&live_pr.head.sha),
             ),
         });
+    }
+    if live_pr.base.sha != github_pr.original_base_sha {
+        tracing::warn!(
+            pr = github_pr.number,
+            old_base = %short(&github_pr.original_base_sha),
+            new_base = %short(&live_pr.base.sha),
+            "PR base moved since import; publishing anyway \
+             (inline comments anchor to head, not base)",
+        );
     }
 
     // ---- 2. Load this author's drafts in this session -----------
@@ -202,13 +217,27 @@ pub async fn publish_session_to_github(
     }
 
     // ---- 3. Partition ------------------------------------------
-    let mut new_inline: Vec<&Comment> = Vec::new();
+    // Three buckets:
+    //  * `bundled_inline` — RIGHT-side inline comments, bundled
+    //    into the wrapping review's `comments[]` (single POST).
+    //  * `left_inline` — LEFT-side inline comments, posted
+    //    individually against the base commit (the bundled-review
+    //    path 422s when the LEFT line doesn't line up at the
+    //    wrapping commit_id; individual posts let us pass the
+    //    correct `commit_id` per comment, and fall back to an
+    //    issue comment if even the individual post 422s).
+    //  * `issue_comments` — review-wide kata comments (no file/
+    //    lines, or `review_wide`) → issue comments on the PR.
+    let mut bundled_inline: Vec<&Comment> = Vec::new();
+    let mut left_inline: Vec<&Comment> = Vec::new();
     let mut issue_comments: Vec<&Comment> = Vec::new();
     for c in &drafts.comments {
         if c.review_wide || c.file.is_none() || c.lines.is_none() {
             issue_comments.push(c);
+        } else if matches!(c.side, Some(Side::Base)) {
+            left_inline.push(c);
         } else {
-            new_inline.push(c);
+            bundled_inline.push(c);
         }
     }
 
@@ -219,70 +248,71 @@ pub async fn publish_session_to_github(
 
     // ---- 4. Replies first (so they appear above the bundled review on GH) ----
     for r in &drafts.responses {
+        // Idempotency: a mid-publish failure on a prior attempt may
+        // have already landed this reply on github.com. The mapping
+        // row is the durable record of that. Skip if it exists —
+        // re-posting would create a duplicate comment.
+        if storage
+            .lookup_github_mapping_by_kata_response(repo, &r.response_id)
+            .await?
+            .is_some()
+        {
+            counts.skipped_already_published += 1;
+            continue;
+        }
         let mapping = storage
             .lookup_github_mapping_by_kata_comment(repo, &r.in_reply_to)
             .await?;
-        let Some(mapping) = mapping else {
-            // Reply targets a native kata comment that was never on
-            // github.com — we have nothing to thread it to. Post as
-            // a fresh issue comment so the content isn't lost,
-            // tagged so the reader knows where it came from.
-            let posted: CreatedComment = client
-                .post(
-                    &format!(
-                        "repos/{}/{}/issues/{}/comments",
-                        pr_ref.owner, pr_ref.repo, pr_ref.number
-                    ),
-                    &serde_json::json!({
-                        "body": format!("> (reply to local kata comment)\n\n{}", r.body),
-                    }),
-                )
-                .await
-                .map_err(github_to_service)?;
-            record_mapping_for_response(
-                storage,
-                repo,
-                &review.review_id,
-                github_pr.number,
-                r,
-                posted.node_id,
-                posted.id,
-                "issue_comment",
-                None,
-            )
-            .await?;
-            counts.issue_comments += 1;
-            continue;
-        };
         // Only review-thread comments accept `in_reply_to` on
-        // `/pulls/N/comments`. Issue comments and review-summary
-        // bodies are conversation-level on GitHub — no threaded
-        // reply primitive — so a reply to one of those has to
-        // land as a fresh issue comment, with a short quote for
-        // context (mirrors the native-kata-comment fallback
-        // above). Routing on `mapping.kind` rather than blindly
-        // posting to `/pulls/N/comments` avoids a 422 from
-        // github.com on `in_reply_to`-not-a-review-comment.
-        let is_thread = matches!(
-            mapping.kind.as_str(),
-            "line_comment" | "thread_reply",
-        );
-        if !is_thread {
-            let posted: CreatedComment = client
-                .post(
-                    &format!(
-                        "repos/{}/{}/issues/{}/comments",
-                        pr_ref.owner, pr_ref.repo, pr_ref.number
-                    ),
-                    &serde_json::json!({
-                        "body": format!(
-                            "> (reply to imported {} comment)\n\n{}",
-                            mapping.kind, r.body,
+        // `/pulls/N/comments`. Anything else (no mapping at all, or
+        // mapping to an issue comment / review summary) → post as
+        // an issue comment quoting the parent for context, the same
+        // way GitHub's own "Quote reply" UI does. Threaded posts
+        // that 422 fall through to the same quoted-issue-comment
+        // path so the reply isn't silently lost.
+        let is_thread = mapping
+            .as_ref()
+            .map(|m| matches!(m.kind.as_str(), "line_comment" | "thread_reply"))
+            .unwrap_or(false);
+        let mut quoted_fallback_reason: Option<&'static str> = (!is_thread)
+            .then(|| if mapping.is_some() { "non_thread_parent" } else { "no_mapping" });
+        let mut posted_via_thread: Option<CreatedComment> = None;
+        if is_thread {
+            if let Some(rest_id) = mapping.as_ref().and_then(|m| m.github_rest_id) {
+                match client
+                    .post::<CreatedComment>(
+                        &format!(
+                            "repos/{}/{}/pulls/{}/comments",
+                            pr_ref.owner, pr_ref.repo, pr_ref.number
                         ),
-                    }),
-                )
-                .await
-                .map_err(github_to_service)?;
+                        &serde_json::json!({
+                            "body": r.body,
+                            "in_reply_to": rest_id,
+                        }),
+                    )
+                    .await
+                {
+                    Ok(p) => posted_via_thread = Some(p),
+                    Err(GithubError::Validation { stderr }) => {
+                        tracing::warn!(
+                            kata_response = %r.response_id,
+                            error = %stderr,
+                            "threaded reply rejected by github (422); \
+                             falling back to a quoted issue comment",
+                        );
+                        quoted_fallback_reason = Some("threaded_422");
+                    }
+                    Err(e) => return Err(github_to_service(e)),
+                }
+            } else {
+                // mapping recorded only the GraphQL node id, not the
+                // REST id needed for `in_reply_to`. Shouldn't happen
+                // for thread-anchor mappings written by the import
+                // path, but handle gracefully.
+                quoted_fallback_reason = Some("missing_rest_id");
+            }
+        }
+        if let Some(posted) = posted_via_thread {
             record_mapping_for_response(
                 storage,
                 repo,
@@ -291,30 +321,32 @@ pub async fn publish_session_to_github(
                 r,
                 posted.node_id,
                 posted.id,
-                "issue_comment",
-                None,
+                "thread_reply",
+                mapping.as_ref().and_then(|m| m.thread_node_id.clone()),
             )
             .await?;
-            counts.issue_comments += 1;
+            counts.replies += 1;
             continue;
         }
-        let rest_id = mapping.github_rest_id.ok_or_else(|| {
-            ServiceError::Internal(format!(
-                "mapping for kata comment {} missing github_rest_id; \
-                 cannot reply (only GraphQL node_id was stored)",
-                r.in_reply_to,
-            ))
-        })?;
+        // Quoted-issue-comment path. Look up the parent comment for
+        // a real `> @author wrote:` quote so the reader sees what
+        // we're responding to even without thread context on github.
+        // The mapping (when present) names the kata comment that
+        // mirrors the imported one; otherwise the reply targets a
+        // native kata comment and we look it up directly.
+        let parent_id = mapping
+            .as_ref()
+            .and_then(|m| m.kata_comment_id.clone())
+            .unwrap_or_else(|| r.in_reply_to.clone());
+        let parent = storage.get_comment_by_id(repo, &parent_id).await.ok().flatten();
+        let body = build_quoted_reply_body(parent.as_ref(), &r.body, quoted_fallback_reason);
         let posted: CreatedComment = client
             .post(
                 &format!(
-                    "repos/{}/{}/pulls/{}/comments",
+                    "repos/{}/{}/issues/{}/comments",
                     pr_ref.owner, pr_ref.repo, pr_ref.number
                 ),
-                &serde_json::json!({
-                    "body": r.body,
-                    "in_reply_to": rest_id,
-                }),
+                &serde_json::json!({ "body": body }),
             )
             .await
             .map_err(github_to_service)?;
@@ -326,8 +358,8 @@ pub async fn publish_session_to_github(
             r,
             posted.node_id,
             posted.id,
-            "thread_reply",
-            mapping.thread_node_id.clone(),
+            "issue_comment",
+            mapping.as_ref().and_then(|m| m.thread_node_id.clone()),
         )
         .await?;
         counts.replies += 1;
@@ -335,6 +367,14 @@ pub async fn publish_session_to_github(
 
     // ---- 5. Issue-comment-style kata comments ------------------
     for c in &issue_comments {
+        if storage
+            .lookup_github_mapping_by_kata_comment(repo, &c.comment_id)
+            .await?
+            .is_some()
+        {
+            counts.skipped_already_published += 1;
+            continue;
+        }
         let posted: CreatedComment = client
             .post(
                 &format!(
@@ -360,12 +400,85 @@ pub async fn publish_session_to_github(
         counts.issue_comments += 1;
     }
 
-    // ---- 6. Bundled review with inline comments + body ---------
+    // ---- 6. LEFT-side inline comments ----------------------------
+    // Posted individually with `commit_id = live_pr.head.sha` and
+    // `side = "LEFT"` — GitHub's documented pattern for anchoring a
+    // comment to the original/left side of the diff at the PR's
+    // head. (Using the PR's base SHA as commit_id 422s every time
+    // because the base commit isn't part of the PR's own commit
+    // list.) A 422 here still falls back to a quoted issue comment
+    // whose footer link points at the base SHA so the reader can
+    // navigate to the pre-PR version of the file.
+    for c in &left_inline {
+        if storage
+            .lookup_github_mapping_by_kata_comment(repo, &c.comment_id)
+            .await?
+            .is_some()
+        {
+            counts.skipped_already_published += 1;
+            continue;
+        }
+        post_inline_with_issue_fallback(
+            client,
+            storage,
+            repo,
+            &review.review_id,
+            &pr_ref,
+            c,
+            &live_pr.head.sha,
+            &github_pr.original_base_sha,
+            "LEFT",
+        )
+        .await?;
+        counts.new_inline_comments += 1;
+    }
+
+    // ---- 7. Bundled review (RIGHT-side inline) + review body ----
+    // Pre-filter the bundle for idempotency: drop any RIGHT-side
+    // inlines that already have a `github_comment_map` row from a
+    // prior attempt. The wrapping review POST itself is not
+    // idempotent on github.com (a retry creates a duplicate
+    // `pull_request_review` even if every inline inside is the
+    // same), but skipping previously-mapped inlines means the
+    // wrapping review only gets re-created when there's actually
+    // new work for it to carry.
+    let mut bundled_to_post: Vec<&Comment> = Vec::with_capacity(bundled_inline.len());
+    for c in &bundled_inline {
+        if storage
+            .lookup_github_mapping_by_kata_comment(repo, &c.comment_id)
+            .await?
+            .is_some()
+        {
+            counts.skipped_already_published += 1;
+        } else {
+            bundled_to_post.push(c);
+        }
+    }
+
+    // Review-body idempotency: if a prior attempt already landed the
+    // wrapping review's body (either via /reviews or, in the deep
+    // double-422 path, as an issue comment), strip the body from
+    // this attempt so we don't double-post it. The body is per-
+    // publish-call and there's no kata item to dedup it against, so
+    // we record it under a synthetic `kind=review_body` mapping
+    // keyed off the kata review id.
+    let body_already_posted = storage
+        .lookup_review_body_mapping(repo, &review.review_id, github_pr.number)
+        .await?
+        .is_some();
+    let effective_body: Option<&str> = body
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .filter(|_| !body_already_posted);
+    if body_already_posted && body.as_deref().is_some_and(|s| !s.trim().is_empty()) {
+        counts.skipped_already_published += 1;
+    }
+
     // Skip the review submission when there's nothing to bundle and
     // no body — otherwise the user would get a stray empty review
     // on github.com.
-    if !new_inline.is_empty() || body.as_deref().is_some_and(|s| !s.trim().is_empty()) {
-        let inline_payloads: Vec<serde_json::Value> = new_inline
+    if !bundled_to_post.is_empty() || effective_body.is_some() {
+        let inline_payloads: Vec<serde_json::Value> = bundled_to_post
             .iter()
             .map(|c| build_inline_payload(c))
             .collect();
@@ -374,63 +487,191 @@ pub async fn publish_session_to_github(
             "event": event.as_str(),
             "comments": inline_payloads,
         });
-        if let Some(b) = body.as_deref()
-            && !b.trim().is_empty()
-        {
+        if let Some(b) = effective_body {
             payload["body"] = serde_json::Value::String(b.to_owned());
         }
-        let posted: CreatedReview = client
-            .post(
-                &format!(
-                    "repos/{}/{}/pulls/{}/reviews",
-                    pr_ref.owner, pr_ref.repo, pr_ref.number
-                ),
-                &payload,
-            )
-            .await
-            .map_err(github_to_service)?;
-        // The /reviews POST response carries only the wrapping
-        // review's id — not the per-comment ids. Follow up with a
-        // GET to fetch the per-comment ids and record one mapping
-        // row per kata comment, keyed on its individual github
-        // node id. Without this, the next import would re-pull
-        // our own comments as ghosts of ourselves.
-        let review_id_for_lookup = posted.id.ok_or_else(|| {
-            ServiceError::Internal(
-                "GitHub returned no review id for the bundled review; \
-                 inline comment mappings cannot be recorded".into(),
-            )
-        })?;
-        let posted_comments: Vec<PostedReviewComment> = client
-            .get(&format!(
-                "repos/{}/{}/pulls/{}/reviews/{}/comments",
-                pr_ref.owner, pr_ref.repo, pr_ref.number, review_id_for_lookup,
-            ))
-            .await
-            .map_err(github_to_service)?;
-        for kata_comment in &new_inline {
-            let Some(remote) = match_posted_comment(kata_comment, &posted_comments) else {
+        let bundled_endpoint = format!(
+            "repos/{}/{}/pulls/{}/reviews",
+            pr_ref.owner, pr_ref.repo, pr_ref.number,
+        );
+        match client.post::<CreatedReview>(&bundled_endpoint, &payload).await {
+            Ok(posted) => {
+                // If a body went out on this wrapping review, record
+                // the review-body mapping so a retry that re-enters
+                // section 7 (e.g. because a later step in the publish
+                // failed and the session stayed Draft) doesn't
+                // re-post the body. The wrapping review's own node
+                // id is the natural identifier — keeps the dedup
+                // surface uniform with every other mapping row.
+                if effective_body.is_some()
+                    && let Some(node_id) = posted.node_id.clone()
+                {
+                    record_review_body_mapping(
+                        storage,
+                        repo,
+                        &review.review_id,
+                        github_pr.number,
+                        node_id,
+                        posted.id,
+                    )
+                    .await?;
+                }
+                // The /reviews POST response carries only the wrapping
+                // review's id — not the per-comment ids. Follow up with a
+                // GET to fetch the per-comment ids and record one mapping
+                // row per kata comment, keyed on its individual github
+                // node id. Without this, the next import would re-pull
+                // our own comments as ghosts of ourselves.
+                let review_id_for_lookup = posted.id.ok_or_else(|| {
+                    ServiceError::Internal(
+                        "GitHub returned no review id for the bundled review; \
+                         inline comment mappings cannot be recorded".into(),
+                    )
+                })?;
+                let posted_comments: Vec<PostedReviewComment> = client
+                    .get(&format!(
+                        "repos/{}/{}/pulls/{}/reviews/{}/comments",
+                        pr_ref.owner, pr_ref.repo, pr_ref.number, review_id_for_lookup,
+                    ))
+                    .await
+                    .map_err(github_to_service)?;
+                let mut consumed: std::collections::HashSet<&str> =
+                    std::collections::HashSet::new();
+                for kata_comment in &bundled_to_post {
+                    let Some(remote) =
+                        match_posted_comment(kata_comment, &posted_comments, &consumed)
+                    else {
+                        tracing::warn!(
+                            kata_comment = %kata_comment.comment_id,
+                            "no matching GitHub comment found in the published review; \
+                             mapping skipped (this comment may re-import as a ghost on refresh)",
+                        );
+                        continue;
+                    };
+                    consumed.insert(remote.node_id.as_str());
+                    record_mapping_for_comment(
+                        storage,
+                        repo,
+                        &review.review_id,
+                        github_pr.number,
+                        kata_comment,
+                        Some(remote.node_id.clone()),
+                        Some(remote.id),
+                        "line_comment",
+                        None,
+                    )
+                    .await?;
+                }
+                counts.new_inline_comments += bundled_to_post.len();
+            }
+            Err(GithubError::Validation { stderr }) => {
+                // The bundled review POST is atomic: one bad inline
+                // anchor (a line outside the diff hunks, a multi-line
+                // range that doesn't align, etc.) 422s the whole batch.
+                // Recover by:
+                //  1. If the review carries a body or a non-Comment
+                //     event, re-submit the wrapping review with an
+                //     empty `comments[]` so the body / approval state
+                //     still lands.
+                //  2. Post each inline individually with the same
+                //     422→issue-comment fallback as the LEFT-side path.
+                //     Any individual comment that still 422s falls
+                //     back to an issue comment carrying file:line
+                //     context — its body never silently drops.
                 tracing::warn!(
-                    kata_comment = %kata_comment.comment_id,
-                    "no matching GitHub comment found in the published review; \
-                     mapping skipped (this comment may re-import as a ghost on refresh)",
+                    error = %stderr,
+                    "bundled review POST rejected by github (422); \
+                     falling back to per-comment individual posts \
+                     (one or more inline anchors are outside the diff)",
                 );
-                continue;
-            };
-            record_mapping_for_comment(
-                storage,
-                repo,
-                &review.review_id,
-                github_pr.number,
-                kata_comment,
-                Some(remote.node_id.clone()),
-                Some(remote.id),
-                "line_comment",
-                None,
-            )
-            .await?;
+                let needs_shell = effective_body.is_some()
+                    || !matches!(event, PublishEvent::Comment);
+                if needs_shell {
+                    let mut shell = payload.clone();
+                    shell["comments"] = serde_json::json!([]);
+                    match client
+                        .post::<CreatedReview>(&bundled_endpoint, &shell)
+                        .await
+                    {
+                        Ok(shell_posted) => {
+                            // Shell carried the body; record the
+                            // review-body mapping so a retry skips
+                            // re-posting it.
+                            if effective_body.is_some()
+                                && let Some(node_id) = shell_posted.node_id
+                            {
+                                record_review_body_mapping(
+                                    storage,
+                                    repo,
+                                    &review.review_id,
+                                    github_pr.number,
+                                    node_id,
+                                    shell_posted.id,
+                                )
+                                .await?;
+                            }
+                        }
+                        Err(GithubError::Validation { stderr }) => {
+                            // Even the empty-comments shell 422'd.
+                            // If there's a body, surface it as an
+                            // issue comment so it isn't lost — and
+                            // record a review-body mapping under
+                            // that issue comment's node id so a
+                            // future import doesn't re-import the
+                            // body as a ghost of ourselves and a
+                            // retry doesn't double-post.
+                            if let Some(b) = effective_body {
+                                tracing::warn!(
+                                    error = %stderr,
+                                    "empty-comments review shell rejected too; \
+                                     posting review body as an issue comment",
+                                );
+                                let posted: CreatedComment = client
+                                    .post(
+                                        &format!(
+                                            "repos/{}/{}/issues/{}/comments",
+                                            pr_ref.owner,
+                                            pr_ref.repo,
+                                            pr_ref.number,
+                                        ),
+                                        &serde_json::json!({ "body": b }),
+                                    )
+                                    .await
+                                    .map_err(github_to_service)?;
+                                if let Some(node_id) = posted.node_id {
+                                    record_review_body_mapping(
+                                        storage,
+                                        repo,
+                                        &review.review_id,
+                                        github_pr.number,
+                                        node_id,
+                                        posted.id,
+                                    )
+                                    .await?;
+                                }
+                            }
+                        }
+                        Err(other) => return Err(github_to_service(other)),
+                    }
+                }
+                for c in &bundled_to_post {
+                    post_inline_with_issue_fallback(
+                        client,
+                        storage,
+                        repo,
+                        &review.review_id,
+                        &pr_ref,
+                        c,
+                        &live_pr.head.sha,
+                        &live_pr.head.sha,
+                        "RIGHT",
+                    )
+                    .await?;
+                    counts.new_inline_comments += 1;
+                }
+            }
+            Err(e) => return Err(github_to_service(e)),
         }
-        counts.new_inline_comments += new_inline.len();
     }
 
     // ---- 7. Dual-write: mark local session published -----------
@@ -515,6 +756,38 @@ async fn record_mapping_for_comment(
     Ok(())
 }
 
+/// Record a `kind=review_body` mapping for the wrapping
+/// `pull_request_review` (or, in the deep-fallback path, the
+/// issue comment its body landed as). Both `kata_comment_id` and
+/// `kata_response_id` are `None`: the body is per-publish-call
+/// and has no kata item to thread off of. Dedup is by
+/// (repo, review_id, pr_number, kind="review_body").
+async fn record_review_body_mapping(
+    storage: &dyn Storage,
+    repo: &RepoId,
+    review_id: &ReviewId,
+    pr_number: u32,
+    github_node_id: String,
+    github_rest_id: Option<i64>,
+) -> ServiceResult<()> {
+    storage
+        .insert_github_comment_mapping(
+            repo,
+            &GithubCommentMapping {
+                github_node_id,
+                github_rest_id,
+                kind: "review_body".into(),
+                review_id: review_id.clone(),
+                pr_number,
+                kata_comment_id: None,
+                kata_response_id: None,
+                thread_node_id: None,
+            },
+        )
+        .await?;
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn record_mapping_for_response(
     storage: &dyn Storage,
@@ -553,8 +826,180 @@ async fn record_mapping_for_response(
     Ok(())
 }
 
+/// Post one inline comment individually against `commit_sha` with
+/// the same 422 → quoted-issue-comment fallback the LEFT-side path
+/// relies on. Shared by:
+///  - section 6 (LEFT-side inline, with `commit_sha =
+///    original_base_sha` / `side = "LEFT"`),
+///  - the section-7 bundled-review 422 fallback (RIGHT-side inline,
+///    with `commit_sha = live head` / `side = "RIGHT"`).
+///
+/// The body footer carries both a markdown link and plaintext
+/// file:line so the reader can navigate even when the inline
+/// anchor is missing.
+#[allow(clippy::too_many_arguments)]
+async fn post_inline_with_issue_fallback(
+    client: &dyn GithubClient,
+    storage: &dyn Storage,
+    repo: &RepoId,
+    review_id: &ReviewId,
+    pr_ref: &PullRequestRef,
+    c: &Comment,
+    inline_commit_sha: &str,
+    footer_link_sha: &str,
+    side: &'static str,
+) -> ServiceResult<()> {
+    // POST commit_id is always a commit in the PR's own commit list
+    // (the live head, regardless of side) — the PR's base SHA is
+    // not part of that list and 422s. `side` alone tells github
+    // which side of the diff to anchor on. The success body is
+    // just `c.body`; the file:line footer earns its keep only on
+    // the issue-comment fallback where the inline anchor is lost,
+    // and its link points at `footer_link_sha` — the base SHA for
+    // LEFT-side comments (so the reader can see the file as it
+    // was before the PR), the head SHA for RIGHT-side.
+    let inline_payload = serde_json::json!({
+        "path": c.file.as_deref().unwrap_or(""),
+        "line": c.lines.as_ref().map(|r| r.end).unwrap_or(0),
+        "side": side,
+        "commit_id": inline_commit_sha,
+        "body": c.body,
+    });
+    let line_endpoint = format!(
+        "repos/{}/{}/pulls/{}/comments",
+        pr_ref.owner, pr_ref.repo, pr_ref.number,
+    );
+    match client
+        .post::<CreatedComment>(&line_endpoint, &inline_payload)
+        .await
+    {
+        Ok(posted) => {
+            record_mapping_for_comment(
+                storage,
+                repo,
+                review_id,
+                pr_ref.number,
+                c,
+                posted.node_id,
+                posted.id,
+                "line_comment",
+                None,
+            )
+            .await
+        }
+        Err(GithubError::Validation { stderr }) => {
+            tracing::warn!(
+                kata_comment = %c.comment_id,
+                side = %side,
+                error = %stderr,
+                "individual inline comment rejected by github (422); \
+                 falling back to an issue comment with file:line context",
+            );
+            let body = inline_fallback_body(
+                &pr_ref.owner, &pr_ref.repo, footer_link_sha, side, c,
+            );
+            let posted: CreatedComment = client
+                .post(
+                    &format!(
+                        "repos/{}/{}/issues/{}/comments",
+                        pr_ref.owner, pr_ref.repo, pr_ref.number
+                    ),
+                    &serde_json::json!({ "body": body }),
+                )
+                .await
+                .map_err(github_to_service)?;
+            record_mapping_for_comment(
+                storage,
+                repo,
+                review_id,
+                pr_ref.number,
+                c,
+                posted.node_id,
+                posted.id,
+                "issue_comment",
+                None,
+            )
+            .await
+        }
+        Err(e) => Err(github_to_service(e)),
+    }
+}
+
 fn short(sha: &str) -> &str {
     if sha.len() > 9 { &sha[..9] } else { sha }
+}
+
+/// Footer appended to the fallback issue-comment shape when an
+/// individual inline POST 422s. Carries both a markdown link
+/// (rendered on github.com when the surrounding chrome supports
+/// it) and a plaintext `path:line` repetition so the pointer
+/// survives notification emails / mobile views / any other
+/// context where markdown might not render. Renders after the
+/// original comment body so the comment reads naturally first
+/// and the context is a footnote. `side` distinguishes base vs.
+/// head in the human-facing tag.
+fn inline_fallback_body(
+    owner: &str,
+    repo: &str,
+    commit_sha: &str,
+    side: &str,
+    c: &Comment,
+) -> String {
+    let path = c.file.as_deref().unwrap_or("");
+    let line = c.lines.as_ref().map(|r| r.end).unwrap_or(0);
+    let side_label = if side == "LEFT" { "base-side" } else { "head-side" };
+    format!(
+        "{body}\n\n— _re: [`{path}:{line}`](https://github.com/{owner}/{repo}/blob/{commit_sha}/{path}#L{line}) ({side_label}, `{path}:{line}`)_",
+        body = c.body,
+    )
+}
+
+/// Quoted-reply body in the shape GitHub's own "Quote reply"
+/// UI produces: an `@author wrote:` attribution line, the parent
+/// body with `> ` line-prefixes, a blank, then the reply text.
+/// When the parent isn't available (lookup failed, native kata
+/// comment removed, etc.), falls back to a short tag noting why.
+/// `reason` is a machine-readable hint at why the threaded path
+/// wasn't taken — surfaced as a small inline note so the reader
+/// knows this reply landed as a standalone comment by necessity.
+fn build_quoted_reply_body(
+    parent: Option<&Comment>,
+    reply_body: &str,
+    reason: Option<&str>,
+) -> String {
+    // Only render a real `@login` when the parent has an
+    // `external_author` — those are verified GitHub identities and
+    // pinging them is intended. For ghost authors (`gh:<login>`)
+    // the structural author IS a GitHub handle, so `@login` is
+    // still safe. For native kata authors (e.g. `alice`), backtick
+    // the name instead — posting `@alice` to github.com would
+    // ping whoever owns that handle, a stranger to this review.
+    let attribution = parent
+        .map(|p| {
+            if let Some(ea) = p.external_author.as_ref() {
+                format!("@{}", ea.login)
+            } else {
+                let a = p.author.as_str();
+                if let Some(login) = a.strip_prefix("gh:") {
+                    format!("@{login}")
+                } else {
+                    format!("`{a}`")
+                }
+            }
+        })
+        .unwrap_or_else(|| "kata".to_owned());
+    let mut quoted = String::new();
+    quoted.push_str(&format!("> {attribution} wrote:\n"));
+    let parent_text = parent.map(|p| p.body.as_str()).unwrap_or("(original comment unavailable)");
+    for line in parent_text.lines() {
+        quoted.push_str("> ");
+        quoted.push_str(line);
+        quoted.push('\n');
+    }
+    let reason_note = reason
+        .map(|r| format!(" _(posted as issue comment: {r})_\n"))
+        .unwrap_or_default();
+    format!("{quoted}{reason_note}\n{reply_body}")
 }
 
 fn github_to_service(err: GithubError) -> ServiceError {
