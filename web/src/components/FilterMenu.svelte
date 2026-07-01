@@ -12,6 +12,7 @@
   scrolling underneath).
 -->
 <script lang="ts">
+  import { portal } from '../lib/portal';
   import type { ReviewToolbarState } from './ReviewViewer.svelte';
 
   type Filter = NonNullable<ReviewToolbarState['filter']>;
@@ -82,14 +83,6 @@
 
   // Portal so the popover escapes the sticky header's stacking
   // context (same reason ActionsMenu uses one).
-  function portal(node: HTMLElement) {
-    document.body.appendChild(node);
-    return {
-      destroy() {
-        node.parentNode?.removeChild(node);
-      },
-    };
-  }
 </script>
 
 <svelte:window

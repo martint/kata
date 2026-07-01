@@ -1569,13 +1569,35 @@ by GitHub's GraphQL node id. A re-import skips anything already
 mapped; only new replies / comments since the last import are
 inserted.
 
+**Resolution translation.** A GitHub thread with
+`isResolved = true` lands a synthetic `Resolve` response on the
+imported anchor comment (attributed to the GitHub user from
+`resolvedBy`, falling back to a `gh:github` ghost when GitHub
+doesn't surface one). Kata's resolution model picks this up the
+same way it would a user-authored resolve — the UI renders the
+thread as resolved (and collapses it by default per the existing
+fold rules in `CommentThread.svelte`). The synthetic response is
+idempotent across re-imports via a deterministic
+`kata-import-resolution:<thread_node_id>` mapping row, so a
+second pass over an already-resolved thread is a no-op.
+
+*Legacy anchors.* Threads imported before this behaviour landed
+were given a `_(resolved)_` markdown prefix on the anchor body
+instead of a Resolve response. Import-side dedup means those
+anchors are never re-written — the prefix stays on the body
+indefinitely, but new resolved imports use the Resolve-response
+path. A brief mixed state is expected on repos that were
+imported before this change.
+
 **Known limits** (queued for follow-up, called out so reviewers
 know what to expect):
 - Pagination is `first: 100` on each connection; PRs that exceed
   it emit a warn log and import the first page.
-- Outdated and resolved state are encoded as `_(outdated)_` /
-  `_(resolved)_` markdown prefixes on the body — kata doesn't
-  yet have first-class fields for those.
+- Outdated state is still encoded as an `_(outdated)_` markdown
+  prefix on the body — kata has no first-class "outdated" concept
+  and there's nothing kata-side to translate it into. (Resolution
+  used to share this hack and was promoted to a real
+  `Resolve`-response translation; see above.)
 - Suggestion-block code fences imported as plain text.
 
 ### 21.4 Publishing back
@@ -1598,14 +1620,65 @@ partitioned and pushed to github.com:
   comments on the PR.
 - **Bundled review** — `POST /pulls/<n>/reviews` with
   `event = COMMENT | APPROVE | REQUEST_CHANGES`, the chosen
-  body, and the inline `comments[]` payload. Skipped entirely
-  when there's nothing inline and no body — no empty review
-  stubs left on github.com.
+  body, and the inline `comments[]` payload. Fires whenever
+  there are inlines to bundle, a body to attach, *or* the event
+  is non-neutral (APPROVE / REQUEST_CHANGES) — the last case is
+  what carries a verdict-only "quick approve" with no drafts.
+  Only a COMMENT event with nothing else to say is refused (that
+  would produce a truly empty review stub on github.com).
 
-MVP exposes `event = COMMENT` in the UI; the API accepts
-APPROVE / REQUEST_CHANGES and the publish handler routes them
-correctly, but the SPA doesn't yet surface the choice. A
-follow-up split-button will.
+Two toolbar surfaces drive publish:
+
+- **Split "Publish to GitHub" button in the draft cluster.**
+  Visible whenever the user has drafts queued. The primary click
+  publishes with `event = COMMENT`; the dropdown caret offers
+  **Publish & approve** and **Publish & request changes**, both
+  of which open a shared body-capture modal (Approve's body is
+  optional; Request-changes is required, matching GitHub's own
+  rule).
+- **Three top-row buttons alongside the commit-nav chevrons.**
+  Always visible when the review is GitHub-bound, regardless of
+  drafts:
+  - **Approve** — one-click APPROVE, no body prompt (the "LGTM
+    with nothing to add" path).
+  - **Request changes** — opens the same body-capture modal, then
+    submits REQUEST_CHANGES.
+  - **Refresh** — re-imports the PR discussion + head SHA from
+    github.com (same code path the head-drift recovery uses;
+    idempotent via `github_comment_map` dedup on the server).
+
+Publish-side idempotency for verdict-only submissions: the
+wrapping `/pulls/<n>/reviews` POST records a `kind=review_body`
+mapping row on every success (not only body-carrying ones), so a
+retry after a mid-publish failure won't double-approve.
+
+**Resolution side-effects.** Kata resolutions (a `Response` with
+`action != Comment`) translate into thread-state mutations on
+github.com:
+
+- A *resolve-only* response (`action = resolve | wont-fix |
+  unresolve` AND empty body) does not post a comment. Instead,
+  when the parent comment carries a thread anchor, kata issues
+  a `resolveReviewThread` or `unresolveReviewThread` GraphQL
+  mutation against the thread's node id. When the parent is an
+  issue comment or review summary (no thread to resolve), the
+  response is dropped with a warn log and counted under
+  `PublishCounts.resolutions_dropped_no_thread` so the SPA can
+  surface "N resolutions dropped" instead of silently swallowing.
+- A *resolution-with-text* response (`action != Comment` AND
+  non-empty body) posts the text as a normal threaded reply
+  *and* then issues the thread mutation — comment first, then
+  resolution, so the explanation lands above the resolved event
+  in the github.com timeline.
+- The two pieces of work track their own mapping rows: the reply
+  post lands under `kind = "thread_reply"` or `"issue_comment"`,
+  the mutation lands under `kind = "resolution"` (synthetic node
+  id `kata-resolution:<response_id>`). A publish retry checks
+  each independently — so if the reply landed but the mutation
+  errored mid-publish, the retry re-fires only the mutation
+  without duplicating the reply. Both mutations are idempotent
+  server-side, so re-firing after a lost mapping-row write is a
+  safe no-op.
 
 After GH returns, kata's local session is published (same code
 path the regular Publish takes) so drafts become locally
@@ -1670,10 +1743,6 @@ the integration narrow:
 - **Merging the PR from kata.** Use github.com.
 - **Editing or deleting imported comments from kata.** Replies
   and resolves only.
-- **Approving / requesting changes from the UI.** The API
-  supports it; the SPA doesn't yet wire it up.
-- **Resolve/unresolve thread mutations on publish.** Imported
-  thread state is read-only on the github.com side for now.
 - **Suggestion-block round-trip.** GitHub's `suggestion` code
   fences import as plain text; publishing them back is the
   same.

@@ -1409,12 +1409,45 @@ impl Storage for SqliteStorage {
         let repo_str = repo.as_str().to_owned();
         let rid = kata_response_id.as_str().to_owned();
         self.with_conn(move |conn| {
+            // `LIMIT 1` because a response with a non-Comment action
+            // can have two rows (reply mapping + resolution mapping);
+            // callers using this generic lookup only care about
+            // "was anything written for this response". `ORDER BY
+            // kind` gives a deterministic pick without requiring a
+            // real preference between the two.
             conn.query_row(
                 "SELECT github_node_id, github_rest_id, kind, kata_comment_id,
                         kata_response_id, review_id, pr_number, thread_node_id
                    FROM github_comment_map
-                  WHERE repo_id = ?1 AND kata_response_id = ?2",
+                  WHERE repo_id = ?1 AND kata_response_id = ?2
+                  ORDER BY kind ASC
+                  LIMIT 1",
                 params![repo_str, rid],
+                row_to_github_mapping,
+            )
+            .optional()
+            .map_err(Into::into)
+        })
+        .await
+    }
+
+    async fn lookup_github_mapping_by_kata_response_kind(
+        &self,
+        repo: &RepoId,
+        kata_response_id: &ResponseId,
+        kind: &str,
+    ) -> Result<Option<crate::storage::GithubCommentMapping>> {
+        ensure_repo_id(repo)?;
+        let repo_str = repo.as_str().to_owned();
+        let rid = kata_response_id.as_str().to_owned();
+        let kind_str = kind.to_owned();
+        self.with_conn(move |conn| {
+            conn.query_row(
+                "SELECT github_node_id, github_rest_id, kind, kata_comment_id,
+                        kata_response_id, review_id, pr_number, thread_node_id
+                   FROM github_comment_map
+                  WHERE repo_id = ?1 AND kata_response_id = ?2 AND kind = ?3",
+                params![repo_str, rid, kind_str],
                 row_to_github_mapping,
             )
             .optional()

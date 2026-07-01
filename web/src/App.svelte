@@ -14,6 +14,8 @@
   import Bubble from './components/Bubble.svelte';
   import Chevron from './components/Chevron.svelte';
   import FilterMenu from './components/FilterMenu.svelte';
+  import GithubReviewActions from './components/GithubReviewActions.svelte';
+  import PublishToGithubButton from './components/PublishToGithubButton.svelte';
   import ReviewList from './components/ReviewList.svelte';
   import ReviewSearch from './components/ReviewSearch.svelte';
   import ReviewViewer, { type ReviewToolbarState } from './components/ReviewViewer.svelte';
@@ -667,6 +669,19 @@
     {/if}
   {/snippet}
 
+  {#snippet githubActionsUI()}
+    {#if toolbar?.githubActions}
+      {@const gha = toolbar.githubActions}
+      <GithubReviewActions
+        approve={gha.approve}
+        requestChanges={gha.requestChanges}
+        refresh={gha.refresh}
+        saving={gha.saving}
+        refreshing={gha.refreshing}
+      />
+    {/if}
+  {/snippet}
+
   {#snippet searchUI()}
     {#if toolbar?.search}
       {@const s = toolbar.search}
@@ -709,15 +724,11 @@
         </div>
         <button onclick={drafts.discard} disabled={drafts.saving}>Discard</button>
         {#if drafts.publishToGithub}
-          <button
-            class="primary"
-            onclick={() => drafts.publishToGithub?.('COMMENT')}
-            disabled={drafts.saving}
-            title="Publish drafts as a GitHub PR review (event=COMMENT)"
-            data-tour="publish-to-github"
-          >
-            {drafts.saving ? 'Publishing…' : 'Publish to GitHub'}
-          </button>
+          {@const ghPublish = drafts.publishToGithub}
+          <PublishToGithubButton
+            publish={(event, body) => ghPublish(event, body)}
+            saving={drafts.saving}
+          />
         {:else}
           <button class="primary" onclick={drafts.publish} disabled={drafts.saving}>
             {drafts.saving ? 'Publishing…' : 'Publish'}
@@ -942,6 +953,7 @@
     {#if screen.kind === 'review'}
       {@render scrollTopUI()}
       {@render commitNavUI()}
+      {@render githubActionsUI()}
     {/if}
     {#if loading}
       <span class="spinner" aria-label="loading"></span>
@@ -1081,6 +1093,12 @@
         <div class="more-row">
           <span class="more-label">Commit</span>
           {@render commitNavUI()}
+        </div>
+      {/if}
+      {#if t.githubActions}
+        <div class="more-row">
+          <span class="more-label">GitHub</span>
+          {@render githubActionsUI()}
         </div>
       {/if}
       <div class="more-row">

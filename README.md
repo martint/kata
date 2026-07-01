@@ -84,10 +84,12 @@ card. Kata fetches the PR head into the matching workspace, creates
 a review pinned to `<base>..<head>`, and pulls existing PR
 discussion in as published kata comments (ghost-attributed to the
 original GitHub authors). When you publish your drafts, the
-toolbar's button becomes "Publish to GitHub" — replies thread onto
-the right conversations on github.com, new inline comments bundle
-into a fresh GH review, and the local kata session publishes
-in lockstep. Spec details in [`docs/SPEC.md`](docs/SPEC.md) §21;
+toolbar's button becomes "Publish to GitHub" with a dropdown for
+Approve / Request changes — replies thread onto the right
+conversations on github.com, new inline comments bundle into a
+fresh GH review, kata-side resolutions translate into
+`resolveReviewThread` mutations, and the local kata session
+publishes in lockstep. Spec details in [`docs/SPEC.md`](docs/SPEC.md) §21;
 deployment notes (single-user model, what's out of scope) in
 [`docs/deploying.md`](docs/deploying.md).
 

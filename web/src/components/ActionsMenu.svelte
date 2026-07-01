@@ -9,6 +9,8 @@
   item closes the menu before firing its handler.
 -->
 <script lang="ts">
+  import { portal } from '../lib/portal';
+
   type Item = {
     label: string;
     onclick: () => void;
@@ -95,22 +97,12 @@
     item.onclick();
   }
 
-  /** Move the dropdown into `document.body` on mount so it escapes
-   *  every `transform` / `filter` / `contain` containing block on
-   *  the way down from the document root. Without this, `position:
-   *  fixed` on the menu is resolved against the nearest transformed
-   *  ancestor — `.review-list .row-actions` uses
-   *  `transform: translateY(-50%)` for vertical centring, which
-   *  re-anchored the menu's coords to the row's local origin and
-   *  pushed the dropdown completely off-screen on desktop. */
-  function portal(node: HTMLElement) {
-    document.body.appendChild(node);
-    return {
-      destroy() {
-        node.parentNode?.removeChild(node);
-      },
-    };
-  }
+  // Portal the dropdown to `document.body` on mount so it escapes
+  // every `transform` / `filter` / `contain` containing block on the
+  // way down from the document root — without this, `position:
+  // fixed` on the menu resolves against the nearest transformed
+  // ancestor (e.g. `.review-list .row-actions`'s `translateY(-50%)`)
+  // and the dropdown ends up off-screen. See `../lib/portal.ts`.
 </script>
 
 <svelte:window
