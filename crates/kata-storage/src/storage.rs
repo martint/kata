@@ -345,10 +345,32 @@ pub trait Storage: Send + Sync {
     /// idempotency check — a reply whose mapping row already
     /// exists has already landed on github.com and must not be
     /// re-posted.
+    ///
+    /// A kata response may have up to two mapping rows: one for
+    /// the reply text (`kind = "thread_reply" | "issue_comment"`)
+    /// and, when the response's action is non-Comment, a separate
+    /// row for the resolveReviewThread side-effect (`kind =
+    /// "resolution"`). This method returns whichever row was
+    /// inserted first — callers that need to distinguish the two
+    /// should use [`Self::lookup_github_mapping_by_kata_response_kind`].
     async fn lookup_github_mapping_by_kata_response(
         &self,
         repo: &RepoId,
         kata_response_id: &ResponseId,
+    ) -> Result<Option<GithubCommentMapping>>;
+
+    /// Kind-scoped variant of
+    /// [`Self::lookup_github_mapping_by_kata_response`]. Used by
+    /// the publish loop to track the reply-post and the resolution
+    /// side-effect independently — each has its own mapping row so
+    /// a retry after one succeeded and the other failed can pick up
+    /// where it left off (see the "resolve-with-text on retry"
+    /// regression test in `crates/kata-service/tests/github_publish.rs`).
+    async fn lookup_github_mapping_by_kata_response_kind(
+        &self,
+        repo: &RepoId,
+        kata_response_id: &ResponseId,
+        kind: &str,
     ) -> Result<Option<GithubCommentMapping>>;
 
     /// Single-comment fetch by id. Used by the publish path to

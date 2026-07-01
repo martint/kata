@@ -30,7 +30,7 @@
 //! A retry will skip the items already mapped.
 
 use kata_core::{
-    Author, Comment, RepoId, Response, ReviewId, ReviewManifest, SessionId, Side,
+    Author, Comment, RepoId, ResolutionAction, Response, ReviewId, ReviewManifest, SessionId, Side,
 };
 use kata_storage::{GithubCommentMapping, Storage};
 use serde::Deserialize;
@@ -54,6 +54,20 @@ pub struct PublishCounts {
     /// instead of double-posting.
     #[serde(default)]
     pub skipped_already_published: usize,
+    /// Number of `resolveReviewThread` / `unresolveReviewThread`
+    /// GraphQL mutations that fired successfully. A non-Comment
+    /// response on a thread-anchored parent triggers one; a
+    /// resolve-only response (action != Comment AND empty body)
+    /// produces one without also posting a comment.
+    #[serde(default)]
+    pub resolutions: usize,
+    /// Resolution actions we couldn't translate to github.com because
+    /// the parent comment has no thread anchor (issue comment or
+    /// review summary parent). Recorded so the SPA can surface a
+    /// "N resolutions dropped" hint instead of silently swallowing
+    /// them.
+    #[serde(default)]
+    pub resolutions_dropped_no_thread: usize,
     /// The GH `event` we submitted the review with — echoed back
     /// so the SPA can confirm the choice without parsing the body.
     pub event: String,
@@ -210,7 +224,19 @@ pub async fn publish_session_to_github(
     let drafts = storage
         .list_drafts_for(repo, &review.review_id, author)
         .await?;
-    if drafts.comments.is_empty() && drafts.responses.is_empty() && body.is_none() {
+    // Refuse an empty publish only when the event is the neutral
+    // COMMENT — that variant carries no signal of its own, so with
+    // no drafts and no body there's literally nothing to send and
+    // the refusal is a hard input-validation error. APPROVE and
+    // REQUEST_CHANGES *are* the signal: submitting them with no
+    // drafts and no body is a valid verdict-only review (a plain
+    // "LGTM" via the toolbar's Quick Approve button, for example),
+    // so let those through.
+    if matches!(event, PublishEvent::Comment)
+        && drafts.comments.is_empty()
+        && drafts.responses.is_empty()
+        && body.is_none()
+    {
         return Err(ServiceError::BadRequest(
             "no draft comments, responses, or review body to publish".into(),
         ));
@@ -247,122 +273,171 @@ pub async fn publish_session_to_github(
     };
 
     // ---- 4. Replies first (so they appear above the bundled review on GH) ----
+    //
+    // Each response carries up to two pieces of GH-side work: a
+    // *reply post* (when the body is non-empty) and a *resolution
+    // side-effect* (when the action isn't `Comment`). We track them
+    // as separate mapping rows so a retry after one succeeded and
+    // the other failed can pick up the pending piece without redoing
+    // the completed one — critical for the resolve-with-text case
+    // (reply lands, then the mutation errors: without a separate
+    // gate the retry would silently skip the mutation forever).
     for r in &drafts.responses {
-        // Idempotency: a mid-publish failure on a prior attempt may
-        // have already landed this reply on github.com. The mapping
-        // row is the durable record of that. Skip if it exists —
-        // re-posting would create a duplicate comment.
-        if storage
-            .lookup_github_mapping_by_kata_response(repo, &r.response_id)
+        let parent_mapping = storage
+            .lookup_github_mapping_by_kata_comment(repo, &r.in_reply_to)
+            .await?;
+        let needs_reply_post = !r.body.trim().is_empty();
+        let needs_resolution = !matches!(r.action, ResolutionAction::Comment);
+        // Kind-scoped lookups so the two pieces of work track their
+        // own idempotency independently. The reply post lands under
+        // "thread_reply" or "issue_comment" (whichever endpoint it
+        // used); the resolution side-effect lands under "resolution".
+        let reply_thread_mapping = storage
+            .lookup_github_mapping_by_kata_response_kind(repo, &r.response_id, "thread_reply")
+            .await?;
+        let reply_issue_mapping = storage
+            .lookup_github_mapping_by_kata_response_kind(repo, &r.response_id, "issue_comment")
+            .await?;
+        let reply_done = reply_thread_mapping.is_some() || reply_issue_mapping.is_some();
+        let resolution_done = storage
+            .lookup_github_mapping_by_kata_response_kind(repo, &r.response_id, "resolution")
             .await?
-            .is_some()
-        {
+            .is_some();
+        let reply_pending = needs_reply_post && !reply_done;
+        let resolution_pending = needs_resolution && !resolution_done;
+        if !reply_pending && !resolution_pending {
             counts.skipped_already_published += 1;
             continue;
         }
-        let mapping = storage
-            .lookup_github_mapping_by_kata_comment(repo, &r.in_reply_to)
-            .await?;
-        // Only review-thread comments accept `in_reply_to` on
-        // `/pulls/N/comments`. Anything else (no mapping at all, or
-        // mapping to an issue comment / review summary) → post as
-        // an issue comment quoting the parent for context, the same
-        // way GitHub's own "Quote reply" UI does. Threaded posts
-        // that 422 fall through to the same quoted-issue-comment
-        // path so the reply isn't silently lost.
-        let is_thread = mapping
-            .as_ref()
-            .map(|m| matches!(m.kind.as_str(), "line_comment" | "thread_reply"))
-            .unwrap_or(false);
-        let mut quoted_fallback_reason: Option<&'static str> = (!is_thread)
-            .then(|| if mapping.is_some() { "non_thread_parent" } else { "no_mapping" });
-        let mut posted_via_thread: Option<CreatedComment> = None;
-        if is_thread {
-            if let Some(rest_id) = mapping.as_ref().and_then(|m| m.github_rest_id) {
-                match client
-                    .post::<CreatedComment>(
+        // 4a. Reply post (skipped when the response is resolve-only
+        //     or the reply mapping already exists from a prior pass).
+        if reply_pending {
+            // Only review-thread comments accept `in_reply_to` on
+            // `/pulls/N/comments`. Anything else (no parent mapping,
+            // or parent mapped to an issue comment / review summary)
+            // → post as an issue comment quoting the parent for
+            // context, the same way GitHub's own "Quote reply" UI
+            // does. Threaded posts that 422 fall through to the
+            // same quoted-issue-comment path so the reply isn't
+            // silently lost.
+            let is_thread = parent_mapping
+                .as_ref()
+                .map(|m| matches!(m.kind.as_str(), "line_comment" | "thread_reply"))
+                .unwrap_or(false);
+            let mut quoted_fallback_reason: Option<&'static str> = (!is_thread).then(|| {
+                if parent_mapping.is_some() { "non_thread_parent" } else { "no_mapping" }
+            });
+            let mut posted_via_thread: Option<CreatedComment> = None;
+            if is_thread {
+                if let Some(rest_id) = parent_mapping.as_ref().and_then(|m| m.github_rest_id) {
+                    match client
+                        .post::<CreatedComment>(
+                            &format!(
+                                "repos/{}/{}/pulls/{}/comments",
+                                pr_ref.owner, pr_ref.repo, pr_ref.number
+                            ),
+                            &serde_json::json!({
+                                "body": r.body,
+                                "in_reply_to": rest_id,
+                            }),
+                        )
+                        .await
+                    {
+                        Ok(p) => posted_via_thread = Some(p),
+                        Err(GithubError::Validation { stderr }) => {
+                            tracing::warn!(
+                                kata_response = %r.response_id,
+                                error = %stderr,
+                                "threaded reply rejected by github (422); \
+                                 falling back to a quoted issue comment",
+                            );
+                            quoted_fallback_reason = Some("threaded_422");
+                        }
+                        Err(e) => return Err(github_to_service(e)),
+                    }
+                } else {
+                    // Parent mapping recorded only the GraphQL node
+                    // id, not the REST id needed for `in_reply_to`.
+                    // Shouldn't happen for thread-anchor mappings
+                    // written by the import path, but handle
+                    // gracefully.
+                    quoted_fallback_reason = Some("missing_rest_id");
+                }
+            }
+            if let Some(posted) = posted_via_thread {
+                record_mapping_for_response(
+                    storage,
+                    repo,
+                    &review.review_id,
+                    github_pr.number,
+                    r,
+                    posted.node_id,
+                    posted.id,
+                    "thread_reply",
+                    parent_mapping.as_ref().and_then(|m| m.thread_node_id.clone()),
+                )
+                .await?;
+            } else {
+                // Quoted-issue-comment path. Look up the parent
+                // comment for a real `> @author wrote:` quote so the
+                // reader sees what we're responding to even without
+                // thread context on github. The parent-mapping (when
+                // present) names the kata comment that mirrors the
+                // imported one; otherwise the reply targets a native
+                // kata comment and we look it up directly.
+                let parent_id = parent_mapping
+                    .as_ref()
+                    .and_then(|m| m.kata_comment_id.clone())
+                    .unwrap_or_else(|| r.in_reply_to.clone());
+                let parent = storage.get_comment_by_id(repo, &parent_id).await.ok().flatten();
+                let body = build_quoted_reply_body(
+                    parent.as_ref(),
+                    &r.body,
+                    quoted_fallback_reason,
+                );
+                let posted: CreatedComment = client
+                    .post(
                         &format!(
-                            "repos/{}/{}/pulls/{}/comments",
+                            "repos/{}/{}/issues/{}/comments",
                             pr_ref.owner, pr_ref.repo, pr_ref.number
                         ),
-                        &serde_json::json!({
-                            "body": r.body,
-                            "in_reply_to": rest_id,
-                        }),
+                        &serde_json::json!({ "body": body }),
                     )
                     .await
-                {
-                    Ok(p) => posted_via_thread = Some(p),
-                    Err(GithubError::Validation { stderr }) => {
-                        tracing::warn!(
-                            kata_response = %r.response_id,
-                            error = %stderr,
-                            "threaded reply rejected by github (422); \
-                             falling back to a quoted issue comment",
-                        );
-                        quoted_fallback_reason = Some("threaded_422");
-                    }
-                    Err(e) => return Err(github_to_service(e)),
-                }
-            } else {
-                // mapping recorded only the GraphQL node id, not the
-                // REST id needed for `in_reply_to`. Shouldn't happen
-                // for thread-anchor mappings written by the import
-                // path, but handle gracefully.
-                quoted_fallback_reason = Some("missing_rest_id");
+                    .map_err(github_to_service)?;
+                record_mapping_for_response(
+                    storage,
+                    repo,
+                    &review.review_id,
+                    github_pr.number,
+                    r,
+                    posted.node_id,
+                    posted.id,
+                    "issue_comment",
+                    parent_mapping.as_ref().and_then(|m| m.thread_node_id.clone()),
+                )
+                .await?;
             }
+            counts.replies += 1;
         }
-        if let Some(posted) = posted_via_thread {
-            record_mapping_for_response(
+        // 4b. Resolution side-effect (gated independently of the
+        //     reply post so a retry after 4a succeeded but 4b
+        //     errored actually re-fires the mutation). Order in the
+        //     fresh case: reply first so the explanation shows above
+        //     the resolved event in the github.com timeline.
+        if resolution_pending {
+            apply_resolution_side_effect(
+                client,
                 storage,
                 repo,
                 &review.review_id,
                 github_pr.number,
+                parent_mapping.as_ref(),
                 r,
-                posted.node_id,
-                posted.id,
-                "thread_reply",
-                mapping.as_ref().and_then(|m| m.thread_node_id.clone()),
+                &mut counts,
             )
             .await?;
-            counts.replies += 1;
-            continue;
         }
-        // Quoted-issue-comment path. Look up the parent comment for
-        // a real `> @author wrote:` quote so the reader sees what
-        // we're responding to even without thread context on github.
-        // The mapping (when present) names the kata comment that
-        // mirrors the imported one; otherwise the reply targets a
-        // native kata comment and we look it up directly.
-        let parent_id = mapping
-            .as_ref()
-            .and_then(|m| m.kata_comment_id.clone())
-            .unwrap_or_else(|| r.in_reply_to.clone());
-        let parent = storage.get_comment_by_id(repo, &parent_id).await.ok().flatten();
-        let body = build_quoted_reply_body(parent.as_ref(), &r.body, quoted_fallback_reason);
-        let posted: CreatedComment = client
-            .post(
-                &format!(
-                    "repos/{}/{}/issues/{}/comments",
-                    pr_ref.owner, pr_ref.repo, pr_ref.number
-                ),
-                &serde_json::json!({ "body": body }),
-            )
-            .await
-            .map_err(github_to_service)?;
-        record_mapping_for_response(
-            storage,
-            repo,
-            &review.review_id,
-            github_pr.number,
-            r,
-            posted.node_id,
-            posted.id,
-            "issue_comment",
-            mapping.as_ref().and_then(|m| m.thread_node_id.clone()),
-        )
-        .await?;
-        counts.replies += 1;
     }
 
     // ---- 5. Issue-comment-style kata comments ------------------
@@ -474,10 +549,18 @@ pub async fn publish_session_to_github(
         counts.skipped_already_published += 1;
     }
 
-    // Skip the review submission when there's nothing to bundle and
-    // no body — otherwise the user would get a stray empty review
-    // on github.com.
-    if !bundled_to_post.is_empty() || effective_body.is_some() {
+    // Fire the wrapping review when there's inline work to bundle,
+    // when the user supplied a body to attach, OR when the event is
+    // non-neutral (APPROVE / REQUEST_CHANGES) and we haven't already
+    // submitted the wrapping review on a prior attempt. The event
+    // check is what carries the user's approval choice — without it,
+    // an APPROVE with no fresh inlines and no body would silently
+    // drop on the floor because the POST never fires. Idempotency
+    // for the event-only path rides on the same `review_body`
+    // mapping row the body path uses (the mapping is now written
+    // on every successful wrapping POST, not only body-carrying ones).
+    let event_pending = !matches!(event, PublishEvent::Comment) && !body_already_posted;
+    if !bundled_to_post.is_empty() || effective_body.is_some() || event_pending {
         let inline_payloads: Vec<serde_json::Value> = bundled_to_post
             .iter()
             .map(|c| build_inline_payload(c))
@@ -496,16 +579,15 @@ pub async fn publish_session_to_github(
         );
         match client.post::<CreatedReview>(&bundled_endpoint, &payload).await {
             Ok(posted) => {
-                // If a body went out on this wrapping review, record
-                // the review-body mapping so a retry that re-enters
-                // section 7 (e.g. because a later step in the publish
-                // failed and the session stayed Draft) doesn't
-                // re-post the body. The wrapping review's own node
-                // id is the natural identifier — keeps the dedup
-                // surface uniform with every other mapping row.
-                if effective_body.is_some()
-                    && let Some(node_id) = posted.node_id.clone()
-                {
+                // Record the review-body mapping on every successful
+                // wrapping POST — not just those that carried a body.
+                // The mapping is the durable "we already submitted the
+                // wrapping review for this session" marker, which the
+                // event-pending path (APPROVE / REQUEST_CHANGES with
+                // no body) leans on for retry idempotency. Without
+                // this, a retry after mid-publish failure would fire
+                // a second APPROVE review on github.com.
+                if let Some(node_id) = posted.node_id.clone() {
                     record_review_body_mapping(
                         storage,
                         repo,
@@ -594,12 +676,12 @@ pub async fn publish_session_to_github(
                         .await
                     {
                         Ok(shell_posted) => {
-                            // Shell carried the body; record the
-                            // review-body mapping so a retry skips
-                            // re-posting it.
-                            if effective_body.is_some()
-                                && let Some(node_id) = shell_posted.node_id
-                            {
+                            // Record the wrapping-review mapping on
+                            // every successful shell POST, regardless
+                            // of whether it carried a body — the row
+                            // is what keeps a retry from re-submitting
+                            // an APPROVE / REQUEST_CHANGES wrapping.
+                            if let Some(node_id) = shell_posted.node_id {
                                 record_review_body_mapping(
                                     storage,
                                     repo,
@@ -1004,5 +1086,116 @@ fn build_quoted_reply_body(
 
 fn github_to_service(err: GithubError) -> ServiceError {
     crate::github_error_to_service(err)
+}
+
+/// GraphQL mutation that flips a review thread's resolved/open
+/// state on github.com. `resolved = true` calls
+/// `resolveReviewThread`; `false` calls `unresolveReviewThread`.
+/// Both mutations accept the same `input: { threadId }` shape and
+/// are idempotent on the server — calling resolve on an
+/// already-resolved thread is a no-op (returns the same thread).
+/// Translate a kata `Response.action` into a GitHub thread mutation
+/// and record a `kind=resolution` mapping row so the mutation is
+/// idempotent across retries. Three outcomes:
+///
+/// - `action == Comment`: no-op (nothing to translate). Caller
+///   shouldn't reach this branch — the loop already gates on
+///   `!matches!(action, Comment)` before calling — but we're
+///   defensive here so future call sites don't have to duplicate
+///   the check.
+/// - `action != Comment && parent has thread_node_id`: fire the
+///   `resolveReviewThread` / `unresolveReviewThread` mutation, then
+///   write the mapping row. Order matters: if the mutation errors,
+///   no mapping row lands and a retry re-fires (the mutation is
+///   idempotent server-side, so re-firing is safe). `resolutions`
+///   is bumped on success.
+/// - `action != Comment && parent has no thread`: log a warn (GH
+///   has no thread to resolve on issue-comment / review-summary
+///   parents), write a mapping row so retries don't repeat the
+///   warn, and bump `resolutions_dropped_no_thread`.
+///
+/// Shared by the resolve-only branch and the resolve-with-text
+/// tail — every kata resolution flows through here so the mapping-
+/// row write is in one place.
+#[allow(clippy::too_many_arguments)]
+async fn apply_resolution_side_effect(
+    client: &dyn GithubClient,
+    storage: &dyn Storage,
+    repo: &RepoId,
+    review_id: &ReviewId,
+    pr_number: u32,
+    parent_mapping: Option<&GithubCommentMapping>,
+    response: &Response,
+    counts: &mut PublishCounts,
+) -> ServiceResult<()> {
+    if matches!(response.action, ResolutionAction::Comment) {
+        return Ok(());
+    }
+    let thread_node_id = parent_mapping.and_then(|m| m.thread_node_id.clone());
+    if let Some(thread_id) = thread_node_id.as_deref() {
+        let resolved = !matches!(response.action, ResolutionAction::Unresolve);
+        resolve_github_thread(client, thread_id, resolved).await?;
+        counts.resolutions += 1;
+    } else {
+        tracing::warn!(
+            kata_response = %response.response_id,
+            action = ?response.action,
+            "resolution action on a non-thread parent; \
+             GitHub has no thread to resolve — dropping",
+        );
+        counts.resolutions_dropped_no_thread += 1;
+    }
+    // Persist the mapping row *after* the mutation (or after the
+    // drop-with-warn decision) so a mid-publish crash before the row
+    // lands leaves the retry free to re-attempt. The mutation is
+    // idempotent server-side, so re-firing on retry is a no-op.
+    record_mapping_for_response(
+        storage,
+        repo,
+        review_id,
+        pr_number,
+        response,
+        Some(synth_resolution_node_id(&response.response_id)),
+        None,
+        "resolution",
+        thread_node_id,
+    )
+    .await?;
+    Ok(())
+}
+
+async fn resolve_github_thread(
+    client: &dyn GithubClient,
+    thread_node_id: &str,
+    resolved: bool,
+) -> ServiceResult<()> {
+    let mutation = if resolved {
+        r#"mutation($threadId: ID!) {
+          resolveReviewThread(input: { threadId: $threadId }) {
+            thread { id isResolved }
+          }
+        }"#
+    } else {
+        r#"mutation($threadId: ID!) {
+          unresolveReviewThread(input: { threadId: $threadId }) {
+            thread { id isResolved }
+          }
+        }"#
+    };
+    client
+        .graphql_raw(mutation, serde_json::json!({ "threadId": thread_node_id }))
+        .await
+        .map_err(github_to_service)?;
+    Ok(())
+}
+
+/// Deterministic node-id for the mapping row we write when a
+/// resolve-only response lands as a GitHub thread mutation rather
+/// than a comment. There's no GitHub comment to point at, but the
+/// mapping row is what keeps a retry from re-calling the mutation
+/// — so we synthesise one keyed on the kata response id. Prefix
+/// keeps it grep-able and obviously not a real GH node id.
+fn synth_resolution_node_id(response_id: &kata_core::ResponseId) -> String {
+    format!("kata-resolution:{}", response_id.as_str())
 }
 

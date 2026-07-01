@@ -52,11 +52,17 @@ export const tour: TourStep[] = [
       "Paste a github.com pull-request URL and kata creates a review " +
       "from it, pulling the PR head into the matching workspace and " +
       "importing the existing discussion. When you publish your " +
-      "drafts the toolbar's button becomes 'Publish to GitHub' — " +
-      "kata posts the review back, threading replies onto the same " +
-      "conversations they came from. The whole PR review cycle " +
-      "happens in kata; github.com is only for auth (via the " +
-      "`gh` CLI on your machine).",
+      "drafts the toolbar's button becomes 'Publish to GitHub', with " +
+      "a dropdown for Approve / Request changes so you can submit the " +
+      "full GitHub review event in one click. A second cluster next " +
+      "to the commit-nav chevrons carries Approve / Request changes / " +
+      "Refresh for the verdict-only + housekeeping paths — reachable " +
+      "even when you have no drafts to publish. Kata posts the review " +
+      "back, threading replies onto the same conversations they came " +
+      "from, and translates kata-side resolutions into resolveReviewThread " +
+      "mutations on github.com. The whole PR review cycle happens in " +
+      "kata; github.com is only for auth (via the `gh` CLI on your " +
+      "machine).",
   },
   {
     id: 'open-review',

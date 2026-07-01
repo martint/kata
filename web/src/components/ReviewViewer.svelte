@@ -84,7 +84,7 @@
        *  posts via the publish-github endpoint. `null` for native
        *  kata reviews. */
       publishToGithub:
-        | ((event: 'COMMENT' | 'APPROVE' | 'REQUEST_CHANGES', body?: string) => Promise<void>)
+        | ((event: 'COMMENT' | 'APPROVE' | 'REQUEST_CHANGES', body?: string) => Promise<boolean>)
         | null;
       /** PR URL on github.com for the "View on GitHub" affordance
        *  in the toolbar. Mirrors `publishToGithub`'s presence —
@@ -96,6 +96,32 @@
         prev: () => void;
         next: () => void;
       } | null;
+    } | null;
+    /** GitHub-review actions that apply regardless of whether the
+     *  user has drafts queued: quick-approve, request-changes, and
+     *  refresh-from-github. `null` for reviews that aren't bound to
+     *  a github.com PR (native kata reviews have nothing to do here).
+     *
+     *  Separate from `drafts.publishToGithub` on purpose. Drafts are
+     *  the "publish these queued comments (with an optional review
+     *  event)" path; these are the verdict-only + housekeeping path
+     *  that must be reachable when the user has nothing to say. */
+    githubActions: {
+      approve: () => Promise<boolean>;
+      requestChanges: (body: string) => Promise<boolean>;
+      refresh: () => Promise<void>;
+      /** True while an approve / request-changes publish is in
+       *  flight. Grays out the buttons so the user can't double-
+       *  submit, and drives the "Approving…" / "Requesting
+       *  changes…" in-flight labels. Mirrors `drafts.saving` for
+       *  the split button. */
+      saving: boolean;
+      /** True while a refresh-from-github is in flight. Drives the
+       *  "Refreshing…" label on the refresh button. All three
+       *  buttons are disabled during refresh — a verdict submit
+       *  mid-refresh would race the head SHA and trip head-drift
+       *  refusal, so we serialise. */
+      refreshing: boolean;
     } | null;
     /** Prev / next commit nav. `null` when the review has zero
      *  commits in its revset (nothing to scope to). Position 0 means
@@ -1566,6 +1592,16 @@
                     next: navDraftNext,
                   }
                 : null,
+          }
+        : null,
+      githubActions: current.manifest.github_pr
+        ? {
+            approve: () => publishVerdict('APPROVE'),
+            requestChanges: (body: string) =>
+              publishVerdict('REQUEST_CHANGES', body),
+            refresh: refreshFromGithub,
+            saving,
+            refreshing: refreshingFromGithub,
           }
         : null,
       commits:
@@ -3057,12 +3093,13 @@
   async function publishToGithub(
     event: 'COMMENT' | 'APPROVE' | 'REQUEST_CHANGES',
     body?: string,
-  ) {
-    if (!current.drafts.session) return;
+  ): Promise<boolean> {
+    if (!current.drafts.session) return false;
     const gh = current.manifest.github_pr;
-    if (!gh) return;
+    if (!gh) return false;
     saving = true;
     error = null;
+    let ok = false;
     try {
       await api.publishToGithub(
         repo,
@@ -3072,6 +3109,7 @@
         body,
       );
       await refresh();
+      ok = true;
     } catch (e) {
       const msg = (e as Error).message;
       // Head-drift refusal is the only failure with a one-click
@@ -3080,12 +3118,12 @@
       // prose, so re-wording the message doesn't silently break
       // the recovery path.
       if (e instanceof ApiError && e.kind === 'head_drift') {
-        const ok = confirm(
+        const yes = confirm(
           `${msg}\n\nRe-import this PR now and retry publishing? ` +
           `(Existing imported discussion stays; only the head SHA + ` +
           `any new GitHub comments are refreshed.)`,
         );
-        if (ok) {
+        if (yes) {
           try {
             await api.importGithubPr(gh.html_url);
             await refresh();
@@ -3098,6 +3136,7 @@
             );
             await refresh();
             error = null;
+            ok = true;
           } catch (e2) {
             error = (e2 as Error).message;
           }
@@ -3109,6 +3148,91 @@
       }
     } finally {
       saving = false;
+    }
+    return ok;
+  }
+
+  /** Verdict-only publish: fires an APPROVE or REQUEST_CHANGES review
+   *  even when the user has no draft comments queued. Uses the
+   *  standard publish endpoint with a session id (creating one on
+   *  demand via `ensureSession`), since the server keys the publish
+   *  by session — the endpoint accepts a session with zero drafts so
+   *  long as the event is non-neutral (see publish.rs).
+   *
+   *  Shares saving/error state with the draft-cluster `publishToGithub`
+   *  so both paths compete for the same "Publishing…" indicator, and
+   *  goes through the same head-drift recovery flow. */
+  async function publishVerdict(
+    event: 'APPROVE' | 'REQUEST_CHANGES',
+    body?: string,
+  ): Promise<boolean> {
+    const gh = current.manifest.github_pr;
+    if (!gh) return false;
+    saving = true;
+    error = null;
+    let ok = false;
+    try {
+      const sid = await ensureSession();
+      await api.publishToGithub(repo, current.manifest.number, sid, event, body);
+      await refresh();
+      ok = true;
+    } catch (e) {
+      const msg = (e as Error).message;
+      if (e instanceof ApiError && e.kind === 'head_drift') {
+        const yes = confirm(
+          `${msg}\n\nRe-import this PR now and retry? ` +
+          `(Existing imported discussion stays; only the head SHA + ` +
+          `any new GitHub comments are refreshed.)`,
+        );
+        if (yes) {
+          try {
+            await api.importGithubPr(gh.html_url);
+            await refresh();
+            const sid = await ensureSession();
+            await api.publishToGithub(
+              repo,
+              current.manifest.number,
+              sid,
+              event,
+              body,
+            );
+            await refresh();
+            error = null;
+            ok = true;
+          } catch (e2) {
+            error = (e2 as Error).message;
+          }
+        } else {
+          error = msg;
+        }
+      } else {
+        error = msg;
+      }
+    } finally {
+      saving = false;
+    }
+    return ok;
+  }
+
+  /** Re-import the PR discussion + head SHA from github.com. Same
+   *  code path the head-drift recovery uses in publishToGithub;
+   *  exposed as a manual "Refresh" button so the user can pull new
+   *  upstream comments (or a moved head) without having to publish
+   *  first. Idempotent — every imported item is deduped via the
+   *  `github_comment_map` on the server. */
+  let refreshingFromGithub = $state(false);
+  async function refreshFromGithub() {
+    const gh = current.manifest.github_pr;
+    if (!gh || refreshingFromGithub) return;
+    refreshingFromGithub = true;
+    error = null;
+    try {
+      await api.importGithubPr(gh.html_url);
+      await refresh();
+    } catch (e) {
+      error = (e as Error).message;
+    } finally {
+      refreshingFromGithub = false;
     }
   }
 

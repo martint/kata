@@ -77,6 +77,7 @@ query($owner: String!, $repo: String!, $number: Int!) {
           id isResolved isOutdated path
           line startLine originalLine originalStartLine
           diffSide
+          resolvedBy { login ... on User { databaseId avatarUrl url } }
           comments(first: 100) {
             nodes {
               id databaseId body createdAt
@@ -183,6 +184,13 @@ struct GqlReviewThread {
     original_start_line: Option<u32>,
     #[serde(default, rename = "diffSide")]
     diff_side: Option<String>,
+    /// The user who flipped the thread to `isResolved`. `None` when
+    /// the thread is open, or when GitHub can't surface the actor
+    /// (very rare — typically a deleted account). We use this to
+    /// attribute the synthetic kata `Resolve` response so the
+    /// resolution shows up authored by the right person on import.
+    #[serde(default, rename = "resolvedBy")]
+    resolved_by: Option<GqlActor>,
     comments: GqlConnection<GqlThreadComment>,
 }
 
@@ -224,6 +232,11 @@ pub struct ImportCounts {
     pub threads: usize,
     pub thread_replies: usize,
     pub skipped_already_mapped: usize,
+    /// Synthetic `Resolve` responses written when a GitHub thread
+    /// is marked `isResolved`. These flip kata's resolution state on
+    /// the anchor comment so the UI renders it as resolved (and
+    /// collapsed by default) instead of just labelling it.
+    pub thread_resolutions: usize,
 }
 
 /// Run the import. Caller guarantees the review exists and is
@@ -430,6 +443,7 @@ pub async fn import_pr_discussion(
         let thread_id = thread.id;
         let thread_is_resolved = thread.is_resolved;
         let thread_is_outdated = thread.is_outdated;
+        let thread_resolved_by = thread.resolved_by;
         // Inner pagination: a thread with >100 replies drops the
         // tail silently otherwise. Outer connections (issue
         // comments, reviews, reviewThreads) already warn on the
@@ -462,6 +476,28 @@ pub async fn import_pr_discussion(
                     pr_ref.number,
                     &thread_id,
                     &reply,
+                    &mut sessions,
+                    &mut counts,
+                )
+                .await?;
+            }
+            // If the thread flipped to resolved since the last
+            // import — or was resolved at first import but we hadn't
+            // shipped the synthetic-Resolve translation yet — write
+            // the resolution now. Idempotent by the deterministic
+            // mapping node id.
+            if thread_is_resolved
+                && let Some(parent_kata_id) =
+                    lookup_kata_comment_id(storage, repo, &anchor.id).await?
+            {
+                maybe_insert_thread_resolution(
+                    storage,
+                    repo,
+                    &review.review_id,
+                    pr_ref.number,
+                    &thread_id,
+                    &parent_kata_id,
+                    thread_resolved_by.as_ref(),
                     &mut sessions,
                     &mut counts,
                 )
@@ -528,26 +564,20 @@ pub async fn import_pr_discussion(
             lines: cmt_lines,
             columns: None,
             review_wide,
-            // Imported thread resolution → kata flag. We don't have a
-            // "resolved" flag (resolution is a per-response action,
-            // not a comment property), so encode state in the body
-            // marker below and keep the flag as Question — neutral.
+            // Flag is neutral on imported anchors — github.com has
+            // no equivalent so we don't try to guess. The resolution
+            // state translates to a synthetic `Resolve` response
+            // below (when `thread_is_resolved`), which the UI's
+            // resolution model picks up via `resolutionFor()`.
             flag: Flag::Question,
-            // Prefix imported markers so the reader knows the
-            // upstream state at a glance: resolved threads carry
-            // "(resolved)"; outdated threads carry "(outdated)".
-            // Until kata has first-class resolved/outdated metadata
-            // on imported comments, this body prefix is what the
-            // UI sees.
-            body: {
-                let mut prefix = String::new();
-                if thread_is_resolved {
-                    prefix.push_str("_(resolved)_\n\n");
-                }
-                if thread_is_outdated {
-                    prefix.push_str("_(outdated)_\n\n");
-                }
-                if prefix.is_empty() { anchor.body } else { format!("{prefix}{}", anchor.body) }
+            // Only `_(outdated)_` survives as a body prefix —
+            // kata has no first-class "outdated" state, so the
+            // marker still earns its keep there. Resolution is
+            // expressed via a synthetic Resolve response instead.
+            body: if thread_is_outdated {
+                format!("_(outdated)_\n\n{}", anchor.body)
+            } else {
+                anchor.body
             },
             external_author: external_author_for(author_actor),
         };
@@ -578,6 +608,26 @@ pub async fn import_pr_discussion(
                 &thread_id,
                 &comment_id,
                 &reply,
+                &mut sessions,
+                &mut counts,
+            )
+            .await?;
+        }
+        // Resolved threads land a synthetic `Resolve` response so
+        // kata's resolution model sees the thread as resolved
+        // (which in turn makes the UI render it collapsed by
+        // default). Attribution goes to the GitHub user who clicked
+        // "Resolve conversation"; ghost author falls back to the
+        // anchor's author when that's missing (very rare).
+        if thread_is_resolved {
+            maybe_insert_thread_resolution(
+                storage,
+                repo,
+                &review.review_id,
+                pr_ref.number,
+                &thread_id,
+                &comment_id,
+                thread_resolved_by.as_ref(),
                 &mut sessions,
                 &mut counts,
             )
@@ -698,6 +748,106 @@ async fn import_thread_reply_inner(
         .await?;
     counts.thread_replies += 1;
     Ok(())
+}
+
+/// Write a synthetic `Resolve` response on the anchor comment so
+/// kata's resolution model treats the thread as resolved. Keyed by
+/// a deterministic node id derived from the thread node id, which
+/// makes refresh imports idempotent — a second pass over an
+/// already-resolved thread is a no-op via `is_github_comment_mapped`.
+///
+/// Attribution: when GitHub gives us `resolvedBy`, the response is
+/// authored by `gh:<login>` and carries the external author for UI
+/// rendering. When it doesn't (rare — bot, deleted account, etc.),
+/// we fall back to a generic `gh:github` ghost rather than skipping
+/// the resolution, so the thread state still translates.
+#[allow(clippy::too_many_arguments)]
+async fn maybe_insert_thread_resolution(
+    storage: &dyn Storage,
+    repo: &kata_core::RepoId,
+    review_id: &ReviewId,
+    pr_number: u32,
+    thread_node_id: &str,
+    parent_comment_id: &CommentId,
+    resolved_by: Option<&GqlActor>,
+    sessions: &mut HashMap<String, SessionId>,
+    counts: &mut ImportCounts,
+) -> ServiceResult<()> {
+    let synth_node_id = thread_resolution_node_id(thread_node_id);
+    if storage.is_github_comment_mapped(repo, &synth_node_id).await? {
+        // Already imported on a prior pass.
+        return Ok(());
+    }
+    let (author, external_author, session_id) = match resolved_by {
+        Some(actor) => {
+            let s = ensure_ghost_session(storage, repo, review_id, actor, sessions).await?;
+            (ghost_author_for(actor), external_author_for(actor), s)
+        }
+        None => {
+            // GitHub gave us a resolved thread but no `resolvedBy`
+            // — typically a bot or deleted account. A
+            // `gh:github` ghost session keeps the state translation
+            // intact without inventing an identity.
+            let placeholder = GqlActor {
+                login: "github".into(),
+                database_id: None,
+                avatar_url: None,
+                url: None,
+            };
+            let s = ensure_ghost_session(storage, repo, review_id, &placeholder, sessions).await?;
+            (ghost_author_for(&placeholder), None, s)
+        }
+    };
+    // Deterministic response id so the row itself is also idempotent
+    // — `raw_insert_response_with_mapping` is a single-tx insert,
+    // and a duplicate PK on the response would surface as an error.
+    let response_id = kata_core::ResponseId::new(format!("gh-resolve-{thread_node_id}"));
+    let response = Response {
+        schema_version: SCHEMA_VERSION,
+        response_id: response_id.clone(),
+        in_reply_to: parent_comment_id.clone(),
+        session_id,
+        author,
+        // No timestamp from GitHub on resolvedBy (the API doesn't
+        // expose it on review threads). Use `now()` — the kata
+        // resolution model only cares about ordering relative to
+        // other responses on the same comment, and the synthetic
+        // resolve is by construction the latest action.
+        created_at: Utc::now(),
+        action: ResolutionAction::Resolve,
+        body: String::new(),
+    };
+    // External author for the UI ride along on the *Response*?
+    // Today kata doesn't surface external_author on responses —
+    // the synthetic resolve renders as the `gh:<login>` ghost's
+    // structural identity. That's acceptable: the UI mainly
+    // surfaces who resolved via the resolution state line in
+    // CommentThread, which already special-cases ghost authors.
+    let _ = external_author; // reserved for future response.external_author wiring
+    storage
+        .raw_insert_response_with_mapping(
+            repo,
+            &response,
+            &GithubCommentMapping {
+                github_node_id: synth_node_id,
+                github_rest_id: None,
+                kind: "thread_resolution".into(),
+                review_id: review_id.clone(),
+                pr_number,
+                kata_comment_id: None,
+                kata_response_id: Some(response_id),
+                thread_node_id: Some(thread_node_id.to_owned()),
+            },
+        )
+        .await?;
+    counts.thread_resolutions += 1;
+    Ok(())
+}
+
+fn thread_resolution_node_id(thread_node_id: &str) -> String {
+    // Distinct namespace so a future GitHub change that surfaces a
+    // real "resolution" node id can't collide with the synthetic.
+    format!("kata-import-resolution:{thread_node_id}")
 }
 
 async fn lookup_kata_comment_id(

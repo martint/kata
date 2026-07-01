@@ -430,3 +430,232 @@ async fn reply_on_existing_thread_reattaches_via_node_id_lookup() {
     );
     assert_eq!(tc3_response.body, "second reply");
 }
+
+/// Fixture: one thread that's already resolved on GitHub, with a
+/// `resolvedBy` user. Drives the synthetic-Resolve-response
+/// translation.
+fn fixture_with_resolved_thread() -> Value {
+    json!({
+        "repository": {
+            "pullRequest": {
+                "comments": {"nodes": [], "pageInfo": {"hasNextPage": false}},
+                "reviews": {"nodes": [], "pageInfo": {"hasNextPage": false}},
+                "reviewThreads": {
+                    "nodes": [{
+                        "id": "TH_R",
+                        "isResolved": true,
+                        "isOutdated": false,
+                        "path": "src/lib.rs",
+                        "line": 5,
+                        "originalLine": 5,
+                        "startLine": null,
+                        "originalStartLine": null,
+                        "diffSide": "RIGHT",
+                        "resolvedBy": {"login": "carol", "databaseId": 8,
+                                       "avatarUrl": null, "url": null},
+                        "comments": {
+                            "nodes": [{
+                                "id": "TCR_1",
+                                "databaseId": 401,
+                                "body": "please rename",
+                                "createdAt": "2026-06-20T12:00:00Z",
+                                "originalCommit": {"oid": "headsha"},
+                                "commit": {"oid": "headsha"},
+                                "replyTo": null,
+                                "author": {"login": "bob", "databaseId": 7,
+                                           "avatarUrl": null, "url": null},
+                            }],
+                            "pageInfo": {"hasNextPage": false},
+                        },
+                    }],
+                    "pageInfo": {"hasNextPage": false},
+                },
+            }
+        }
+    })
+}
+
+#[tokio::test]
+async fn resolved_thread_imports_synthetic_resolve_response() {
+    // A GitHub thread with `isResolved: true` should translate into
+    // a synthetic kata `Resolve` response on the anchor comment —
+    // not a `_(resolved)_` body prefix. The response is authored by
+    // the GitHub user who resolved the conversation.
+    let (storage, repo, manifest) = setup().await;
+    let jj = StubJj;
+    let fake = ImportFakeGithub::default();
+    fake.push_graphql(fixture_with_resolved_thread());
+
+    let counts = import_pr_discussion(
+        storage.as_ref(),
+        &jj,
+        &fake,
+        &repo,
+        &manifest,
+        &pr_ref(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(counts.threads, 1);
+    assert_eq!(counts.thread_resolutions, 1);
+
+    // Anchor body has NO _(resolved)_ prefix anymore.
+    let anchor_mapping = storage
+        .lookup_github_mapping_by_node_id(&repo, "TCR_1")
+        .await
+        .unwrap()
+        .expect("anchor should be mapped");
+    let anchor_id = anchor_mapping.kata_comment_id.expect("anchor → kata id");
+    let anchor = storage
+        .get_comment_by_id(&repo, &anchor_id)
+        .await
+        .unwrap()
+        .expect("anchor comment should exist");
+    assert_eq!(
+        anchor.body, "please rename",
+        "resolved threads should no longer carry a body prefix",
+    );
+
+    // Synthetic resolve response landed under the anchor, attributed
+    // to carol (the GitHub `resolvedBy` user).
+    let resolutions = storage
+        .list_published_responses(&repo, &manifest.review_id)
+        .await
+        .unwrap();
+    let synth = resolutions
+        .iter()
+        .find(|r| matches!(r.action, kata_core::ResolutionAction::Resolve))
+        .expect("a synthetic Resolve response should exist");
+    assert_eq!(synth.in_reply_to, anchor_id);
+    assert_eq!(synth.author.as_str(), "gh:carol");
+    assert!(synth.body.is_empty(), "synthetic resolve has no body");
+
+    // Mapping row uses the synthetic node id namespace.
+    let synth_node = format!("kata-import-resolution:TH_R");
+    assert!(
+        storage
+            .is_github_comment_mapped(&repo, &synth_node)
+            .await
+            .unwrap(),
+        "resolution mapping should be recorded under the synthetic node id",
+    );
+
+    // A second import pass over the same already-resolved thread
+    // must not duplicate the synthetic response.
+    fake.push_graphql(fixture_with_resolved_thread());
+    let counts_2 = import_pr_discussion(
+        storage.as_ref(),
+        &jj,
+        &fake,
+        &repo,
+        &manifest,
+        &pr_ref(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        counts_2.thread_resolutions, 0,
+        "second pass must not re-insert the synthetic Resolve",
+    );
+}
+
+/// Variant of `fixture_with_resolved_thread` where GitHub didn't
+/// surface a `resolvedBy` user — bot resolvers, deleted accounts,
+/// and a handful of other edge cases produce this shape. We still
+/// want the thread state to translate; the fallback is a
+/// `gh:github` ghost author.
+fn fixture_with_resolved_thread_no_resolver() -> Value {
+    let mut v = fixture_with_resolved_thread();
+    v["repository"]["pullRequest"]["reviewThreads"]["nodes"][0]["resolvedBy"] =
+        Value::Null;
+    v
+}
+
+#[tokio::test]
+async fn resolved_thread_with_no_resolver_falls_back_to_github_ghost() {
+    // When GitHub omits `resolvedBy` (bot, deleted account, etc.),
+    // the import still translates the resolution — attribution
+    // falls back to a `gh:github` ghost author so the thread state
+    // isn't lost.
+    let (storage, repo, manifest) = setup().await;
+    let jj = StubJj;
+    let fake = ImportFakeGithub::default();
+    fake.push_graphql(fixture_with_resolved_thread_no_resolver());
+
+    let counts = import_pr_discussion(
+        storage.as_ref(), &jj, &fake, &repo, &manifest, &pr_ref(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(counts.thread_resolutions, 1);
+
+    let resolutions = storage
+        .list_published_responses(&repo, &manifest.review_id)
+        .await
+        .unwrap();
+    let synth = resolutions
+        .iter()
+        .find(|r| matches!(r.action, kata_core::ResolutionAction::Resolve))
+        .expect("a synthetic Resolve response should exist");
+    assert_eq!(
+        synth.author.as_str(),
+        "gh:github",
+        "resolvedBy: null should attribute to the gh:github fallback ghost",
+    );
+}
+
+fn fixture_with_open_thread() -> Value {
+    let mut v = fixture_with_resolved_thread();
+    v["repository"]["pullRequest"]["reviewThreads"]["nodes"][0]["isResolved"] =
+        Value::Bool(false);
+    v["repository"]["pullRequest"]["reviewThreads"]["nodes"][0]["resolvedBy"] =
+        Value::Null;
+    v
+}
+
+#[tokio::test]
+async fn thread_flipping_to_resolved_on_a_later_import_pass_writes_the_resolve() {
+    // Pass 1 imports an unresolved thread — no synthetic Resolve.
+    // Pass 2 sees the same thread but now `isResolved: true` — the
+    // already-mapped-anchor branch must notice the flip and write
+    // the synthetic Resolve response.
+    let (storage, repo, manifest) = setup().await;
+    let jj = StubJj;
+    let fake = ImportFakeGithub::default();
+    fake.push_graphql(fixture_with_open_thread());
+    let counts_1 = import_pr_discussion(
+        storage.as_ref(), &jj, &fake, &repo, &manifest, &pr_ref(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(counts_1.threads, 1);
+    assert_eq!(counts_1.thread_resolutions, 0);
+
+    // Now the same thread comes back resolved.
+    fake.push_graphql(fixture_with_resolved_thread());
+    let counts_2 = import_pr_discussion(
+        storage.as_ref(), &jj, &fake, &repo, &manifest, &pr_ref(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        counts_2.threads, 0,
+        "anchor already mapped, no new thread",
+    );
+    assert_eq!(
+        counts_2.thread_resolutions, 1,
+        "the flip to isResolved:true must translate on the second pass",
+    );
+
+    // Attribution came from `resolvedBy` on pass 2, not the fallback.
+    let resolutions = storage
+        .list_published_responses(&repo, &manifest.review_id)
+        .await
+        .unwrap();
+    let synth = resolutions
+        .iter()
+        .find(|r| matches!(r.action, kata_core::ResolutionAction::Resolve))
+        .expect("a synthetic Resolve response should exist after the flip");
+    assert_eq!(synth.author.as_str(), "gh:carol");
+}

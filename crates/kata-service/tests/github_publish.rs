@@ -64,6 +64,32 @@ struct FakeGithub {
     /// commit_id.
     valid_commit_shas: Mutex<Option<std::collections::HashSet<String>>>,
     next_id: Mutex<u64>,
+    /// Recorded `graphql_raw` calls — used by tests that verify the
+    /// resolve / unresolve thread mutations fire on resolution
+    /// responses.
+    graphql_calls: Mutex<Vec<(String, Value)>>,
+    /// Queued failures for the next N graphql_raw calls. Pops from
+    /// the front; empty means "succeed". Lets tests script the
+    /// mid-publish-crash scenario the resolve+text retry path
+    /// exists to protect against.
+    graphql_errors: Mutex<Vec<String>>,
+    /// Shared timeline capturing the order of POSTs and GraphQL
+    /// calls interleaved. Each entry is a monotonically-increasing
+    /// sequence tag with a discriminator so tests can assert that
+    /// (for example) a reply POST landed strictly before its
+    /// resolveReviewThread mutation. Only populated when a test
+    /// looks at it; recording is cheap.
+    timeline: Mutex<Vec<TimelineEntry>>,
+}
+
+#[derive(Debug, Clone)]
+enum TimelineEntry {
+    Post { endpoint: String },
+    /// Full mutation/query text. Tests filter with `contains` so
+    /// they can look for whichever mutation name they care about
+    /// without worrying about which line of the multi-line string
+    /// the name lives on.
+    Graphql { query: String },
 }
 
 #[derive(Debug, Clone)]
@@ -83,6 +109,18 @@ impl FakeGithub {
 
     fn posts(&self) -> Vec<PostedCall> {
         self.posts.lock().unwrap().clone()
+    }
+
+    fn graphql_calls(&self) -> Vec<(String, Value)> {
+        self.graphql_calls.lock().unwrap().clone()
+    }
+
+    fn queue_graphql_error(&self, stderr: &str) {
+        self.graphql_errors.lock().unwrap().push(stderr.to_owned());
+    }
+
+    fn timeline(&self) -> Vec<TimelineEntry> {
+        self.timeline.lock().unwrap().clone()
     }
 
     fn set_get_response(&self, endpoint_contains: &str, body: Value) {
@@ -136,8 +174,38 @@ impl GithubClient for FakeGithub {
             .ok_or_else(|| GithubError::Parse("fake: fetch_pr not configured".into()))
     }
 
-    async fn graphql_raw(&self, _q: &str, _v: Value) -> GithubResult<Value> {
-        unimplemented!("publish path does not call graphql")
+    async fn graphql_raw(&self, q: &str, v: Value) -> GithubResult<Value> {
+        self.timeline.lock().unwrap().push(TimelineEntry::Graphql {
+            query: q.to_owned(),
+        });
+        if let Some(stderr) = self.graphql_errors.lock().unwrap().pop() {
+            // Not popping from front to keep queue semantics
+            // predictable in tests that use only one entry; if a
+            // test queues multiple, they fire LIFO. All current
+            // tests queue at most one.
+            return Err(GithubError::Api { stderr });
+        }
+        self.graphql_calls
+            .lock()
+            .unwrap()
+            .push((q.to_owned(), v.clone()));
+        // The publish path only calls `resolveReviewThread` /
+        // `unresolveReviewThread`. Return a minimal happy-path shape.
+        let resolved = q.contains("resolveReviewThread") && !q.contains("unresolveReviewThread");
+        let thread_id = v
+            .get("threadId")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let mutation_key = if q.contains("unresolveReviewThread") {
+            "unresolveReviewThread"
+        } else {
+            "resolveReviewThread"
+        };
+        Ok(json!({
+            mutation_key: {
+                "thread": { "id": thread_id, "isResolved": resolved }
+            }
+        }))
     }
 
     async fn auth_status(&self) -> GithubResult<AuthStatus> {
@@ -194,6 +262,9 @@ impl GithubClient for FakeGithub {
         self.posts.lock().unwrap().push(PostedCall {
             endpoint: endpoint.to_owned(),
             body: body.clone(),
+        });
+        self.timeline.lock().unwrap().push(TimelineEntry::Post {
+            endpoint: endpoint.to_owned(),
         });
         Ok(self.synth_created())
     }
@@ -1468,4 +1539,769 @@ async fn deep_shell_fallback_records_review_body_mapping_under_issue_comment() {
             .unwrap()
             .is_some(),
     );
+}
+
+#[tokio::test]
+async fn verdict_only_approve_with_no_drafts_publishes_successfully() {
+    // Quick-approve path: the user has no drafts and no review body,
+    // just wants to cast an APPROVE verdict. This must succeed —
+    // the "no drafts" refusal only applies to the neutral COMMENT
+    // event (which would produce a truly empty review).
+    let (storage, repo, manifest, session) = setup().await;
+    let author = Author::new("alice");
+
+    let fake = Arc::new(FakeGithub::default());
+    fake.set_pr(fake_pull_request());
+
+    publish_session_to_github(
+        storage.as_ref(), fake.as_ref(), &repo, &manifest, &session,
+        &author, PublishEvent::Approve, None,
+    )
+    .await
+    .expect("verdict-only APPROVE with no drafts must publish");
+
+    let posts = fake.posts();
+    let wrapping: Vec<_> = posts
+        .iter()
+        .filter(|p| p.endpoint.contains("/pulls/42/reviews"))
+        .collect();
+    assert_eq!(
+        wrapping.len(),
+        1,
+        "exactly one wrapping /reviews POST expected on a verdict-only publish",
+    );
+    assert_eq!(wrapping[0].body["event"], "APPROVE");
+    assert!(
+        wrapping[0].body["comments"].as_array().unwrap().is_empty(),
+        "no drafts → no bundled inlines",
+    );
+    // The wrapping-review mapping row must land so a retry doesn't
+    // double-approve — the whole point of the dedup fix that
+    // unlocked this path.
+    let mapping = storage
+        .lookup_review_body_mapping(&repo, &manifest.review_id, 42)
+        .await
+        .unwrap()
+        .expect("wrapping-review mapping should be recorded on quick-approve");
+    assert_eq!(mapping.kind, "review_body");
+}
+
+#[tokio::test]
+async fn verdict_only_comment_with_no_drafts_still_refuses() {
+    // The relaxation of the empty-publish guard is scoped to the
+    // non-neutral events. A COMMENT event with nothing to say is
+    // still an input error — otherwise the user would end up with
+    // a stray empty review on github.com.
+    use kata_service::ServiceError;
+
+    let (storage, repo, manifest, session) = setup().await;
+    let author = Author::new("alice");
+    let fake = Arc::new(FakeGithub::default());
+    fake.set_pr(fake_pull_request());
+
+    let err = publish_session_to_github(
+        storage.as_ref(), fake.as_ref(), &repo, &manifest, &session,
+        &author, PublishEvent::Comment, None,
+    )
+    .await
+    .expect_err("empty COMMENT publish must still refuse");
+    assert!(matches!(err, ServiceError::BadRequest(_)));
+    assert!(fake.posts().is_empty());
+}
+
+#[tokio::test]
+async fn approve_with_only_a_reply_still_fires_wrapping_review() {
+    // Regression: when the only publishable content is a reply to an
+    // imported thread, the wrapping /pulls/N/reviews POST is what
+    // carries the user's APPROVE choice. If the guard only checks
+    // "bundled inlines or body", APPROVE gets silently swallowed.
+    let (storage, repo, manifest, session) = setup().await;
+    let author = Author::new("alice");
+    let parent =
+        seed_imported_parent_with_mapping(storage.as_ref(), &repo, &manifest, 99999).await;
+
+    storage
+        .upsert_draft_response(
+            &repo,
+            &Response {
+                schema_version: SCHEMA_VERSION,
+                response_id: kata_core::ResponseId::new("r-1"),
+                in_reply_to: parent.comment_id.clone(),
+                session_id: session.clone(),
+                author: author.clone(),
+                created_at: Utc::now(),
+                action: ResolutionAction::Comment,
+                body: "sgtm".into(),
+            },
+        )
+        .await
+        .unwrap();
+
+    let fake = Arc::new(FakeGithub::default());
+    fake.set_pr(fake_pull_request());
+
+    publish_session_to_github(
+        storage.as_ref(), fake.as_ref(), &repo, &manifest, &session,
+        &author, PublishEvent::Approve, None,
+    )
+    .await
+    .unwrap();
+
+    let posts = fake.posts();
+    // Two POSTs expected: the threaded reply, and the wrapping
+    // /reviews POST that carries the APPROVE event with an empty
+    // comments[] and no body.
+    let reply = posts
+        .iter()
+        .find(|p| p.endpoint.contains("/pulls/42/comments"))
+        .expect("threaded reply must land");
+    assert_eq!(reply.body["in_reply_to"], 99999);
+    let wrapping = posts
+        .iter()
+        .find(|p| p.endpoint.contains("/pulls/42/reviews"))
+        .expect(
+            "wrapping /reviews POST must fire so the APPROVE event lands, \
+             even without new inline comments or a body",
+        );
+    assert_eq!(wrapping.body["event"], "APPROVE");
+    assert!(
+        wrapping.body["comments"].as_array().unwrap().is_empty(),
+        "no new inlines to bundle, but the event still needs a wrapping review",
+    );
+    assert!(
+        wrapping.body.get("body").is_none()
+            || wrapping.body["body"].as_str() == Some(""),
+        "no body was supplied and none should be invented",
+    );
+
+    // The wrapping review's mapping row is now written unconditionally
+    // so a retry doesn't re-submit the APPROVE.
+    let body_mapping = storage
+        .lookup_review_body_mapping(&repo, &manifest.review_id, 42)
+        .await
+        .unwrap()
+        .expect("wrapping review mapping should be recorded even without a body");
+    assert_eq!(body_mapping.kind, "review_body");
+}
+
+#[tokio::test]
+async fn approve_retry_skips_the_wrapping_review() {
+    // Companion to the test above: once the wrapping /reviews POST has
+    // landed (mapping row present), a retry publish call must not
+    // re-submit an APPROVE — that would create a duplicate review on
+    // github.com. The dedup rides on the same review_body mapping the
+    // body path uses, now that the row is written on every wrapping
+    // submission.
+    let (storage, repo, manifest, session) = setup().await;
+    let author = Author::new("alice");
+
+    // Pre-seed a review_body mapping to simulate a completed prior
+    // wrapping submission.
+    storage
+        .insert_github_comment_mapping(
+            &repo,
+            &GithubCommentMapping {
+                github_node_id: "PRIOR_WRAPPER".into(),
+                github_rest_id: Some(555),
+                kind: "review_body".into(),
+                review_id: manifest.review_id.clone(),
+                pr_number: 42,
+                kata_comment_id: None,
+                kata_response_id: None,
+                thread_node_id: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    // Give the retry something to do so the "no drafts" early-return
+    // doesn't fire. An issue comment goes through its own endpoint
+    // and doesn't need the wrapping review.
+    storage
+        .upsert_draft_comment(
+            &repo,
+            &make_draft_comment(
+                &manifest.review_id, &session, "c-rw",
+                None, None, None, true, "just a nit",
+            ),
+        )
+        .await
+        .unwrap();
+
+    let fake = Arc::new(FakeGithub::default());
+    fake.set_pr(fake_pull_request());
+
+    publish_session_to_github(
+        storage.as_ref(), fake.as_ref(), &repo, &manifest, &session,
+        &author, PublishEvent::Approve, None,
+    )
+    .await
+    .unwrap();
+
+    let posts = fake.posts();
+    let has_wrapping = posts.iter().any(|p| p.endpoint.contains("/pulls/42/reviews"));
+    assert!(
+        !has_wrapping,
+        "wrapping /reviews POST must be skipped when the prior submission \
+         already landed — otherwise a retry would double-approve",
+    );
+}
+
+#[tokio::test]
+async fn resolve_only_response_skips_post_and_calls_resolve_mutation() {
+    // A response with action=Resolve and empty body must not post
+    // a comment to github.com — instead the publish path translates
+    // it into a `resolveReviewThread` GraphQL mutation against the
+    // parent thread's node id.
+    let (storage, repo, manifest, session) = setup().await;
+    let author = Author::new("alice");
+    let parent =
+        seed_imported_parent_with_mapping(storage.as_ref(), &repo, &manifest, 99999).await;
+
+    let response_id = kata_core::ResponseId::new("r-resolve");
+    storage
+        .upsert_draft_response(
+            &repo,
+            &Response {
+                schema_version: SCHEMA_VERSION,
+                response_id: response_id.clone(),
+                in_reply_to: parent.comment_id.clone(),
+                session_id: session.clone(),
+                author: author.clone(),
+                created_at: Utc::now(),
+                action: ResolutionAction::Resolve,
+                body: "".into(),
+            },
+        )
+        .await
+        .unwrap();
+
+    let fake = Arc::new(FakeGithub::default());
+    fake.set_pr(fake_pull_request());
+
+    let counts = publish_session_to_github(
+        storage.as_ref(), fake.as_ref(), &repo, &manifest, &session,
+        &author, PublishEvent::Comment, None,
+    )
+    .await
+    .unwrap();
+
+    // No REST POSTs landed (no body, no inline comments, just the
+    // resolution mutation).
+    assert!(
+        fake.posts().is_empty(),
+        "resolve-only response must not POST a comment, got {:#?}",
+        fake.posts(),
+    );
+    // The resolveReviewThread mutation fired against the thread node id.
+    let calls = fake.graphql_calls();
+    assert_eq!(calls.len(), 1, "exactly one graphql call expected");
+    assert!(calls[0].0.contains("resolveReviewThread"));
+    assert!(!calls[0].0.contains("unresolveReviewThread"));
+    assert_eq!(calls[0].1["threadId"], "MDExTH1");
+    assert_eq!(counts.resolutions, 1);
+    assert_eq!(counts.resolutions_dropped_no_thread, 0);
+    assert_eq!(counts.replies, 0);
+
+    // Mapping row was written under a synthetic kata-resolution
+    // node id so a retry won't re-call the mutation.
+    let mapping = storage
+        .lookup_github_mapping_by_kata_response(&repo, &response_id)
+        .await
+        .unwrap()
+        .expect("resolution mapping should be recorded");
+    assert_eq!(mapping.kind, "resolution");
+    assert!(mapping.github_node_id.starts_with("kata-resolution:"));
+}
+
+#[tokio::test]
+async fn unresolve_only_response_calls_unresolve_mutation() {
+    let (storage, repo, manifest, session) = setup().await;
+    let author = Author::new("alice");
+    let parent =
+        seed_imported_parent_with_mapping(storage.as_ref(), &repo, &manifest, 99999).await;
+
+    storage
+        .upsert_draft_response(
+            &repo,
+            &Response {
+                schema_version: SCHEMA_VERSION,
+                response_id: kata_core::ResponseId::new("r-unres"),
+                in_reply_to: parent.comment_id.clone(),
+                session_id: session.clone(),
+                author: author.clone(),
+                created_at: Utc::now(),
+                action: ResolutionAction::Unresolve,
+                body: "".into(),
+            },
+        )
+        .await
+        .unwrap();
+
+    let fake = Arc::new(FakeGithub::default());
+    fake.set_pr(fake_pull_request());
+
+    publish_session_to_github(
+        storage.as_ref(), fake.as_ref(), &repo, &manifest, &session,
+        &author, PublishEvent::Comment, None,
+    )
+    .await
+    .unwrap();
+
+    let calls = fake.graphql_calls();
+    assert_eq!(calls.len(), 1);
+    assert!(
+        calls[0].0.contains("unresolveReviewThread"),
+        "expected unresolveReviewThread mutation, got: {}",
+        calls[0].0,
+    );
+}
+
+#[tokio::test]
+async fn resolve_with_text_posts_comment_and_calls_mutation() {
+    // A response that has BOTH a non-Comment action AND a non-empty
+    // body posts the body as a threaded reply *and* fires the
+    // resolution mutation. Order: comment first, then resolve.
+    let (storage, repo, manifest, session) = setup().await;
+    let author = Author::new("alice");
+    let parent =
+        seed_imported_parent_with_mapping(storage.as_ref(), &repo, &manifest, 99999).await;
+
+    storage
+        .upsert_draft_response(
+            &repo,
+            &Response {
+                schema_version: SCHEMA_VERSION,
+                response_id: kata_core::ResponseId::new("r-mix"),
+                in_reply_to: parent.comment_id.clone(),
+                session_id: session.clone(),
+                author: author.clone(),
+                created_at: Utc::now(),
+                action: ResolutionAction::Resolve,
+                body: "fixed in commit abc".into(),
+            },
+        )
+        .await
+        .unwrap();
+
+    let fake = Arc::new(FakeGithub::default());
+    fake.set_pr(fake_pull_request());
+
+    let counts = publish_session_to_github(
+        storage.as_ref(), fake.as_ref(), &repo, &manifest, &session,
+        &author, PublishEvent::Comment, None,
+    )
+    .await
+    .unwrap();
+
+    let posts = fake.posts();
+    assert_eq!(posts.len(), 1, "expected one comment POST, got {posts:#?}");
+    assert!(posts[0].endpoint.contains("/pulls/42/comments"));
+    assert_eq!(posts[0].body["body"], "fixed in commit abc");
+    assert_eq!(posts[0].body["in_reply_to"], 99999);
+
+    let calls = fake.graphql_calls();
+    assert_eq!(calls.len(), 1);
+    assert!(calls[0].0.contains("resolveReviewThread"));
+    assert_eq!(counts.replies, 1);
+    assert_eq!(counts.resolutions, 1);
+}
+
+#[tokio::test]
+async fn resolve_with_text_orders_reply_before_mutation() {
+    // The production comment says "order matters: reply first so
+    // the explanation appears above the resolved event on
+    // github.com". Verify via the shared timeline that the reply
+    // POST landed strictly before the resolveReviewThread mutation.
+    let (storage, repo, manifest, session) = setup().await;
+    let author = Author::new("alice");
+    let parent =
+        seed_imported_parent_with_mapping(storage.as_ref(), &repo, &manifest, 99999).await;
+
+    storage
+        .upsert_draft_response(
+            &repo,
+            &Response {
+                schema_version: SCHEMA_VERSION,
+                response_id: kata_core::ResponseId::new("r-order"),
+                in_reply_to: parent.comment_id.clone(),
+                session_id: session.clone(),
+                author: author.clone(),
+                created_at: Utc::now(),
+                action: ResolutionAction::Resolve,
+                body: "explanation".into(),
+            },
+        )
+        .await
+        .unwrap();
+
+    let fake = Arc::new(FakeGithub::default());
+    fake.set_pr(fake_pull_request());
+
+    publish_session_to_github(
+        storage.as_ref(), fake.as_ref(), &repo, &manifest, &session,
+        &author, PublishEvent::Comment, None,
+    )
+    .await
+    .unwrap();
+
+    let tl = fake.timeline();
+    let reply_idx = tl
+        .iter()
+        .position(|e| matches!(e, TimelineEntry::Post { endpoint } if endpoint.contains("/pulls/42/comments")))
+        .expect("reply POST must appear in the timeline");
+    let mutation_idx = tl
+        .iter()
+        .position(|e| matches!(e, TimelineEntry::Graphql { query } if query.contains("resolveReviewThread")))
+        .expect("resolveReviewThread mutation must appear in the timeline");
+    assert!(
+        reply_idx < mutation_idx,
+        "reply POST must land before the resolveReviewThread mutation; \
+         timeline: {tl:#?}",
+    );
+}
+
+#[tokio::test]
+async fn resolve_with_text_survives_a_failed_mutation_via_retry() {
+    // Regression: when the reply POST succeeds but the resolution
+    // mutation errors mid-publish, the retry must re-fire the
+    // mutation instead of skipping the whole response. Without the
+    // separate resolution-mapping row, the reply's mapping alone
+    // would gate the top-of-loop skip and the resolution would be
+    // lost forever.
+    let (storage, repo, manifest, session) = setup().await;
+    let author = Author::new("alice");
+    let parent =
+        seed_imported_parent_with_mapping(storage.as_ref(), &repo, &manifest, 99999).await;
+
+    let response_id = kata_core::ResponseId::new("r-retry-mix");
+    let make_draft = || Response {
+        schema_version: SCHEMA_VERSION,
+        response_id: response_id.clone(),
+        in_reply_to: parent.comment_id.clone(),
+        session_id: session.clone(),
+        author: author.clone(),
+        created_at: Utc::now(),
+        action: ResolutionAction::Resolve,
+        body: "please rename".into(),
+    };
+    storage.upsert_draft_response(&repo, &make_draft()).await.unwrap();
+
+    let fake = Arc::new(FakeGithub::default());
+    fake.set_pr(fake_pull_request());
+    fake.queue_graphql_error("HTTP 500 (simulated)");
+
+    // Pass 1: reply lands, mutation errors, publish returns Err.
+    let err = publish_session_to_github(
+        storage.as_ref(), fake.as_ref(), &repo, &manifest, &session,
+        &author, PublishEvent::Comment, None,
+    )
+    .await
+    .expect_err("first pass should fail on the mutation error");
+    let _ = err;
+    // Reply mapping was written; resolution mapping was not.
+    assert!(
+        storage
+            .lookup_github_mapping_by_kata_response_kind(&repo, &response_id, "thread_reply")
+            .await
+            .unwrap()
+            .is_some(),
+        "reply mapping should exist after pass 1",
+    );
+    assert!(
+        storage
+            .lookup_github_mapping_by_kata_response_kind(&repo, &response_id, "resolution")
+            .await
+            .unwrap()
+            .is_none(),
+        "resolution mapping should NOT exist after the mutation errored",
+    );
+
+    // Re-upsert the draft to mimic real state after a mid-publish
+    // failure (session stayed Draft, drafts still present).
+    storage.upsert_draft_response(&repo, &make_draft()).await.unwrap();
+
+    // Pass 2: mutation re-fires; reply is skipped via its mapping.
+    let counts_2 = publish_session_to_github(
+        storage.as_ref(), fake.as_ref(), &repo, &manifest, &session,
+        &author, PublishEvent::Comment, None,
+    )
+    .await
+    .unwrap();
+    let reply_posts: Vec<_> = fake
+        .posts()
+        .into_iter()
+        .filter(|p| p.endpoint.contains("/pulls/42/comments"))
+        .collect();
+    assert_eq!(
+        reply_posts.len(),
+        1,
+        "reply POST must not duplicate on retry",
+    );
+    assert_eq!(counts_2.resolutions, 1, "resolution mutation must re-fire");
+    // Resolution mapping row now exists.
+    assert!(
+        storage
+            .lookup_github_mapping_by_kata_response_kind(&repo, &response_id, "resolution")
+            .await
+            .unwrap()
+            .is_some(),
+    );
+}
+
+#[tokio::test]
+async fn wont_fix_only_response_calls_resolve_mutation() {
+    // WontFix is behaviorally identical to Resolve on the GH side
+    // (both flip a thread to isResolved). SPEC §21.4 lists it, so
+    // wire the case through even though the mutation is the same.
+    let (storage, repo, manifest, session) = setup().await;
+    let author = Author::new("alice");
+    let parent =
+        seed_imported_parent_with_mapping(storage.as_ref(), &repo, &manifest, 99999).await;
+
+    storage
+        .upsert_draft_response(
+            &repo,
+            &Response {
+                schema_version: SCHEMA_VERSION,
+                response_id: kata_core::ResponseId::new("r-wontfix"),
+                in_reply_to: parent.comment_id.clone(),
+                session_id: session.clone(),
+                author: author.clone(),
+                created_at: Utc::now(),
+                action: ResolutionAction::WontFix,
+                body: "".into(),
+            },
+        )
+        .await
+        .unwrap();
+
+    let fake = Arc::new(FakeGithub::default());
+    fake.set_pr(fake_pull_request());
+
+    publish_session_to_github(
+        storage.as_ref(), fake.as_ref(), &repo, &manifest, &session,
+        &author, PublishEvent::Comment, None,
+    )
+    .await
+    .unwrap();
+
+    let calls = fake.graphql_calls();
+    assert_eq!(calls.len(), 1);
+    assert!(
+        calls[0].0.contains("resolveReviewThread")
+            && !calls[0].0.contains("unresolveReviewThread"),
+        "WontFix must fire resolveReviewThread (same as Resolve)",
+    );
+}
+
+#[tokio::test]
+async fn resolve_with_text_on_non_thread_parent_posts_and_drops_resolution() {
+    // Mirror of the resolve+text case, but the parent has no thread
+    // anchor (a review-summary / issue-comment parent). The reply
+    // text posts through the quoted-issue-comment path as normal,
+    // but the resolution has nowhere to land on github.com — it's
+    // dropped with a warn and the drop is surfaced via
+    // `resolutions_dropped_no_thread`.
+    let (storage, repo, manifest, session) = setup().await;
+    let author = Author::new("alice");
+
+    let other_session = SessionId::new("other-pub-session");
+    storage
+        .raw_insert_session(
+            &repo,
+            &kata_core::Session {
+                schema_version: SCHEMA_VERSION,
+                session_id: other_session.clone(),
+                review_id: manifest.review_id.clone(),
+                author: Author::new("carol"),
+                status: kata_core::documents::SessionStatus::Published,
+                created_at: Utc::now(),
+                published_at: Some(Utc::now()),
+            },
+        )
+        .await
+        .unwrap();
+    let parent = make_draft_comment(
+        &manifest.review_id, &other_session, "c-native",
+        None, None, None, true, "native review-wide comment",
+    );
+    storage.raw_insert_comment(&repo, &parent).await.unwrap();
+
+    storage
+        .upsert_draft_response(
+            &repo,
+            &Response {
+                schema_version: SCHEMA_VERSION,
+                response_id: kata_core::ResponseId::new("r-mix-orphan"),
+                in_reply_to: parent.comment_id.clone(),
+                session_id: session.clone(),
+                author: author.clone(),
+                created_at: Utc::now(),
+                action: ResolutionAction::Resolve,
+                body: "fixed in a follow-up".into(),
+            },
+        )
+        .await
+        .unwrap();
+
+    let fake = Arc::new(FakeGithub::default());
+    fake.set_pr(fake_pull_request());
+
+    let counts = publish_session_to_github(
+        storage.as_ref(), fake.as_ref(), &repo, &manifest, &session,
+        &author, PublishEvent::Comment, None,
+    )
+    .await
+    .unwrap();
+
+    // Reply landed as an issue comment (no thread to reply to).
+    let posts = fake.posts();
+    assert_eq!(posts.len(), 1);
+    assert!(posts[0].endpoint.contains("/issues/42/comments"));
+    // No mutation fired.
+    assert!(fake.graphql_calls().is_empty());
+    assert_eq!(counts.replies, 1);
+    assert_eq!(counts.resolutions, 0);
+    assert_eq!(counts.resolutions_dropped_no_thread, 1);
+}
+
+#[tokio::test]
+async fn resolve_only_publish_retry_skips_the_mutation() {
+    // Simulates a mid-publish failure that left a resolve-only
+    // response's mapping row behind (pass 1 fired the mutation +
+    // wrote the mapping, then a later step in the publish loop
+    // errored and the session stayed Draft). On the retry, the
+    // response must short-circuit at the mapping check — no new
+    // mutation. Companion to `approve_retry_skips_the_wrapping_review`.
+    let (storage, repo, manifest, session) = setup().await;
+    let author = Author::new("alice");
+    let parent =
+        seed_imported_parent_with_mapping(storage.as_ref(), &repo, &manifest, 99999).await;
+
+    let response_id = kata_core::ResponseId::new("r-resolve-retry");
+    let response = Response {
+        schema_version: SCHEMA_VERSION,
+        response_id: response_id.clone(),
+        in_reply_to: parent.comment_id.clone(),
+        session_id: session.clone(),
+        author: author.clone(),
+        created_at: Utc::now(),
+        action: ResolutionAction::Resolve,
+        body: "".into(),
+    };
+    storage.upsert_draft_response(&repo, &response).await.unwrap();
+    // Pre-seed the mapping row a prior successful mutation would
+    // have written, mirroring the state after a mid-publish crash.
+    storage
+        .insert_github_comment_mapping(
+            &repo,
+            &GithubCommentMapping {
+                review_id: manifest.review_id.clone(),
+                kata_comment_id: None,
+                kata_response_id: Some(response_id.clone()),
+                github_node_id: format!("kata-resolution:{}", response_id.as_str()),
+                github_rest_id: None,
+                pr_number: 42,
+                kind: "resolution".into(),
+                thread_node_id: Some("MDExTH1".into()),
+            },
+        )
+        .await
+        .unwrap();
+
+    let fake = Arc::new(FakeGithub::default());
+    fake.set_pr(fake_pull_request());
+
+    let counts = publish_session_to_github(
+        storage.as_ref(), fake.as_ref(), &repo, &manifest, &session,
+        &author, PublishEvent::Comment, None,
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        fake.graphql_calls().is_empty(),
+        "retry must not re-fire the resolveReviewThread mutation",
+    );
+    assert!(fake.posts().is_empty(), "no comment POSTs on retry either");
+    assert_eq!(counts.resolutions, 0);
+    assert_eq!(counts.skipped_already_published, 1);
+}
+
+#[tokio::test]
+async fn resolve_only_on_non_thread_parent_skips_with_warn() {
+    // Resolve-only response whose parent has no thread_node_id —
+    // e.g. an issue-comment or review-summary parent. No GitHub
+    // thread to resolve; the response is dropped without any
+    // mutation, but the mapping row is still written so a retry
+    // doesn't try again.
+    let (storage, repo, manifest, session) = setup().await;
+    let author = Author::new("alice");
+
+    // Seed a native kata parent comment (no GH mapping). Park it in
+    // a separate published session so it doesn't show up as a draft
+    // when the publish flow lists alice's drafts.
+    let other_session = SessionId::new("other-pub-session");
+    storage
+        .raw_insert_session(
+            &repo,
+            &kata_core::Session {
+                schema_version: SCHEMA_VERSION,
+                session_id: other_session.clone(),
+                review_id: manifest.review_id.clone(),
+                author: Author::new("carol"),
+                status: kata_core::documents::SessionStatus::Published,
+                created_at: Utc::now(),
+                published_at: Some(Utc::now()),
+            },
+        )
+        .await
+        .unwrap();
+    let parent = make_draft_comment(
+        &manifest.review_id, &other_session, "c-native",
+        None, None, None, true, "native review-wide comment",
+    );
+    storage.raw_insert_comment(&repo, &parent).await.unwrap();
+
+    let response_id = kata_core::ResponseId::new("r-orphan-resolve");
+    storage
+        .upsert_draft_response(
+            &repo,
+            &Response {
+                schema_version: SCHEMA_VERSION,
+                response_id: response_id.clone(),
+                in_reply_to: parent.comment_id.clone(),
+                session_id: session.clone(),
+                author: author.clone(),
+                created_at: Utc::now(),
+                action: ResolutionAction::Resolve,
+                body: "".into(),
+            },
+        )
+        .await
+        .unwrap();
+
+    let fake = Arc::new(FakeGithub::default());
+    fake.set_pr(fake_pull_request());
+
+    let counts = publish_session_to_github(
+        storage.as_ref(), fake.as_ref(), &repo, &manifest, &session,
+        &author, PublishEvent::Comment, None,
+    )
+    .await
+    .unwrap();
+
+    assert!(fake.posts().is_empty());
+    assert!(fake.graphql_calls().is_empty());
+    assert_eq!(counts.resolutions, 0);
+    assert_eq!(counts.resolutions_dropped_no_thread, 1);
+    // Mapping row still written, with no thread anchor.
+    let mapping = storage
+        .lookup_github_mapping_by_kata_response(&repo, &response_id)
+        .await
+        .unwrap()
+        .expect("resolution mapping should be recorded even without a thread");
+    assert_eq!(mapping.kind, "resolution");
+    assert!(mapping.thread_node_id.is_none());
 }
