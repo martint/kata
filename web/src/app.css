@@ -1094,7 +1094,24 @@ input[type='text'] {
   display: flex;
   align-items: baseline;
   gap: 12px;
-  flex: 0 0 auto;
+  /* `1` shrink (not `0`) so a very long revset can give ground to the
+   * review title's ellipsis rather than the other way round. Combined
+   * with the `.revset` truncation below, the common case never
+   * shrinks; only pathologically long revsets clip. */
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+/* Cap and ellipsize the revset. `shortenRevset` handles the common
+ * `<40-char base sha>..<40-char head sha>` case cosmetically; this
+ * cap covers everything else (long symbolic revsets, chained
+ * expressions) so the meta cluster never crowds the review title. */
+.review-list .meta.revset {
+  max-width: 22ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
 @media (max-width: 640px) {

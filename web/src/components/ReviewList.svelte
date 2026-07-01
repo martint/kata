@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { api } from '../lib/api';
   import { renderMarkdown } from '../lib/markdown';
+  import { shortenRevset } from '../lib/revset';
   import type {
     Bookmark,
     GithubStatus,
@@ -951,7 +952,9 @@
               <strong>{s.manifest.name}</strong>
             </span>
             <span class="row-meta">
-              <span class="meta revset">{s.manifest.revset}</span>
+              <span class="meta revset" title={s.manifest.revset}
+                >{shortenRevset(s.manifest.revset)}</span
+              >
               <span class="meta when" title={lastActivity(s)}>{relative(lastActivity(s))}</span>
               <span class="meta">{s.published_comment_count} comments</span>
             </span>
@@ -988,7 +991,9 @@
                 <span class="archived-tag">archived</span>
               </span>
               <span class="row-meta">
-                <span class="meta revset">{s.manifest.revset}</span>
+                <span class="meta revset" title={s.manifest.revset}
+                >{shortenRevset(s.manifest.revset)}</span
+              >
                 <span class="meta when" title={lastActivity(s)}>{relative(lastActivity(s))}</span>
                 <span class="meta">{s.published_comment_count} comments</span>
               </span>
