@@ -30,6 +30,11 @@ MCP server can front multiple repositories; every tool call takes a
      line counts, and `binary`. Hunks are **not** inlined, to keep
      the response small for big reviews.
    - `comments` / `responses` — already-published feedback.
+     Only **unresolved** threads are inlined by default so a review
+     with a long resolved history doesn't blow your context budget;
+     a `comments_omitted` count tells you what was withheld. Pass
+     `comments: "all"` when you need the full discussion history, or
+     `comments: "none"` for a diff-only response.
    - `drafts` — your unpublished work in the open session.
 
    Call `read_file_diff` (with the same `review_id` plus the `path`
