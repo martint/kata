@@ -2779,6 +2779,7 @@ name = "kata-mcp"
 version = "0.0.0"
 dependencies = [
  "axum",
+ "chrono",
  "kata-core",
  "kata-jj",
  "kata-service",

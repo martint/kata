@@ -1125,7 +1125,13 @@ Two pieces:
   matching slug. `get_review` returns file-level
   metadata only; `read_file_diff` fetches the cumulative
   `base..tip` hunks for one file (matching the SPA's lazy-per-file
-  fetch pattern). `read_commit_diff` isolates one commit's
+  fetch pattern). `get_review` also inlines only *unresolved*
+  comment threads by default — reviews with a long resolved
+  history would otherwise balloon the response past an agent's
+  context budget; pass `comments: "all"` for the full discussion
+  history or `comments: "none"` for diff-only, and a
+  `comments_omitted` count reports whatever the filter withheld so
+  nothing is dropped silently. `read_commit_diff` isolates one commit's
   contribution to the stack — required for any per-commit claim,
   since the cumulative diff cannot tell which commit introduced
   which lines. `manifest.commits[].changed_files[]` carries a

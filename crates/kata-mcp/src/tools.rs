@@ -5,8 +5,8 @@ use kata_core::{
     ResolutionAction, ResponseId, ReviewId, RevSet, SessionId, Side,
 };
 use kata_service::{
-    AnnotationInput, CreateReviewParams, DraftCommentInput, DraftResponseInput, ReviewService,
-    ServiceError,
+    AnnotationInput, CreateReviewParams, DraftCommentInput, DraftResponseInput, ResponseView,
+    ReviewService, ReviewView, ServiceError,
 };
 use rmcp::{
     ErrorData as McpError, ServerHandler,
@@ -91,14 +91,14 @@ impl ReviewMcp {
     }
 
     #[tool(
-        description = "Open a review and return its manifest, file-level diff metadata (paths, +/- counts, status), published comments/responses, and the agent's own drafts. Hunks are not inlined by default — fetch them per file with `read_file_diff`, or pass `include_hunks: true` to get every file's hunks inline in one round-trip (expensive for big reviews; prefer the per-file fetch when context budget matters). Pass `patchset` to view an earlier round; omit for the latest."
+        description = "Open a review and return its manifest, file-level diff metadata (paths, +/- counts, status), published comments/responses, and the agent's own drafts. Hunks are not inlined by default — fetch them per file with `read_file_diff`, or pass `include_hunks: true` to get every file's hunks inline in one round-trip (expensive for big reviews; prefer the per-file fetch when context budget matters). Comments default to `unresolved` only — reviews with a long resolved-thread history would otherwise balloon the response; pass `comments: \"all\"` for the full discussion history or `comments: \"none\"` for diff-only. Whatever is withheld is reported as a `comments_omitted` count (never silently dropped). Pass `patchset` to view an earlier round; omit for the latest."
     )]
     async fn get_review(
         &self,
         Parameters(args): Parameters<GetReviewArgs>,
     ) -> Result<CallToolResult, McpError> {
         let repo = self.resolve(&args.repo)?;
-        let view = self
+        let mut view = self
             .service
             .open_review(
                 &repo,
@@ -110,7 +110,11 @@ impl ReviewMcp {
             )
             .await
             .map_err(into_mcp)?;
-        Ok(text_json(&view))
+        let comments_omitted = apply_comment_scope(&mut view, args.comments);
+        Ok(text_json(&GetReviewResponse {
+            view,
+            comments_omitted,
+        }))
     }
 
     #[tool(
@@ -912,6 +916,30 @@ pub struct ResolveRepoArgs {
     pub commit: String,
 }
 
+/// How much of a review's published comment/response history to
+/// inline in a `get_review` response. Large, long-running reviews
+/// accumulate many resolved threads whose text rarely matters to an
+/// agent picking up the work — inlining all of them can blow past
+/// the context budget. Default is [`Self::Unresolved`]: the threads
+/// that still need attention, plus a count of what was withheld.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum CommentScope {
+    /// Only threads whose latest resolution action leaves them open
+    /// (never resolved, or reopened after a resolve). The actionable
+    /// set. Default.
+    #[default]
+    Unresolved,
+    /// Every published comment and response, resolved or not. Use
+    /// when you need the full discussion history (e.g. summarising
+    /// how a decision was reached).
+    All,
+    /// Drop all published comments and responses — diff + manifest
+    /// only. Use when you only care about the code and want the
+    /// smallest possible response.
+    None,
+}
+
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct GetReviewArgs {
     pub repo: String,
@@ -925,6 +953,13 @@ pub struct GetReviewArgs {
     /// file via `read_file_diff` instead.
     #[serde(default)]
     pub include_hunks: bool,
+    /// Which published comments/responses to inline. Default
+    /// `unresolved` keeps the response small on reviews with a long
+    /// resolved history; pass `all` for the full thread history or
+    /// `none` for diff-only. Whatever is withheld is reported as a
+    /// `comments_omitted` count so nothing is hidden silently.
+    #[serde(default)]
+    pub comments: CommentScope,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -1177,6 +1212,97 @@ fn text_json<T: Serialize>(value: &T) -> CallToolResult {
     }
 }
 
+/// The `get_review` payload: the review view plus, when
+/// [`CommentScope`] withheld any published comments/responses, a
+/// count of what was dropped so the agent can opt into `all` if it
+/// needs the full history. The view is flattened so the response
+/// shape is identical to the bare `ReviewView` whenever nothing was
+/// omitted.
+#[derive(Serialize)]
+struct GetReviewResponse {
+    #[serde(flatten)]
+    view: ReviewView,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    comments_omitted: Option<CommentsOmitted>,
+}
+
+/// What a non-`all` [`CommentScope`] withheld from a `get_review`
+/// response. Present only when the filter actually dropped
+/// something — nothing is hidden silently.
+#[derive(Serialize)]
+struct CommentsOmitted {
+    /// The filter that was applied (`"unresolved"` or `"none"`).
+    filter: &'static str,
+    /// Number of published comments not inlined.
+    comments: usize,
+    /// Number of published responses not inlined.
+    responses: usize,
+    hint: &'static str,
+}
+
+/// Trim `view`'s published comments/responses per `scope`, in place.
+/// Returns a [`CommentsOmitted`] describing what was dropped, or
+/// `None` when nothing was (either `scope == All` or the review had
+/// nothing matching the filter). Drafts are never touched — they're
+/// the agent's own in-progress work and are always small.
+fn apply_comment_scope(view: &mut ReviewView, scope: CommentScope) -> Option<CommentsOmitted> {
+    let before_comments = view.comments.len();
+    let before_responses = view.responses.len();
+    let filter = match scope {
+        CommentScope::All => return None,
+        CommentScope::None => {
+            view.comments.clear();
+            view.responses.clear();
+            "none"
+        }
+        CommentScope::Unresolved => {
+            // Decide which comment threads stay, then keep only the
+            // responses that hang off a surviving thread. Resolution
+            // is judged against the *full* response set (computed
+            // before any pruning) so a thread's status is read
+            // correctly even for review-wide comments.
+            let kept: std::collections::HashSet<String> = view
+                .comments
+                .iter()
+                .filter(|c| thread_is_open(c.comment.comment_id.as_str(), &view.responses))
+                .map(|c| c.comment.comment_id.as_str().to_owned())
+                .collect();
+            view.comments
+                .retain(|c| kept.contains(c.comment.comment_id.as_str()));
+            view.responses
+                .retain(|r| kept.contains(r.response.in_reply_to.as_str()));
+            "unresolved"
+        }
+    };
+    let comments = before_comments - view.comments.len();
+    let responses = before_responses - view.responses.len();
+    if comments == 0 && responses == 0 {
+        return None;
+    }
+    Some(CommentsOmitted {
+        filter,
+        comments,
+        responses,
+        hint: "pass comments=\"all\" to include the withheld threads",
+    })
+}
+
+/// Whether the thread anchored at `comment_id` is still open —
+/// i.e. its latest status-changing response (anything but
+/// `comment`) is not a resolve/wont-fix. Mirrors the frontend's
+/// `resolutionFor` precedence (last status action wins) so the MCP
+/// filter agrees with what a human sees in the UI.
+fn thread_is_open(comment_id: &str, responses: &[ResponseView]) -> bool {
+    responses
+        .iter()
+        .filter(|r| {
+            r.response.in_reply_to.as_str() == comment_id
+                && !matches!(r.response.action, ResolutionAction::Comment)
+        })
+        .max_by(|a, b| a.response.created_at.cmp(&b.response.created_at))
+        .is_none_or(|last| matches!(last.response.action, ResolutionAction::Unresolve))
+}
+
 fn ok_text(s: &str) -> CallToolResult {
     CallToolResult::success(vec![Content::text(s.to_string())])
 }
@@ -1297,6 +1423,81 @@ mod tests {
     fn service_internal_keeps_internal_error_code() {
         let err = into_mcp(ServiceError::Internal("disk full".into()));
         assert_eq!(err.code, ErrorCode::INTERNAL_ERROR);
+    }
+
+    mod comment_scope {
+        use super::super::thread_is_open;
+        use kata_core::{
+            Author, CommentId, ResolutionAction, Response, ResponseId, SessionId,
+            documents::SCHEMA_VERSION,
+        };
+        use kata_service::ResponseView;
+
+        fn resp(id: &str, parent: &str, action: ResolutionAction, secs: i64) -> ResponseView {
+            ResponseView {
+                response: Response {
+                    schema_version: SCHEMA_VERSION,
+                    response_id: ResponseId::new(id),
+                    in_reply_to: CommentId::new(parent),
+                    session_id: SessionId::new("s1"),
+                    author: Author::new("alice"),
+                    created_at: chrono::DateTime::from_timestamp(secs, 0).unwrap(),
+                    action,
+                    body: String::new(),
+                },
+                draft: false,
+            }
+        }
+
+        #[test]
+        fn no_responses_is_open() {
+            assert!(thread_is_open("c1", &[]));
+        }
+
+        #[test]
+        fn comment_only_responses_stay_open() {
+            let rs = [resp("r1", "c1", ResolutionAction::Comment, 10)];
+            assert!(thread_is_open("c1", &rs));
+        }
+
+        #[test]
+        fn resolve_closes_the_thread() {
+            let rs = [resp("r1", "c1", ResolutionAction::Resolve, 10)];
+            assert!(!thread_is_open("c1", &rs));
+        }
+
+        #[test]
+        fn wont_fix_closes_the_thread() {
+            let rs = [resp("r1", "c1", ResolutionAction::WontFix, 10)];
+            assert!(!thread_is_open("c1", &rs));
+        }
+
+        #[test]
+        fn latest_status_action_wins_reopen_after_resolve() {
+            // Resolve then a later Unresolve → open again. Order is by
+            // created_at, not array order, so shuffle the input.
+            let rs = [
+                resp("r2", "c1", ResolutionAction::Unresolve, 20),
+                resp("r1", "c1", ResolutionAction::Resolve, 10),
+            ];
+            assert!(thread_is_open("c1", &rs));
+        }
+
+        #[test]
+        fn latest_status_action_wins_resolve_after_reopen() {
+            let rs = [
+                resp("r1", "c1", ResolutionAction::Unresolve, 10),
+                resp("r2", "c1", ResolutionAction::Resolve, 20),
+            ];
+            assert!(!thread_is_open("c1", &rs));
+        }
+
+        #[test]
+        fn only_this_threads_responses_count() {
+            // A resolve on a *different* comment must not close c1.
+            let rs = [resp("r1", "other", ResolutionAction::Resolve, 10)];
+            assert!(thread_is_open("c1", &rs));
+        }
     }
 
     #[test]

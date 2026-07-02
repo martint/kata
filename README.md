@@ -123,7 +123,8 @@ in Claude Code as `@<server>:skill://kata/review`.
 The MCP surface mirrors every write path on the HTTP API:
 
 - **Read** — `list_repos`, `resolve_repo`, `list_bookmarks`,
-  `list_reviews`, `get_review`.
+  `list_reviews`, `get_review` (inlines only unresolved comment
+  threads by default; `comments: "all"` / `"none"` to widen or drop).
 - **Review lifecycle** — `create_review`, `refresh_review`,
   `update_review_summary`, `update_review_revset`,
   `archive_review` / `unarchive_review`, `delete_review`.
