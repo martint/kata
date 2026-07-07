@@ -406,14 +406,7 @@
   // still expand any individual thread; the per-anchor fold state
   // persists in foldStore under the `thread` kind.
   type ViewMode = 'both' | 'diffs' | 'comments';
-  const VIEW_KEY = 'kata:viewMode';
-  function readViewMode(): ViewMode {
-    if (typeof localStorage === 'undefined') return 'both';
-    const raw = localStorage.getItem(VIEW_KEY);
-    if (raw === 'both' || raw === 'diffs' || raw === 'comments') return raw;
-    return 'both';
-  }
-  let viewMode = $state<ViewMode>(readViewMode());
+  let viewMode = $state<ViewMode>('both');
   const showDiffs = $derived(viewMode !== 'comments');
   // `diffs` mode hides the comment UI entirely so the reviewer can
   // read the code without distraction; `both` and `comments` render
@@ -426,10 +419,6 @@
    *  so the diff stays clean; `both` mode wants them expanded so the
    *  conversation reads inline. */
   const defaultThreadsCollapsed = $derived(viewMode === 'diffs');
-  $effect(() => {
-    if (typeof localStorage === 'undefined') return;
-    localStorage.setItem(VIEW_KEY, viewMode);
-  });
 
   // --- Side-by-side split -------------------------------------------------
   // Fraction of width occupied by the base (left) side in the SBS view —
