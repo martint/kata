@@ -525,6 +525,13 @@ impl JjRepoHandle {
         let matcher = EverythingMatcher;
         let mut stream = parent_tree.diff_stream(&commit_tree, &matcher);
         let mut files: Vec<kata_core::FileChange> = Vec::new();
+        // Raw contents of added / deleted files, kept so the rename
+        // post-pass below can build a real old→new hunk when git
+        // reports a delete+add pair is actually a move.
+        let mut added_bytes: std::collections::HashMap<String, Vec<u8>> =
+            std::collections::HashMap::new();
+        let mut deleted_bytes: std::collections::HashMap<String, Vec<u8>> =
+            std::collections::HashMap::new();
         while let Some(entry) = futures::executor::block_on(stream.next()) {
             let path_str = entry.path.as_internal_file_string().to_string();
             let values = entry
@@ -587,6 +594,18 @@ impl JjRepoHandle {
             } else {
                 Some(compute_hunks(&left_bytes, &right_bytes, &path_str)?)
             };
+            // Stash the raw contents so a move (surfaced as a separate
+            // delete + add by `diff_stream`) can be folded into a
+            // `Renamed` entry with a proper hunk after the loop.
+            match &status {
+                kata_core::FileStatus::Added => {
+                    added_bytes.insert(path_str.clone(), right_bytes);
+                }
+                kata_core::FileStatus::Deleted => {
+                    deleted_bytes.insert(path_str.clone(), left_bytes);
+                }
+                _ => {}
+            }
             files.push(kata_core::FileChange {
                 path: path_str,
                 status,
@@ -595,6 +614,37 @@ impl JjRepoHandle {
                 added,
                 removed,
             });
+        }
+
+        // Fold delete+add pairs that are actually renames back into a
+        // single `Renamed` entry. `diff_stream` (used above so the
+        // per-commit view can special-case tip-side conflicts) has no
+        // copy tracking, so every move arrives split — unlike the range
+        // diff, which is copy-aware. Recover the moves with jj-lib's
+        // in-process rename detection (gitoxide, no external binary),
+        // diffing this commit against its parent. Only single-parent
+        // commits qualify — a merge's self-diff is against a synthesised
+        // all-parents tree, which has no single parent commit to compare
+        // against. Best-effort: any failure leaves moves as delete+add.
+        // (jj-lib's 1000-permutation inexact-rename cap applies here too,
+        // but a single commit rarely moves enough files to hit it.)
+        if commit.parent_ids().len() == 1 {
+            use futures::TryStreamExt;
+            let parent_id = commit.parent_ids()[0].clone();
+            let records: Vec<jj_lib::backend::CopyRecord> =
+                match store.get_copy_records(None, &parent_id, commit.id()) {
+                    Ok(stream) => {
+                        futures::executor::block_on(stream.try_collect()).unwrap_or_default()
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            commit = %commit_id, error = %e,
+                            "copy-record detection failed for commit diff; moves shown as delete+add",
+                        );
+                        Vec::new()
+                    }
+                };
+            fold_commit_renames(&mut files, &records, &added_bytes, &deleted_bytes)?;
         }
 
         let tip = Endpoint {
@@ -829,35 +879,28 @@ impl JjBackend for JjLib {
             let tip_commit = lookup_commit(&repo, &tip)?;
             let base_tree = base_commit.tree();
             let tip_tree = tip_commit.tree();
-            // Populate copy records from the backend so renamed files
-            // come back as `Renamed { old_path }` instead of the
-            // raw `Added` + `Deleted` pair `diff_stream` would emit.
-            // The git backend implements `get_copy_records` via
-            // git's rename detection (`git diff -M`); other backends
-            // return an empty stream so the diff still works, just
-            // without rename info.
-            // Rename detection is best-effort. jj's copy tracking walks
-            // the commits between base and tip, and on a long-lived repo
-            // an intermediate commit may have been abandoned and
-            // garbage-collected out of the git store (e.g. after the
-            // branch advances and a stale patchset still pins old
-            // endpoints). A missing object there must NOT sink the whole
-            // diff — the base and tip trees are still readable, so we
-            // degrade to no rename detection (renames render as a
-            // delete + add pair) rather than failing the review load or
-            // refresh. Same outcome as a backend that doesn't implement
-            // copy records at all.
+            // Populate copy records from jj-lib's in-process rename
+            // detection (gitoxide, no external binary) so a moved file
+            // comes back as `Renamed { old_path }` instead of the raw
+            // `Added` + `Deleted` pair `diff_stream` would emit.
+            //
+            // Best-effort: any failure degrades to no rename detection
+            // (moves render as a delete + add pair) rather than sinking
+            // the whole diff, which stays readable from the base and tip
+            // trees regardless. Note jj-lib caps *inexact* rename
+            // detection at 1000 delete×add permutations, so a single
+            // diff that moves ~32+ edited files at once falls back to
+            // delete+add — that limit lives in jj-lib and isn't
+            // configurable from here.
             let mut copy_records = CopyRecords::default();
             match repo.store().get_copy_records(None, base_commit.id(), tip_commit.id()) {
-                Ok(stream) => {
-                    match futures::executor::block_on(stream.try_collect::<Vec<_>>()) {
-                        Ok(records) => copy_records.add_records(records),
-                        Err(e) => tracing::warn!(
-                            base = %base, tip = %tip, error = %e,
-                            "copy-record stream failed; diffing without rename detection",
-                        ),
-                    }
-                }
+                Ok(stream) => match futures::executor::block_on(stream.try_collect::<Vec<_>>()) {
+                    Ok(records) => copy_records.add_records(records),
+                    Err(e) => tracing::warn!(
+                        base = %base, tip = %tip, error = %e,
+                        "copy-record stream failed; diffing without rename detection",
+                    ),
+                },
                 Err(e) => tracing::warn!(
                     base = %base, tip = %tip, error = %e,
                     "get_copy_records failed; diffing without rename detection",
@@ -1657,6 +1700,55 @@ fn lookup_commit(
     repo.store()
         .get_commit(&backend_id)
         .map_err(|e| Error::Parse(format!("libjj get_commit: {e}")))
+}
+
+/// Rewrite delete+add pairs that jj-lib's copy detection reports as
+/// renames into a single [`FileStatus::Renamed`] entry, computing the
+/// real old→new hunk from the stashed file contents. Copies (the
+/// source stays in place, so there's no matching `Deleted` entry) are
+/// left untouched and stay as plain additions — matching the range
+/// diff. Used by the per-commit self-diff, whose underlying
+/// `diff_stream` has no copy tracking of its own.
+fn fold_commit_renames(
+    files: &mut Vec<kata_core::FileChange>,
+    records: &[jj_lib::backend::CopyRecord],
+    added_bytes: &std::collections::HashMap<String, Vec<u8>>,
+    deleted_bytes: &std::collections::HashMap<String, Vec<u8>>,
+) -> Result<()> {
+    use kata_core::FileStatus;
+    for rec in records {
+        let source = rec.source.as_internal_file_string();
+        let target = rec.target.as_internal_file_string();
+        let has_deleted = files
+            .iter()
+            .any(|f| f.path.as_str() == source && matches!(f.status, FileStatus::Deleted));
+        let add_idx = files
+            .iter()
+            .position(|f| f.path.as_str() == target && matches!(f.status, FileStatus::Added));
+        let (true, Some(add_idx)) = (has_deleted, add_idx) else {
+            continue;
+        };
+        let old = deleted_bytes.get(source).map(Vec::as_slice).unwrap_or(&[]);
+        let new = added_bytes.get(target).map(Vec::as_slice).unwrap_or(&[]);
+        let (binary, added, removed) = count_line_changes(old, new);
+        let hunks = if binary {
+            None
+        } else {
+            Some(compute_hunks(old, new, target)?)
+        };
+        files[add_idx] = kata_core::FileChange {
+            path: target.to_string(),
+            status: FileStatus::Renamed {
+                old_path: source.to_string(),
+            },
+            hunks,
+            binary,
+            added,
+            removed,
+        };
+        files.retain(|f| !(f.path.as_str() == source && matches!(f.status, FileStatus::Deleted)));
+    }
+    Ok(())
 }
 
 fn parse_commit_id(id: &KataCommitId) -> Result<jj_lib::backend::CommitId> {

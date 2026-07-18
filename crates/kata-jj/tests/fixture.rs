@@ -209,6 +209,53 @@ async fn changed_files_covers_add_modify_delete_rename() {
     }
 }
 
+#[test]
+fn commit_self_diff_detects_a_rename() {
+    // The per-commit view (`scope=<change_id>` in the UI) uses
+    // `compute_commit_self_diff`, whose underlying `diff_stream` has
+    // no copy tracking — so a moved file used to always render as a
+    // whole delete + whole add there, independent of size. Assert a
+    // single moved-and-edited file within one commit now folds into a
+    // rename with a real hunk.
+    let body = |pkg: &str| {
+        let mut s = format!("package {pkg};\n");
+        for i in 0..30 {
+            s.push_str(&format!("line {i}\n"));
+        }
+        s
+    };
+    let fx = Fixture::new();
+    fx.write("src/old/Foo.java", &body("com.old"));
+    fx.jj(&["describe", "-m", "base"]);
+    fx.jj(&["new", "-m", "move Foo to new package"]);
+    fx.write("src/new/Foo.java", &body("com.new"));
+    fx.remove("src/old/Foo.java");
+
+    let (_, commit) = current_change_and_commit(&fx.root, "@");
+    let handle = kata_jj::libjj::open_repo(&fx.root).expect("open_repo");
+    let diff = handle.compute_commit_self_diff(&commit).expect("commit self diff");
+
+    assert_eq!(
+        diff.files.len(),
+        1,
+        "a move must be one rename entry, not a delete+add pair: {:?}",
+        diff.files.iter().map(|f| (&f.path, &f.status)).collect::<Vec<_>>(),
+    );
+    let f = &diff.files[0];
+    assert_eq!(f.path, "src/new/Foo.java");
+    match &f.status {
+        FileStatus::Renamed { old_path } => assert_eq!(old_path, "src/old/Foo.java"),
+        other => panic!("expected rename, got {other:?}"),
+    }
+    // The package-line edit must survive as a real old→new hunk, not
+    // an all-added / all-removed blob.
+    assert_eq!((f.added, f.removed), (1, 1), "only the package line changed");
+    assert!(
+        f.hunks.as_ref().is_some_and(|h| !h.is_empty()),
+        "rename+edit should carry a hunk",
+    );
+}
+
 #[tokio::test]
 async fn diff_hunks_have_correct_line_numbers() {
     let fx = Fixture::new();
