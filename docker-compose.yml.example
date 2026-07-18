@@ -46,6 +46,14 @@ services:
       # KATA_DATA_DIR=${HOME}/kata to keep state on the host filesystem.
       - "${KATA_DATA_DIR:-kata-data}:/data"
       - "${KATA_WORKSPACES_DIR:?set KATA_WORKSPACES_DIR to a host dir of jj repos}:/workspaces:rw"
+      # GitHub PR integration: reuse the host's `gh auth login`
+      # read-only. The default image ships `gh` + `git`; kata stores
+      # no credentials of its own, so it rides on this mounted login
+      # (git fetch of a PR head routes through gh's token too). Pair
+      # with GH_CONFIG_DIR below. See docs/deploying.md §GitHub.
+      # - "${HOME}/.config/gh:/gh:ro"
+      # SSH-remote workspaces additionally need a key for the fetch:
+      # - "${HOME}/.ssh:/home/kata/.ssh:ro"
     command: ["serve", "--workspace", "*=/workspaces"]
     env_file:
       - path: .env
@@ -53,6 +61,9 @@ services:
     environment:
       KATA_AUTHOR: ${KATA_AUTHOR:-dev@localhost}
       RUST_LOG: ${RUST_LOG:-info}
+      # Points `gh` at the mounted host login above. Leave unset if
+      # you're not using the GitHub PR integration.
+      # GH_CONFIG_DIR: /gh
 
   # `docker compose --profile demo up` — seeded workspace + ?demo=1
   # guided tour at http://localhost:7878. No host repo dir needed.

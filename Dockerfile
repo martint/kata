@@ -77,6 +77,25 @@ RUN set -eux; \
       "https://github.com/jj-vcs/jj/releases/download/v${JJ_VERSION}/jj-v${JJ_VERSION}-${jj_arch}-unknown-linux-musl.tar.gz" \
       | tar -xz
 
+# ---- Stage 3b: fetch the matching gh CLI on the build host ----
+# Used by `runtime-with-gh` only. The release tarball unpacks to
+# `gh_<ver>_linux_<arch>/bin/gh`; copy it to a fixed path so the
+# runtime stage's COPY doesn't need to know the version/arch.
+FROM --platform=$BUILDPLATFORM curlimages/curl:8.10.1 AS gh-fetch
+ARG TARGETARCH
+ARG GH_VERSION=2.62.0
+WORKDIR /gh
+RUN set -eux; \
+    case "$TARGETARCH" in \
+      amd64) gh_arch=amd64 ;; \
+      arm64) gh_arch=arm64 ;; \
+      *) echo "unsupported TARGETARCH=$TARGETARCH" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL \
+      "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${gh_arch}.tar.gz" \
+      | tar -xz; \
+    cp "gh_${GH_VERSION}_linux_${gh_arch}/bin/gh" /gh/gh
+
 # ---- Stage 4: runtime (no jj) — what the release image ships ----
 # kata serve, the HTTP API, and MCP all use libjj in-process and
 # never spawn jj; this is the lean prod target. Override the default
@@ -111,8 +130,26 @@ ENTRYPOINT ["kata"]
 CMD ["--help"]
 
 # ---- Stage 5: runtime-with-jj — adds the jj CLI for `kata demo` ----
-# Default target (Dockerfile builds the last stage). `docker compose
-# up --build` and `docker build .` produce this image. The release
-# workflow targets `runtime` instead to skip the jj download.
+# `kata demo` shells out to jj to seed its workspace; serve/MCP never
+# do. Extended by `runtime-with-gh` (the default) below; the release
+# workflow targets `runtime` to skip the jj/gh downloads entirely.
 FROM runtime AS runtime-with-jj
 COPY --from=jj-fetch /jj/jj /usr/local/bin/jj
+
+# ---- Stage 6: runtime-with-gh — adds git + the gh CLI ----
+# The GitHub PR integration is the one part of serve that shells out:
+# `gh api` for PR metadata / comments and `git fetch` for the PR head.
+# This is the default target, so `docker compose up --build` produces
+# it; the release workflow overrides `--target runtime` for a lean
+# image. No credentials are baked in — mount the host's `gh` login
+# read-only and point gh at it with GH_CONFIG_DIR (see the compose
+# example and docs/deploying.md). Fetching a private PR head over
+# HTTPS routes git's credential lookup through gh via the system
+# credential helper below, so it reuses that same login.
+FROM runtime-with-jj AS runtime-with-gh
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=gh-fetch /gh/gh /usr/local/bin/gh
+# System scope so it applies whatever UID the container runs as.
+RUN git config --system credential.helper '!gh auth git-credential'

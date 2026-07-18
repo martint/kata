@@ -353,6 +353,32 @@ out-of-scope list in `docs/SPEC.md`).
    `gh api user` succeeds; if it doesn't, the card shows a
    precise reason ("install gh" vs "run `gh auth login`").
 
+### In Docker
+
+The compose image — the default `docker compose up --build` target
+(`runtime-with-gh`) — ships `gh` and `git`. Kata stores no
+credentials of its own, so reuse the host's `gh auth login` by
+mounting its config dir read-only and pointing `gh` at it:
+
+```yaml
+    environment:
+      GH_CONFIG_DIR: /gh
+    volumes:
+      - "${HOME}/.config/gh:/gh:ro"
+```
+
+`gh auth login` on the host once is the whole setup — every API
+call the container makes inherits that session (read-only, so the
+container can't disturb it). Fetching a PR head from a **private**
+repo over HTTPS reuses the same login: the image sets a system git
+credential helper (`!gh auth git-credential`), so `git fetch` pulls
+the token from the mounted `gh` config. **SSH** remotes instead need
+a key mounted (e.g. `- "${HOME}/.ssh:/home/kata/.ssh:ro"`), since
+`gh` credentials don't cover SSH. The published release image is the
+lean `runtime` target and ships neither `gh` nor `git` — build the
+default target (or `--target runtime-with-gh`) for the PR
+integration.
+
 ### When import fails
 
 Common failure modes and what to check, in roughly the order
