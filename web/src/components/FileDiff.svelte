@@ -2241,6 +2241,16 @@
       <p class="placeholder muted">Loading diff…</p>
     {:else if !file.hunks}
       <p class="placeholder">Diff omitted (file may exceed the size limit).</p>
+    {:else if file.hunks.length === 0}
+      <!-- Present but empty: a pure rename (moved with no content
+           change) has no hunks, so without this the body renders
+           blank and the move looks broken. Affirm what happened
+           instead. -->
+      <p class="placeholder muted">
+        {file.status === 'renamed'
+          ? 'File moved — contents unchanged.'
+          : 'No changes to show.'}
+      </p>
     {:else}
       <div
         class="hunks-wrapper"
