@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use axum::Router;
+use axum::http::StatusCode;
 use axum::routing::{get, get_service, post};
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
@@ -74,6 +75,19 @@ fn attach_github_routes(api: Router<AppState>) -> Router<AppState> {
 
 fn api_routes() -> Router<AppState> {
     Router::new()
+        // MCP clients probe these (RFC 9728) to learn whether the server
+        // requires OAuth. Kata doesn't implement OAuth for MCP, so these
+        // must 404 for real rather than fall through to the SPA
+        // fallback's index.html — a 200 HTML body here crashes MCP
+        // clients that try to JSON-parse it as discovery metadata.
+        .route(
+            "/.well-known/oauth-protected-resource",
+            get(|| async { StatusCode::NOT_FOUND }),
+        )
+        .route(
+            "/.well-known/oauth-authorization-server",
+            get(|| async { StatusCode::NOT_FOUND }),
+        )
         .route("/api/whoami", get(reviews::whoami))
         .route("/api/repos", get(reviews::list_repos))
         .route("/api/events", get(events::stream))
