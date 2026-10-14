@@ -256,6 +256,229 @@ fn commit_self_diff_detects_a_rename() {
     );
 }
 
+/// Java source whose every line names `class`, so a similarity match
+/// can only pair a file with its own moved copy.
+fn java_source(pkg: &str, class: &str) -> String {
+    let mut s = format!("package {pkg};\n\nclass {class} {{\n");
+    for i in 0..30 {
+        s.push_str(&format!("    int {class}Field{i} = {i};\n"));
+    }
+    s.push_str("}\n");
+    s
+}
+
+/// Added and removed line counts summed over a file's hunks.
+fn hunk_line_counts(f: &kata_core::FileChange) -> (usize, usize) {
+    let mut added = 0;
+    let mut removed = 0;
+    for h in f.hunks.as_deref().unwrap_or_default() {
+        let kata_core::Hunk::Regular(r) = h else {
+            continue;
+        };
+        for l in &r.lines {
+            match l.origin {
+                kata_core::LineOrigin::Added => added += 1,
+                kata_core::LineOrigin::Removed => removed += 1,
+                kata_core::LineOrigin::Context => {}
+            }
+        }
+    }
+    (added, removed)
+}
+
+/// Asserts `files` is exactly `n` renames from `old_dir` to `new_dir`,
+/// each paired with its own source and changing only the package line.
+fn assert_package_move(files: &[kata_core::FileChange], n: usize, old_dir: &str, new_dir: &str) {
+    assert_eq!(
+        files.len(),
+        n,
+        "each move must be one rename entry: {:?}",
+        files
+            .iter()
+            .map(|f| (&f.path, &f.status))
+            .collect::<Vec<_>>(),
+    );
+    for f in files {
+        let class = f.path.strip_prefix(new_dir).expect("target in new dir");
+        match &f.status {
+            FileStatus::Renamed { old_path } => {
+                assert_eq!(
+                    old_path,
+                    &format!("{old_dir}{class}"),
+                    "{} paired wrongly",
+                    f.path
+                )
+            }
+            other => panic!("{}: expected rename, got {other:?}", f.path),
+        }
+        assert_eq!(
+            (f.added, f.removed),
+            (1, 1),
+            "{}: only the package line changed",
+            f.path
+        );
+    }
+}
+
+/// Moves `n` Java files to a new package within one change, rewriting
+/// the change as a new patchset would. Then moves them again in a
+/// child commit. Checks that the patchset interdiff, the cumulative
+/// compare diff and the per-commit diff all show `n` renames.
+async fn check_package_move(n: usize) {
+    let classes: Vec<String> = (0..n).map(|i| format!("C{i:02}")).collect();
+    let fx = Fixture::new();
+    fx.write("README", "base\n");
+    fx.jj(&["describe", "-m", "base"]);
+    fx.jj(&["new", "-m", "add classes"]);
+    for c in &classes {
+        fx.write(&format!("src/a/{c}.java"), &java_source("a", c));
+    }
+    let (_, from) = current_change_and_commit(&fx.root, "@");
+    for c in &classes {
+        fx.remove(&format!("src/a/{c}.java"));
+        fx.write(&format!("src/b/{c}.java"), &java_source("b", c));
+    }
+    let (_, to) = current_change_and_commit(&fx.root, "@");
+
+    let handle = handle_for(&fx);
+    let interdiff = handle
+        .compute_rebased_diff(&from, &to)
+        .expect("rebased diff");
+    assert_package_move(&interdiff.files, n, "src/a/", "src/b/");
+
+    let file = handle
+        .compute_rebased_file_hunks(&from, &to, &format!("src/b/{}.java", classes[0]))
+        .expect("rebased file hunks");
+    assert_eq!(
+        hunk_line_counts(&file),
+        (1, 1),
+        "hunk must be old→new, not a whole-file add"
+    );
+
+    // The compare view's cumulative from-tip..to-tip file list.
+    let cumulative = kata_jj::build_diff_metadata(&fx.cli(), &from, &to)
+        .await
+        .expect("build_diff_metadata");
+    assert_package_move(&cumulative.files, n, "src/a/", "src/b/");
+
+    fx.jj(&["new", "-m", "move classes again"]);
+    for c in &classes {
+        fx.remove(&format!("src/b/{c}.java"));
+        fx.write(&format!("src/c/{c}.java"), &java_source("c", c));
+    }
+    let (_, commit) = current_change_and_commit(&fx.root, "@");
+    let self_diff = handle.compute_commit_self_diff(&commit).expect("self diff");
+    assert_package_move(&self_diff.files, n, "src/b/", "src/c/");
+    for f in &self_diff.files {
+        assert_eq!(
+            hunk_line_counts(f),
+            (1, 1),
+            "{}: hunk must be old→new",
+            f.path
+        );
+    }
+}
+
+fn handle_for(fx: &Fixture) -> kata_jj::libjj::JjRepoHandle {
+    kata_jj::libjj::open_repo(&fx.root).expect("open_repo")
+}
+
+#[tokio::test]
+async fn package_move_folds_into_renames() {
+    // 20 deletes × 20 adds stays within gix's rename limit of 1000.
+    check_package_move(20).await;
+}
+
+#[tokio::test]
+#[ignore = "needs a gix-diff that applies the rename limit to each side, as git does"]
+async fn package_move_past_the_rename_limit_folds_into_renames() {
+    // 40 deletes × 40 adds is 1600 pairs. gix-diff 0.63 compares that
+    // count against the limit of 1000 and skips similarity matching.
+    check_package_move(40).await;
+}
+
+#[test]
+fn rebased_interdiff_shows_a_pure_rename_with_empty_hunks() {
+    let fx = Fixture::new();
+    fx.write("README", "base\n");
+    fx.jj(&["describe", "-m", "base"]);
+    fx.jj(&["new", "-m", "add Foo"]);
+    fx.write("src/a/Foo.java", &java_source("a", "Foo"));
+    let (_, from) = current_change_and_commit(&fx.root, "@");
+    fx.rename("src/a/Foo.java", "src/a/Bar.java");
+    let (_, to) = current_change_and_commit(&fx.root, "@");
+
+    let handle = handle_for(&fx);
+    let file = handle
+        .compute_rebased_file_hunks(&from, &to, "src/a/Bar.java")
+        .expect("rebased file hunks");
+    match &file.status {
+        FileStatus::Renamed { old_path } => assert_eq!(old_path, "src/a/Foo.java"),
+        other => panic!("expected rename, got {other:?}"),
+    }
+    // An empty hunk list is what the UI renders as "File moved".
+    assert_eq!(file.hunks, Some(Vec::new()));
+    assert_eq!((file.added, file.removed), (0, 0));
+}
+
+#[test]
+fn commit_self_diff_detects_a_rename_in_a_merge() {
+    let fx = Fixture::new();
+    fx.write("src/a/Foo.java", &java_source("a", "Foo"));
+    fx.jj(&["describe", "-m", "trunk"]);
+    fx.jj(&["bookmark", "create", "main", "-r", "@"]);
+    fx.jj(&["new", "main", "-m", "branch x"]);
+    fx.write("x.txt", "x\n");
+    fx.jj(&["bookmark", "create", "branch-x", "-r", "@"]);
+    fx.jj(&["new", "main", "-m", "branch y"]);
+    fx.write("y.txt", "y\n");
+    fx.jj(&["bookmark", "create", "branch-y", "-r", "@"]);
+    fx.jj(&["new", "branch-x", "branch-y", "-m", "merge moves Foo"]);
+    fx.remove("src/a/Foo.java");
+    fx.write("src/b/Foo.java", &java_source("b", "Foo"));
+
+    let (_, merge) = current_change_and_commit(&fx.root, "@");
+    let diff = handle_for(&fx)
+        .compute_commit_self_diff(&merge)
+        .expect("self diff");
+    assert_package_move(&diff.files, 1, "src/a/", "src/b/");
+}
+
+#[test]
+fn commit_self_diff_detects_a_rename_in_a_conflicted_commit() {
+    let fx = Fixture::new();
+    fx.write("f.txt", "base\n");
+    fx.write("src/a/Foo.java", &java_source("a", "Foo"));
+    fx.jj(&["describe", "-m", "trunk"]);
+    fx.jj(&["bookmark", "create", "main", "-r", "@"]);
+    fx.jj(&["new", "main", "-m", "edit f"]);
+    fx.write("f.txt", "one\n");
+    fx.jj(&["bookmark", "create", "one", "-r", "@"]);
+    fx.jj(&["new", "main", "-m", "edit f and move Foo"]);
+    fx.write("f.txt", "two\n");
+    fx.remove("src/a/Foo.java");
+    fx.write("src/b/Foo.java", &java_source("b", "Foo"));
+    fx.jj(&["bookmark", "create", "two", "-r", "@"]);
+    // Rebasing onto the other f.txt edit leaves f.txt conflicted.
+    fx.jj(&["rebase", "-r", "two", "-d", "one"]);
+
+    let (_, commit) = current_change_and_commit(&fx.root, "two");
+    let diff = handle_for(&fx)
+        .compute_commit_self_diff(&commit)
+        .expect("self diff");
+    let moves: Vec<_> = diff
+        .files
+        .iter()
+        .filter(|f| f.path.ends_with(".java"))
+        .cloned()
+        .collect();
+    assert_package_move(&moves, 1, "src/a/", "src/b/");
+    assert!(
+        diff.files.iter().any(|f| f.path == "f.txt"),
+        "f.txt is conflicted in this commit",
+    );
+}
+
 #[tokio::test]
 async fn diff_hunks_have_correct_line_numbers() {
     let fx = Fixture::new();

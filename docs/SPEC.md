@@ -386,7 +386,11 @@ diff:
 
 Added and removed files render as a single column with no pairing.
 Renames are detected explicitly and rendered with both paths in
-the header.
+the header and the hunks between the old and new contents. A
+deleted and an added file pair up as a rename when at least half
+of the content matches. Every diff view detects renames: the
+review diff, the per-commit diff (including a merge's own moves),
+and both the cumulative and the per-pair patchset interdiff (§11).
 
 ### 5.2 Whole-file vs. hunks
 
