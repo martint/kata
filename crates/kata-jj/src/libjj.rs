@@ -61,7 +61,7 @@ fn build_settings() -> Result<UserSettings> {
             .map_err(|e| Error::Parse(format!("libjj config {key}: {e}")))?;
     }
     config.add_layer(identity);
-    UserSettings::from_config(config)
+    UserSettings::from_config_and_home_dir(config, None)
         .map_err(|e| Error::Parse(format!("libjj settings: {e}")))
 }
 
@@ -77,12 +77,14 @@ fn open_loader(
     settings: &UserSettings,
     workspace_path: &Path,
 ) -> Result<OpenedWorkspace> {
-    use jj_lib::repo::StoreFactories;
+    use jj_lib::default_backend_factories::{
+        default_backend_factories, default_working_copy_factories,
+    };
     let workspace = jj_lib::workspace::Workspace::load(
         settings,
         workspace_path,
-        &StoreFactories::default(),
-        &jj_lib::workspace::default_working_copy_factories(),
+        &default_backend_factories(),
+        &default_working_copy_factories(),
     )
     .map_err(|e| Error::Parse(format!("libjj workspace load: {e}")))?;
     Ok(OpenedWorkspace {
@@ -787,7 +789,7 @@ impl JjBackend for JjLib {
                 return Ok(None);
             };
             let mut iter = rs.commit_change_ids();
-            match iter.next() {
+            match futures::executor::block_on(futures::StreamExt::next(&mut iter)) {
                 None => Ok(None),
                 Some(Err(e)) => Err(Error::Parse(format!("libjj iter: {e}"))),
                 Some(Ok((commit_id, _))) => Ok(Some(KataCommitId::new(commit_id.hex()))),
@@ -809,7 +811,7 @@ impl JjBackend for JjLib {
                 None => Ok(None),
                 Some(revset) => {
                     let mut iter = revset.commit_change_ids();
-                    match iter.next() {
+                    match futures::executor::block_on(futures::StreamExt::next(&mut iter)) {
                         None => Ok(None),
                         Some(Err(e)) => Err(Error::Parse(format!("libjj iter: {e}"))),
                         Some(Ok((commit_id, change_id))) => Ok(Some(Endpoint {
@@ -1057,7 +1059,10 @@ impl JjBackend for JjLib {
             // natural order with no per-consumer dance.
             let mut out: Vec<CommitInfo> = Vec::new();
             let store = repo.store();
-            for item in rs.commit_change_ids() {
+            let mut ids = rs.commit_change_ids();
+            while let Some(item) =
+                futures::executor::block_on(futures::StreamExt::next(&mut ids))
+            {
                 let (commit_id, _change_id) = item
                     .map_err(|e| Error::Parse(format!("libjj iter: {e}")))?;
                 let commit = store.get_commit(&commit_id).map_err(|e| {
@@ -1181,8 +1186,7 @@ impl JjBackend for JjLib {
             let repo = cache.load_at_head()?;
             let ancestor_id = parse_commit_id(&ancestor)?;
             let descendant_id = parse_commit_id(&descendant)?;
-            repo.index()
-                .is_ancestor(&ancestor_id, &descendant_id)
+            futures::executor::block_on(repo.index().is_ancestor(&ancestor_id, &descendant_id))
                 .map_err(|e| Error::Parse(format!("libjj is_ancestor: {e}")))
         })
         .await
@@ -1371,7 +1375,8 @@ impl JjBackend for JjLib {
                     if let Some(cid) = jj_lib::backend::CommitId::try_from_hex(
                         entry.commit.commit_id.as_str(),
                     ) {
-                        entry.immutable = contains(&cid).unwrap_or(false);
+                        entry.immutable =
+                            futures::executor::block_on(contains(&cid)).unwrap_or(false);
                     }
                 }
             }
@@ -1504,7 +1509,8 @@ impl JjBackend for JjLib {
                 // remote-URL matching against PR owners/repos uses
                 // the configured value, not whatever insteadOf rewrite
                 // might point local cloning at.
-                let remote = match git_repo.try_find_remote_without_url_rewrite(name.as_ref()) {
+                let name_ref: &gix::bstr::BStr = name.as_ref();
+                let remote = match git_repo.try_find_remote_without_url_rewrite(name_ref) {
                     Some(Ok(r)) => r,
                     Some(Err(e)) => {
                         tracing::warn!(remote = %name, error = %e, "skip remote: load failed");
@@ -1596,8 +1602,9 @@ impl JjBackend for JjLib {
         // last import — both `kata-pr/<n>/head@<remote>` and
         // `kata-pr/<n>/base@<remote>` end up as bookmarks jj knows
         // about, which keeps the base subtree GC-collectable on
-        // delete. `auto_local_bookmark: false` keeps the import
-        // scoped to the tracking refs.
+        // delete. An empty `remote_auto_track_bookmarks` keeps the
+        // import scoped to the tracking refs. Kata records no
+        // synthetic predecessors for the imported commits.
         //
         // All jj-side work happens inside `spawn_blocking` because
         // jj-lib's `MutableRepo` contains `RefCell` / `OnceCell`
@@ -1611,8 +1618,8 @@ impl JjBackend for JjLib {
             let repo = cache.load_at_head()?;
             let handle = tokio::runtime::Handle::current();
             let import_options = jj_lib::git::GitImportOptions {
-                auto_local_bookmark: false,
                 abandon_unreachable_commits: false,
+                record_synthetic_predecessors: false,
                 remote_auto_track_bookmarks: Default::default(),
             };
             let mut tx = repo.start_transaction();
@@ -1693,8 +1700,8 @@ impl JjBackend for JjLib {
             // once the only ref pointing at them is gone.
             let handle = tokio::runtime::Handle::current();
             let import_options = jj_lib::git::GitImportOptions {
-                auto_local_bookmark: false,
                 abandon_unreachable_commits: true,
+                record_synthetic_predecessors: false,
                 remote_auto_track_bookmarks: Default::default(),
             };
             let mut tx = repo.start_transaction();
@@ -1798,7 +1805,7 @@ fn tree_renames(
         .for_each_to_obtain_tree_with_cache(
             &right_tree,
             &mut platform,
-            |change| -> std::result::Result<_, std::convert::Infallible> {
+            |change| {
                 // Symlinks and submodules stay as delete+add, as in
                 // `get_copy_records`.
                 if let gix::object::tree::diff::Change::Rewrite {
@@ -1919,7 +1926,8 @@ fn solo_endpoint(
         });
     };
     let mut iter = rs.commit_change_ids();
-    let first = match iter.next() {
+    let mut next = || futures::executor::block_on(futures::StreamExt::next(&mut iter));
+    let first = match next() {
         None => {
             return Err(Error::EmptyRevset {
                 revset: revset.to_string(),
@@ -1928,7 +1936,7 @@ fn solo_endpoint(
         Some(Err(e)) => return Err(Error::Parse(format!("libjj iter: {e}"))),
         Some(Ok(pair)) => pair,
     };
-    if iter.next().is_some() {
+    if next().is_some() {
         return Err(Error::MultipleHeads {
             revset: revset.to_string(),
         });
@@ -1949,7 +1957,7 @@ fn evaluate_user_revset<'a>(
     workspace: Option<(&jj_lib::ref_name::WorkspaceName, &Path)>,
 ) -> Result<Option<Box<dyn jj_lib::revset::Revset + 'a>>> {
     use jj_lib::fileset::FilesetAliasesMap;
-    use jj_lib::repo_path::RepoPathUiConverter;
+    use jj_lib::ui_path::RepoPathUiConverter;
     use jj_lib::revset::{
         RevsetAliasesMap, RevsetDiagnostics, RevsetExtensions, RevsetParseContext,
         RevsetWorkspaceContext, SymbolResolver,
@@ -1978,7 +1986,7 @@ fn evaluate_user_revset<'a>(
         ("builtin_immutable_heads()", "trunk()"),
     ] {
         aliases_map
-            .insert(decl, defn)
+            .insert(decl, defn, None)
             .map_err(|e| Error::Parse(format!("libjj alias {decl}: {e}")))?;
     }
     let fileset_aliases_map = FilesetAliasesMap::new();
@@ -2010,7 +2018,6 @@ fn evaluate_user_revset<'a>(
         date_pattern_context: chrono::Utc::now().fixed_offset().into(),
         default_ignored_remote: Some("git".as_ref()),
         fileset_aliases_map: &fileset_aliases_map,
-        use_glob_by_default: false,
         extensions: &extensions,
         workspace: workspace_ctx,
     };
@@ -2027,9 +2034,12 @@ fn evaluate_user_revset<'a>(
         .resolve_user_expression(repo.as_ref() as &dyn jj_lib::repo::Repo, &symbol_resolver)
         .map_err(|e| Error::Parse(format!("libjj resolve revset {expr:?}: {e}")))?;
     let rs = resolved
-        .evaluate(repo.as_ref() as &dyn jj_lib::repo::Repo)
+        .evaluate()
         .map_err(|e| Error::Parse(format!("libjj evaluate revset {expr:?}: {e}")))?;
-    if rs.is_empty() {
+    let is_empty = rs
+        .is_empty()
+        .map_err(|e| Error::Parse(format!("libjj evaluate revset {expr:?}: {e}")))?;
+    if is_empty {
         Ok(None)
     } else {
         Ok(Some(rs))
@@ -2054,7 +2064,7 @@ fn format_jj_timestamp(ts: &jj_lib::backend::Timestamp) -> String {
 fn file_bytes_from_value(
     store: &std::sync::Arc<jj_lib::store::Store>,
     path: &jj_lib::repo_path::RepoPath,
-    value: &jj_lib::merge::MergedTreeValue,
+    value: &jj_lib::backend::MergedTreeValue,
 ) -> Result<Vec<u8>> {
     let Some(Some(tv)) = value.as_resolved() else {
         return Ok(Vec::new());
@@ -2319,7 +2329,7 @@ fn read_file_bytes(
     path: &jj_lib::repo_path::RepoPath,
     file_id: &jj_lib::backend::FileId,
 ) -> Result<Vec<u8>> {
-    use tokio::io::AsyncReadExt;
+    use futures::AsyncReadExt;
     let mut reader = futures::executor::block_on(store.read_file(path, file_id))
         .map_err(|e| Error::Parse(format!("libjj read_file: {e}")))?;
     let mut buf = Vec::new();

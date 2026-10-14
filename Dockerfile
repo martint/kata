@@ -65,7 +65,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # ---- Stage 3: fetch the matching jj CLI on the build host ----
 FROM --platform=$BUILDPLATFORM curlimages/curl:8.10.1 AS jj-fetch
 ARG TARGETARCH
-ARG JJ_VERSION=0.41.0
+ARG JJ_VERSION=0.46.0
 WORKDIR /jj
 RUN set -eux; \
     case "$TARGETARCH" in \

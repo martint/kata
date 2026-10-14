@@ -392,7 +392,7 @@ async fn package_move_folds_into_renames() {
 #[tokio::test]
 #[ignore = "needs a gix-diff that applies the rename limit to each side, as git does"]
 async fn package_move_past_the_rename_limit_folds_into_renames() {
-    // 40 deletes × 40 adds is 1600 pairs. gix-diff 0.63 compares that
+    // 40 deletes × 40 adds is 1600 pairs. gix-diff 0.68 compares that
     // count against the limit of 1000 and skips similarity matching.
     check_package_move(40).await;
 }
