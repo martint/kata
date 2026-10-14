@@ -347,7 +347,12 @@ async fn check_package_move(n: usize) {
     assert_package_move(&interdiff.files, n, "src/a/", "src/b/");
 
     let file = handle
-        .compute_rebased_file_hunks(&from, &to, &format!("src/b/{}.java", classes[0]))
+        .compute_rebased_file_hunks(
+            &from,
+            &to,
+            &interdiff.files,
+            &format!("src/b/{}.java", classes[0]),
+        )
         .expect("rebased file hunks");
     assert_eq!(
         hunk_line_counts(&file),
@@ -409,8 +414,11 @@ fn rebased_interdiff_shows_a_pure_rename_with_empty_hunks() {
     let (_, to) = current_change_and_commit(&fx.root, "@");
 
     let handle = handle_for(&fx);
+    let interdiff = handle
+        .compute_rebased_diff(&from, &to)
+        .expect("rebased diff");
     let file = handle
-        .compute_rebased_file_hunks(&from, &to, "src/a/Bar.java")
+        .compute_rebased_file_hunks(&from, &to, &interdiff.files, "src/a/Bar.java")
         .expect("rebased file hunks");
     match &file.status {
         FileStatus::Renamed { old_path } => assert_eq!(old_path, "src/a/Foo.java"),

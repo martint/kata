@@ -406,14 +406,18 @@ impl JjRepoHandle {
     /// this returns an empty diff rather than erroring. The caller
     /// asks per-file off a list that can lag a patchset switch by a
     /// frame; a stale path must not 500.
+    ///
+    /// `files` is the [`Self::compute_rebased_diff`] list for the same
+    /// pair. The caller passes it in so a per-file fetch doesn't rebuild
+    /// the whole interdiff.
     pub fn compute_rebased_file_hunks(
         &self,
         from_commit_id: &KataCommitId,
         to_commit_id: &KataCommitId,
+        files: &[kata_core::FileChange],
         path: &str,
     ) -> Result<kata_core::FileChange> {
-        let diff = self.compute_rebased_diff(from_commit_id, to_commit_id)?;
-        let Some(target) = diff.files.into_iter().find(|f| f.path == path) else {
+        let Some(target) = files.iter().find(|f| f.path == path).cloned() else {
             return Ok(kata_core::FileChange {
                 path: path.to_string(),
                 status: FileStatus::Modified,
@@ -706,7 +710,14 @@ pub struct JjLib {
     /// `@` to this workspace's working-copy commit.
     workspace_name: Arc<jj_lib::ref_name::WorkspaceNameBuf>,
     workspace_root: Arc<PathBuf>,
+    /// `changed_files` results by `(base, tip)`. The per-file diff
+    /// fetch asks for the whole list once per file, and building it
+    /// runs rename detection over every added and deleted file.
+    changed_files_cache: Arc<crate::PairCache<Vec<FileChange>>>,
 }
+
+/// Number of `(base, tip)` file lists [`JjLib`] keeps.
+const CHANGED_FILES_CACHE_CAPACITY: usize = 16;
 
 impl JjLib {
     pub fn new(workspace_path: impl Into<PathBuf>) -> Result<Self> {
@@ -723,6 +734,7 @@ impl JjLib {
             cache,
             workspace_name: Arc::new(opened.workspace_name),
             workspace_root: Arc::new(opened.workspace_root),
+            changed_files_cache: Arc::new(crate::PairCache::new(CHANGED_FILES_CACHE_CAPACITY)),
         })
     }
 }
@@ -890,10 +902,14 @@ impl JjBackend for JjLib {
         base: &KataCommitId,
         tip: &KataCommitId,
     ) -> Result<Vec<FileChange>> {
+        if let Some(files) = self.changed_files_cache.get(base, tip) {
+            return Ok(files.as_ref().clone());
+        }
         let cache = self.cache.clone();
+        let (base_key, tip_key) = (base, tip);
         let base = base.clone();
         let tip = tip.clone();
-        tokio::task::spawn_blocking(move || -> Result<Vec<FileChange>> {
+        let files = tokio::task::spawn_blocking(move || -> Result<Vec<FileChange>> {
             use futures::{StreamExt, TryStreamExt};
             use jj_lib::copies::{CopyOperation, CopyRecords};
             use jj_lib::matchers::EverythingMatcher;
@@ -986,7 +1002,8 @@ impl JjBackend for JjLib {
             Ok(out)
         })
         .await
-        .map_err(|e| Error::Parse(format!("spawn_blocking: {e}")))?
+        .map_err(|e| Error::Parse(format!("spawn_blocking: {e}")))??;
+        Ok(self.changed_files_cache.insert(base_key, tip_key, files).as_ref().clone())
     }
 
     async fn resolve_range(
