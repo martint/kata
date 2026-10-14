@@ -836,6 +836,57 @@ async fn browse_log_lays_out_a_linear_chain() {
     assert_eq!(descs, ["C", "B", "A"], "topo order children-before-parents");
 }
 
+#[tokio::test]
+async fn commit_file_lists_fold_a_move_into_one_entry() {
+    let fx = Fixture::new();
+    fx.write("src/a/Foo.java", &java_source("a", "Foo"));
+    fx.write("notes.txt", "one\n");
+    fx.jj(&["describe", "-m", "trunk"]);
+    fx.jj(&["bookmark", "create", "main", "-r", "@"]);
+    fx.jj(&["new", "-m", "move Foo"]);
+    fx.remove("src/a/Foo.java");
+    fx.write("src/b/Foo.java", &java_source("b", "Foo"));
+    fx.write("notes.txt", "one\ntwo\n");
+    let (_, commit) = current_change_and_commit(&fx.root, "@");
+
+    let expected = vec![
+        kata_core::ChangedFile {
+            path: "notes.txt".into(),
+            old_path: None,
+            added: 1,
+            removed: 0,
+            binary: false,
+        },
+        kata_core::ChangedFile {
+            path: "src/b/Foo.java".into(),
+            old_path: Some("src/a/Foo.java".into()),
+            added: 1,
+            removed: 1,
+            binary: false,
+        },
+    ];
+    let sorted = |mut files: Vec<kata_core::ChangedFile>| {
+        files.sort_by(|a, b| a.path.cmp(&b.path));
+        files
+    };
+
+    let cli = fx.cli();
+    let commits = cli
+        .list_commits(&RevSet::new("main..@"))
+        .await
+        .expect("list_commits");
+    assert_eq!(commits.len(), 1);
+    assert_eq!(commits[0].commit_id, commit);
+    assert_eq!(sorted(commits[0].changed_files.clone()), expected);
+
+    let page = cli
+        .browse_log(&RevSet::new("main..@"), 16)
+        .await
+        .expect("browse_log");
+    assert_eq!(page.rows.len(), 1);
+    assert_eq!(sorted(page.rows[0].commit.changed_files.clone()), expected);
+}
+
 /// `working_copy_commit_id` returns the workspace's `@` commit.
 #[tokio::test]
 async fn working_copy_commit_id_returns_at() {

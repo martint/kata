@@ -714,10 +714,21 @@ pub struct JjLib {
     /// fetch asks for the whole list once per file, and building it
     /// runs rename detection over every added and deleted file.
     changed_files_cache: Arc<crate::PairCache<Vec<FileChange>>>,
+    /// Per-commit file lists for `list_commits`, against the merge of
+    /// all parents, keyed by `(commit, commit)`. Every review load lists
+    /// every commit, and each list runs rename detection.
+    commit_files_cache: Arc<crate::PairCache<Vec<kata_core::ChangedFile>>>,
+    /// Per-commit file lists for `browse_log`, against the first parent,
+    /// keyed by `(parent, commit)`.
+    log_files_cache: Arc<crate::PairCache<Vec<kata_core::ChangedFile>>>,
 }
 
 /// Number of `(base, tip)` file lists [`JjLib`] keeps.
 const CHANGED_FILES_CACHE_CAPACITY: usize = 16;
+
+/// Number of per-commit file lists [`JjLib`] keeps for each of
+/// `list_commits` and `browse_log`.
+const COMMIT_FILES_CACHE_CAPACITY: usize = 1024;
 
 impl JjLib {
     pub fn new(workspace_path: impl Into<PathBuf>) -> Result<Self> {
@@ -735,6 +746,8 @@ impl JjLib {
             workspace_name: Arc::new(opened.workspace_name),
             workspace_root: Arc::new(opened.workspace_root),
             changed_files_cache: Arc::new(crate::PairCache::new(CHANGED_FILES_CACHE_CAPACITY)),
+            commit_files_cache: Arc::new(crate::PairCache::new(COMMIT_FILES_CACHE_CAPACITY)),
+            log_files_cache: Arc::new(crate::PairCache::new(COMMIT_FILES_CACHE_CAPACITY)),
         })
     }
 }
@@ -1056,12 +1069,11 @@ impl JjBackend for JjLib {
         revset: &kata_core::RevSet,
     ) -> Result<Vec<CommitInfo>> {
         let cache = self.cache.clone();
+        let files_cache = self.commit_files_cache.clone();
         let revset_str = revset.to_string();
         let workspace_name = self.workspace_name.clone();
         let workspace_root = self.workspace_root.clone();
         tokio::task::spawn_blocking(move || -> Result<Vec<CommitInfo>> {
-            use futures::StreamExt;
-            use jj_lib::matchers::EverythingMatcher;
             let repo = cache.load_at_head()?;
             let ws = Some((workspace_name.as_ref().as_ref(), workspace_root.as_path()));
             let Some(rs) = evaluate_user_revset(&repo, &revset_str, ws)? else {
@@ -1102,56 +1114,17 @@ impl JjBackend for JjLib {
                 // Same merged-parent base and imara-diff histogram path
                 // as the per-commit diff fetch (`compute_commit_self_diff`),
                 // so the commits-panel counts and the scoped diff agree.
-                let changed_files = {
-                    let parent_tree = futures::executor::block_on(
-                        commit.parent_tree(repo.as_ref() as &dyn jj_lib::repo::Repo),
-                    )
-                    .map_err(|e| Error::Parse(format!("libjj parent_tree: {e}")))?;
-                    let matcher = EverythingMatcher;
-                    let mut stream = parent_tree.diff_stream(&commit.tree(), &matcher);
-                    let mut files = Vec::new();
-                    while let Some(entry) = futures::executor::block_on(stream.next()) {
-                        let path = entry.path.clone();
-                        let path_str = path.as_internal_file_string().to_string();
-                        let values = entry
-                            .values
-                            .map_err(|e| Error::Parse(format!("libjj diff entry: {e}")))?;
-                        let left_id = values
-                            .before
-                            .as_resolved()
-                            .and_then(|opt| opt.as_ref())
-                            .and_then(|tv| match tv {
-                                jj_lib::backend::TreeValue::File { id, .. } => Some(id.clone()),
-                                _ => None,
-                            });
-                        let right_id = values
-                            .after
-                            .as_resolved()
-                            .and_then(|opt| opt.as_ref())
-                            .and_then(|tv| match tv {
-                                jj_lib::backend::TreeValue::File { id, .. } => Some(id.clone()),
-                                _ => None,
-                            });
-                        let left_bytes = if let Some(id) = &left_id {
-                            read_file_bytes(store, &path, id)?
-                        } else {
-                            Vec::new()
-                        };
-                        let right_bytes = if let Some(id) = &right_id {
-                            read_file_bytes(store, &path, id)?
-                        } else {
-                            Vec::new()
-                        };
-                        let (binary, added, removed) =
-                            count_line_changes(&left_bytes, &right_bytes);
-                        files.push(kata_core::ChangedFile {
-                            path: path_str,
-                            added,
-                            removed,
-                            binary,
-                        });
+                let key = KataCommitId::new(commit_id.hex());
+                let changed_files = match files_cache.get(&key, &key) {
+                    Some(files) => files.as_ref().clone(),
+                    None => {
+                        let parent_tree = futures::executor::block_on(
+                            commit.parent_tree(repo.as_ref() as &dyn jj_lib::repo::Repo),
+                        )
+                        .map_err(|e| Error::Parse(format!("libjj parent_tree: {e}")))?;
+                        let files = commit_changed_files(store, &parent_tree, &commit.tree())?;
+                        files_cache.insert(&key, &key, files).as_ref().clone()
                     }
-                    files
                 };
                 // Paths conflicted at this commit, surfaced for the
                 // UI's `⚠ conflict` badge in the commits panel. We
@@ -1226,13 +1199,13 @@ impl JjBackend for JjLib {
         max_rows: usize,
     ) -> Result<kata_core::LogPage> {
         let cache = self.cache.clone();
+        let files_cache = self.log_files_cache.clone();
         let workspace_root = self.workspace_root.clone();
         let workspace_name = self.workspace_name.clone();
         let expr = revset.as_str().to_owned();
         tokio::task::spawn_blocking(move || -> Result<kata_core::LogPage> {
             use futures::StreamExt;
             use jj_lib::graph::{GraphEdgeType, TopoGroupedGraph};
-            use jj_lib::matchers::EverythingMatcher;
             use jj_lib::object_id::ObjectId;
             let repo = cache.load_at_head()?;
             let ws = Some((workspace_name.as_ref().as_ref(), workspace_root.as_path()));
@@ -1275,56 +1248,19 @@ impl JjBackend for JjLib {
                     .unwrap_or("")
                     .to_string();
                 let changed_files = if let Some(parent_id) = commit.parent_ids().first() {
-                    let parent = store.get_commit(parent_id).map_err(|e| {
-                        Error::Parse(format!("libjj get_commit (parent): {e}"))
-                    })?;
-                    let matcher = EverythingMatcher;
-                    let mut stream = parent.tree().diff_stream(&commit.tree(), &matcher);
-                    let mut files = Vec::new();
-                    while let Some(entry) =
-                        futures::executor::block_on(futures::StreamExt::next(&mut stream))
-                    {
-                        let path = entry.path.clone();
-                        let path_str = path.as_internal_file_string().to_string();
-                        let values = entry
-                            .values
-                            .map_err(|e| Error::Parse(format!("libjj diff entry: {e}")))?;
-                        let left_id = values
-                            .before
-                            .as_resolved()
-                            .and_then(|opt| opt.as_ref())
-                            .and_then(|tv| match tv {
-                                jj_lib::backend::TreeValue::File { id, .. } => Some(id.clone()),
-                                _ => None,
-                            });
-                        let right_id = values
-                            .after
-                            .as_resolved()
-                            .and_then(|opt| opt.as_ref())
-                            .and_then(|tv| match tv {
-                                jj_lib::backend::TreeValue::File { id, .. } => Some(id.clone()),
-                                _ => None,
-                            });
-                        let left_bytes = if let Some(id) = &left_id {
-                            read_file_bytes(store, &path, id)?
-                        } else {
-                            Vec::new()
-                        };
-                        let right_bytes = if let Some(id) = &right_id {
-                            read_file_bytes(store, &path, id)?
-                        } else {
-                            Vec::new()
-                        };
-                        let (binary, added, removed) =
-                            count_line_changes(&left_bytes, &right_bytes);
-                        files.push(kata_core::ChangedFile {
-                            path: path_str,
-                            added,
-                            removed,
-                            binary,
-                        });
+                    let parent_key = KataCommitId::new(parent_id.hex());
+                    let key = KataCommitId::new(commit_id.hex());
+                    match files_cache.get(&parent_key, &key) {
+                        Some(files) => files.as_ref().clone(),
+                        None => {
+                            let parent = store.get_commit(parent_id).map_err(|e| {
+                                Error::Parse(format!("libjj get_commit (parent): {e}"))
+                            })?;
+                            let files =
+                                commit_changed_files(store, &parent.tree(), &commit.tree())?;
+                            files_cache.insert(&parent_key, &key, files).as_ref().clone()
+                        }
                     }
-                    files
                 } else {
                     Vec::new()
                 };
@@ -1745,6 +1681,97 @@ fn lookup_commit(
     repo.store()
         .get_commit(&backend_id)
         .map_err(|e| Error::Parse(format!("libjj get_commit: {e}")))
+}
+
+/// Files `commit_tree` changes against `parent_tree`, with line counts,
+/// for the commits panel and the log browser. A moved file is one entry
+/// at its new path with `old_path` set and the counts of its old→new
+/// diff, as in the per-commit diff.
+fn commit_changed_files(
+    store: &Arc<jj_lib::store::Store>,
+    parent_tree: &jj_lib::merged_tree::MergedTree,
+    commit_tree: &jj_lib::merged_tree::MergedTree,
+) -> Result<Vec<kata_core::ChangedFile>> {
+    use kata_core::FileStatus;
+    let file_id = |value: &jj_lib::backend::MergedTreeValue| {
+        value
+            .as_resolved()
+            .and_then(|opt| opt.as_ref())
+            .and_then(|tv| match tv {
+                jj_lib::backend::TreeValue::File { id, .. } => Some(id.clone()),
+                _ => None,
+            })
+    };
+    let matcher = jj_lib::matchers::EverythingMatcher;
+    let mut stream = parent_tree.diff_stream(commit_tree, &matcher);
+    let mut files: Vec<kata_core::FileChange> = Vec::new();
+    let mut added_bytes: std::collections::HashMap<String, Vec<u8>> =
+        std::collections::HashMap::new();
+    let mut deleted_bytes: std::collections::HashMap<String, Vec<u8>> =
+        std::collections::HashMap::new();
+    while let Some(entry) = futures::executor::block_on(futures::StreamExt::next(&mut stream)) {
+        let path_str = entry.path.as_internal_file_string().to_string();
+        let values = entry
+            .values
+            .map_err(|e| Error::Parse(format!("libjj diff entry: {e}")))?;
+        let left_id = file_id(&values.before);
+        let right_id = file_id(&values.after);
+        let left_bytes = match &left_id {
+            Some(id) => read_file_bytes(store, &entry.path, id)?,
+            None => Vec::new(),
+        };
+        let right_bytes = match &right_id {
+            Some(id) => read_file_bytes(store, &entry.path, id)?,
+            None => Vec::new(),
+        };
+        let (binary, added, removed) = count_line_changes(&left_bytes, &right_bytes);
+        // An entry with no file on either side, such as a conflicted
+        // path, stays listed with zero counts.
+        let status = match (left_id.is_some(), right_id.is_some()) {
+            (false, true) => {
+                added_bytes.insert(path_str.clone(), right_bytes);
+                FileStatus::Added
+            }
+            (true, false) => {
+                deleted_bytes.insert(path_str.clone(), left_bytes);
+                FileStatus::Deleted
+            }
+            _ => FileStatus::Modified,
+        };
+        files.push(kata_core::FileChange {
+            path: path_str,
+            status,
+            hunks: None,
+            binary,
+            added,
+            removed,
+        });
+    }
+    // Only a commit that both adds and deletes files can contain a move.
+    if !added_bytes.is_empty() && !deleted_bytes.is_empty() {
+        match tree_renames(store, parent_tree, commit_tree) {
+            Ok(renames) => {
+                fold_renames(&mut files, &renames, &added_bytes, &deleted_bytes, false)?
+            }
+            Err(e) => tracing::warn!(
+                error = %e,
+                "rename detection failed for commit file list; moves shown as delete+add",
+            ),
+        }
+    }
+    Ok(files
+        .into_iter()
+        .map(|f| kata_core::ChangedFile {
+            old_path: match f.status {
+                FileStatus::Renamed { old_path } => Some(old_path),
+                _ => None,
+            },
+            path: f.path,
+            added: f.added,
+            removed: f.removed,
+            binary: f.binary,
+        })
+        .collect())
 }
 
 /// Rename pairs `(source, target)` between two trees, found in-process
