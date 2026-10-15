@@ -309,9 +309,10 @@ This is where the actual work happens. Three panes:
   edits, never the content it inherits from the branches it merges
   (a clean merge that just stitches branches together scopes to an
   empty diff); content brought in by a merged branch is attributed
-  to the commit that introduced it. The "N comments" pill counts
-  comments on exactly those files, so it always agrees with what
-  the comment-nav can step through in the scoped view.
+  to the commit that introduced it. A file the commit moved is one
+  entry under its new path, as in the scoped diff. The "N comments"
+  pill counts comments on exactly those files, so it always agrees
+  with what the comment-nav can step through in the scoped view.
 - **Files panel** (centre, below the commits). The diff itself,
   file by file. Each file renders its header (status icon, path,
   add/remove counts), then its hunks, then any inline threads.
@@ -386,7 +387,11 @@ diff:
 
 Added and removed files render as a single column with no pairing.
 Renames are detected explicitly and rendered with both paths in
-the header.
+the header and the hunks between the old and new contents. A
+deleted and an added file pair up as a rename when at least half
+of the content matches. Every diff view detects renames: the
+review diff, the per-commit diff (including a merge's own moves),
+and both the cumulative and the per-pair patchset interdiff (§11).
 
 ### 5.2 Whole-file vs. hunks
 
@@ -1136,7 +1141,8 @@ Two pieces:
   since the cumulative diff cannot tell which commit introduced
   which lines. `manifest.commits[].changed_files[]` carries a
   `{path, added, removed, binary}` entry per file (not just the
-  path), so the per-commit shape is visible in the manifest
+  path), plus `old_path` for a file the commit moved. The
+  per-commit shape is visible in the manifest
   itself and an agent can triage which commits in a stack carry
   substantive changes without a second fetch.
 - **The `kata-review` skill** is exposed as an MCP resource at

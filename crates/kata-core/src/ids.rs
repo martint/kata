@@ -114,6 +114,10 @@ pub struct RepoSummary {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ChangedFile {
     pub path: String,
+    /// The file's path before the commit when the commit moved it. The
+    /// counts then cover the old→new diff.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub old_path: Option<String>,
     pub added: u32,
     pub removed: u32,
     #[serde(default)]
