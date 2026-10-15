@@ -124,6 +124,27 @@ export function greet(name: string): string {
 }
 "#,
     )?;
+    // A small CLI over the greeter. Its only change (commit 4) lands
+    // deep inside `main`, so the hunk's expanded context stops short
+    // of the signature and the hunk header has something to name.
+    write_file(
+        workspace_path,
+        "cli.ts",
+        r#"import { greet } from "./greeter";
+
+/** Entry point: greet every name passed on the command line. */
+export function main(argv: string[]): void {
+  const names = argv.slice(2);
+  if (names.length === 0) {
+    console.error("usage: greet <name>...");
+    process.exit(1);
+  }
+  for (const name of names) {
+    console.log(greet(name));
+  }
+}
+"#,
+    )?;
     jj(workspace_path, &["describe", "-m", "Add greeter module"], alice)?;
     // Pin `main` on the trunk commit so the review's `trunk()..feature`
     // revset has a base to resolve against. Without `main` (or an
@@ -329,10 +350,11 @@ async fn seed_reviews(
 }
 
 /// Append a follow-up commit that guards `formatName` against the
-/// empty-string case Bob flagged, then advances the `feature`
-/// bookmark to it. Run from `seed_reviews` after PS1's comments are
-/// published so the workspace mutation is visible in the demo as
-/// "Alice answered the question in a new patchset".
+/// empty-string case Bob flagged (and skips blank names in `cli.ts`
+/// for the same reason), then advances the `feature` bookmark to
+/// it. Run from `seed_reviews` after PS1's comments are published
+/// so the workspace mutation is visible in the demo as "Alice
+/// answered the question in a new patchset".
 fn add_patchset(workspace_path: &Path, alice: &Author) -> Result<(), Error> {
     jj(
         workspace_path,
@@ -354,6 +376,25 @@ export function formatName(raw: string): string {
 /** Format a greeting line for `name`. */
 export function greet(name: string): string {
   return "Hello, " + formatName(name) + "!";
+}
+"#,
+    )?;
+    write_file(
+        workspace_path,
+        "cli.ts",
+        r#"import { greet } from "./greeter";
+
+/** Entry point: greet every name passed on the command line. */
+export function main(argv: string[]): void {
+  const names = argv.slice(2);
+  if (names.length === 0) {
+    console.error("usage: greet <name>...");
+    process.exit(1);
+  }
+  for (const name of names) {
+    if (name.trim().length === 0) continue;
+    console.log(greet(name));
+  }
 }
 "#,
     )?;

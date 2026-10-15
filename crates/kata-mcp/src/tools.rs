@@ -118,7 +118,7 @@ impl ReviewMcp {
     }
 
     #[tool(
-        description = "Return the per-line hunks for one file in a review. `get_review` ships metadata only (path + +/- counts) so the response stays small; this is the lazy fetch that fills in the actual diff content for a file the agent wants to read. Each hunk line carries a `side` (`base` or `tip`) and a 1-based line number on that side. The diff is **cumulative base..tip** for the review (or the selected patchset) — for a multi-commit stack it folds every commit's changes to this file together. To see what a single commit did, use `read_commit_diff` instead. Pass `patchset` to read an earlier round (defaults to the current one); pass `compare` to diff one patchset against another instead of base..tip."
+        description = "Return the per-line hunks for one file in a review. `get_review` ships metadata only (path + +/- counts) so the response stays small; this is the lazy fetch that fills in the actual diff content for a file the agent wants to read. Each hunk line carries a `side` (`base` or `tip`) and a 1-based line number on that side. A regular hunk may also carry `context`: the enclosing function / method / class signature line (nearest one at or above the hunk's first line, like the tail of a GitHub `@@ … @@ fn foo()` header), omitted when none was found. The diff is **cumulative base..tip** for the review (or the selected patchset) — for a multi-commit stack it folds every commit's changes to this file together. To see what a single commit did, use `read_commit_diff` instead. Pass `patchset` to read an earlier round (defaults to the current one); pass `compare` to diff one patchset against another instead of base..tip."
     )]
     async fn read_file_diff(
         &self,
