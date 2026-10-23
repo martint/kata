@@ -34,6 +34,9 @@ export interface Bookmark {
  *  the actual per-commit diff always agree. */
 export interface ChangedFile {
   path: string;
+  /** Path before the commit when the commit moved the file. The counts
+   *  then cover the old→new diff. */
+  old_path?: string;
   added: number;
   removed: number;
   binary?: boolean;

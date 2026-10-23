@@ -150,6 +150,7 @@ fn effective_endpoints(p: &PatchsetPair) -> Option<(CommitId, CommitId)> {
 async fn compute_pair_diff_counts<B: JjBackend + ?Sized>(
     backend: &B,
     workspace_path: Option<&std::path::Path>,
+    interdiffs: &Arc<InterdiffCache>,
     pairs: &mut [PatchsetPair],
 ) {
     // Split the pairs into two work queues:
@@ -194,25 +195,20 @@ async fn compute_pair_diff_counts<B: JjBackend + ?Sized>(
     if let Some(workspace_path) = workspace_path {
         let workspace_path = workspace_path.to_path_buf();
         let futs = interdiff_lookups.iter().map(|(_, f, t)| {
-            let wp = workspace_path.clone();
-            let from = f.clone();
-            let to = t.clone();
-            tokio::task::spawn_blocking(move || -> kata_jj::Result<kata_core::Diff> {
-                let handle = kata_jj::libjj::open_repo(&wp)?;
-                handle.compute_rebased_diff(&from, &to)
-            })
+            cached_rebased_diff(
+                interdiffs.clone(),
+                workspace_path.clone(),
+                f.clone(),
+                t.clone(),
+            )
         });
         let results = futures::future::join_all(futs).await;
         for ((i, _, _), res) in interdiff_lookups.into_iter().zip(results.into_iter()) {
-            // Outer Result = JoinError; inner = kata_jj::Result.
-            // Both failure modes leave diff_counts=None (chip omitted).
+            // A failure leaves diff_counts=None (chip omitted).
             match res {
-                Ok(Ok(diff)) => apply_diff_counts(&mut pairs[i], &diff),
-                Ok(Err(e)) => {
-                    tracing::warn!(error = ?e, "libjj rebased interdiff failed");
-                }
+                Ok(diff) => apply_diff_counts(&mut pairs[i], &diff),
                 Err(e) => {
-                    tracing::warn!(error = ?e, "libjj rebased interdiff task panicked");
+                    tracing::warn!(error = ?e, "libjj rebased interdiff failed");
                 }
             }
         }
@@ -289,6 +285,35 @@ pub enum DiffCommitsResult {
 struct RepoEntry {
     summary: RepoSummary,
     jj: Arc<dyn JjBackend>,
+    /// Rebase-based interdiffs by `(from, to)`. The per-file fetch asks
+    /// for one file of an interdiff whose list the compare view already
+    /// built.
+    interdiffs: Arc<InterdiffCache>,
+}
+
+type InterdiffCache = kata_jj::PairCache<kata_core::Diff>;
+
+/// Number of interdiffs each repo keeps. A patchset compare builds one
+/// per rewritten commit.
+const INTERDIFF_CACHE_CAPACITY: usize = 64;
+
+/// The rebase-based interdiff for `(from, to)`, from `cache` when present.
+async fn cached_rebased_diff(
+    cache: Arc<InterdiffCache>,
+    workspace_path: std::path::PathBuf,
+    from: CommitId,
+    to: CommitId,
+) -> kata_jj::Result<Arc<kata_core::Diff>> {
+    if let Some(diff) = cache.get(&from, &to) {
+        return Ok(diff);
+    }
+    tokio::task::spawn_blocking(move || -> kata_jj::Result<Arc<kata_core::Diff>> {
+        let handle = kata_jj::libjj::open_repo(&workspace_path)?;
+        let diff = handle.compute_rebased_diff(&from, &to)?;
+        Ok(cache.insert(&from, &to, diff))
+    })
+    .await
+    .map_err(|e| kata_jj::Error::Parse(format!("interdiff task join: {e}")))?
 }
 
 /// Immutable snapshot of the registered workspaces. The whole struct is
@@ -392,7 +417,16 @@ fn build_entry(
         repo_id: repo_id.clone(),
         canonical_path,
     };
-    Ok((name, repo_id, RepoEntry { summary, jj }))
+    let interdiffs = Arc::new(InterdiffCache::new(INTERDIFF_CACHE_CAPACITY));
+    Ok((
+        name,
+        repo_id,
+        RepoEntry {
+            summary,
+            jj,
+            interdiffs,
+        },
+    ))
 }
 
 impl ReviewService {
@@ -1226,8 +1260,8 @@ impl ReviewService {
         };
         let base = compare_base.as_ref().unwrap_or(&selected.base_commit);
         // Look up the file's metadata (status, rename info) — needed so
-        // we know which side(s) to read. One `jj diff -T template` call,
-        // ~50 ms; could be cached if it becomes a hot path.
+        // we know which side(s) to read. The backend caches the list per
+        // (base, tip), so later files of the same diff reuse it.
         let files = jj.changed_files(base, &selected.tip_commit).await?;
         let target = files
             .into_iter()
@@ -1380,7 +1414,8 @@ impl ReviewService {
             .parent()
             .and_then(|p| p.parent())
             .map(|p| p.to_path_buf());
-        compute_pair_diff_counts(&*jj, workspace_path.as_deref(), &mut pairs).await;
+        let interdiffs = self.entry(repo)?.interdiffs;
+        compute_pair_diff_counts(&*jj, workspace_path.as_deref(), &interdiffs, &mut pairs).await;
 
         let compare_base_mismatch = from_ps.base_commit != to_ps.base_commit;
         Ok(PatchsetCompareView {
@@ -1433,21 +1468,22 @@ impl ReviewService {
                 ))
             })?
             .to_path_buf();
+        let diff = cached_rebased_diff(
+            entry.interdiffs.clone(),
+            workspace_path.clone(),
+            from.clone(),
+            to.clone(),
+        )
+        .await?;
+        let Some(path) = path.map(|s| s.to_owned()) else {
+            return Ok(DiffCommitsResult::Diff(diff.as_ref().clone()));
+        };
         let from = from.clone();
         let to = to.clone();
-        let path = path.map(|s| s.to_owned());
         tokio::task::spawn_blocking(move || -> kata_jj::Result<DiffCommitsResult> {
             let handle = kata_jj::libjj::open_repo(&workspace_path)?;
-            match path {
-                None => {
-                    let diff = handle.compute_rebased_diff(&from, &to)?;
-                    Ok(DiffCommitsResult::Diff(diff))
-                }
-                Some(p) => {
-                    let file = handle.compute_rebased_file_hunks(&from, &to, &p)?;
-                    Ok(DiffCommitsResult::File(file))
-                }
-            }
+            let file = handle.compute_rebased_file_hunks(&from, &to, &diff.files, &path)?;
+            Ok(DiffCommitsResult::File(file))
         })
         .await
         .map_err(|e| ServiceError::Internal(format!("interdiff task join: {e}")))?

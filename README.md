@@ -25,7 +25,7 @@ before it lands. Kata is built around that:
 
 ## Try it
 
-Requires Rust 1.95+ and [`bun`](https://bun.com/) for the embedded
+Requires Rust 1.97.1+ and [`bun`](https://bun.com/) for the embedded
 web bundle. A `git` binary on `PATH` is required at runtime
 (kata's jj backend shells out for fetches). The optional GitHub PR
 integration additionally requires the [`gh`](https://cli.github.com/)
