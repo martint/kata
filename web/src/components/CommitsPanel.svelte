@@ -10,7 +10,7 @@
     ResponseView,
   } from '../lib/types';
   import { getContext } from 'svelte';
-  import { renderMarkdown } from '../lib/markdown';
+  import { commitBody } from '../lib/commitMessage';
   import type { FoldStore } from '../lib/foldStore';
   import Bubble from './Bubble.svelte';
   import CommentComposer from './CommentComposer.svelte';
@@ -237,13 +237,6 @@
     const d = new Date(iso);
     if (isNaN(d.getTime())) return iso;
     return d.toLocaleString();
-  }
-
-  /** Description minus the first line. Useful for "more details" toggles. */
-  function bodyAfterFirstLine(description: string): string {
-    const i = description.indexOf('\n');
-    if (i < 0) return '';
-    return description.slice(i + 1).replace(/\s+$/, '');
   }
 
   function toggleExpanded(commitId: string) {
@@ -627,7 +620,7 @@
           {/if}
         </li>
         {#each commits as c (c.commit_id)}
-          {@const body = bodyAfterFirstLine(c.description)}
+          {@const body = commitBody(c.description)}
           {@const isExpanded = expanded.has(c.commit_id)}
           {@const count = countByCommit.get(c.commit_id) ?? 0}
           {@const threads = buckets.byChange.get(c.change_id) ?? []}
@@ -711,7 +704,7 @@
               </button>
             </div>
             {#if isExpanded && body}
-              <div class="body markdown">{@html renderMarkdown(body)}</div>
+              <pre class="body">{body}</pre>
             {/if}
             {#if threads.length > 0 || composingHere}
               <div class="commit-threads">
@@ -993,29 +986,13 @@
     margin: -4px 0 0;
     padding: 0 12px 12px 36px;
     background: transparent;
-    font-size: 13px;
+    /* Commit bodies are plain text whose hard wraps and indentation
+     * the author chose, as `git log` shows them. */
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
     color: var(--text);
-  }
-
-  /* Tighten markdown defaults so paragraphs/lists don't add their own
-   * vertical padding inside the description. */
-  .body :global(p),
-  .body :global(ul),
-  .body :global(ol),
-  .body :global(pre) {
-    margin: 4px 0;
-  }
-  .body :global(p:first-child),
-  .body :global(ul:first-child),
-  .body :global(ol:first-child),
-  .body :global(pre:first-child) {
-    margin-top: 0;
-  }
-  .body :global(p:last-child),
-  .body :global(ul:last-child),
-  .body :global(ol:last-child),
-  .body :global(pre:last-child) {
-    margin-bottom: 0;
   }
 
   /* Patchset-compare v2 prototype styling. The badges colour-code the

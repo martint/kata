@@ -4,7 +4,7 @@
 //! unscoped selection, and the commit-level / review-wide inline
 //! comment threads that the recent commit-comment work added.
 
-import { fireEvent, render, screen, within } from '@testing-library/svelte';
+import { fireEvent, render, screen } from '@testing-library/svelte';
 import type { ComponentProps } from 'svelte';
 import { describe, expect, test, vi } from 'vitest';
 import CommitsPanel from './CommitsPanel.svelte';
@@ -213,19 +213,18 @@ describe('CommitsPanel', () => {
     expect(onstartcompose).toHaveBeenCalledWith({ kind: 'review' });
   });
 
-  test('expand toggle reveals the multiline description body', async () => {
+  test('expand toggle reveals the multiline description body as written', async () => {
     const c = commit({
       description_first_line: 'tweak the thing',
-      description: 'tweak the thing\n\nfollowed by some context\nthat spans lines',
+      description: 'tweak the thing\n\nfollowed by some context\nthat spans lines\n\n- `a` *b*\n',
     });
     const { container } = renderPanel({ commits: [c] });
     // Body isn't rendered until expanded.
-    expect(container.querySelector('.body.markdown')).toBeNull();
+    expect(container.querySelector('pre.body')).toBeNull();
     const expandBtn = container.querySelector('button.expand') as HTMLElement;
     await fireEvent.click(expandBtn);
-    const body = container.querySelector('.body.markdown') as HTMLElement;
-    expect(body).not.toBeNull();
-    expect(within(body).getByText(/followed by some context/)).toBeTruthy();
+    const body = container.querySelector('pre.body') as HTMLElement;
+    expect(body.textContent).toBe('followed by some context\nthat spans lines\n\n- `a` *b*');
   });
 });
 

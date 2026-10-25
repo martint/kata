@@ -12,7 +12,7 @@
 <script lang="ts">
   import { ApiError, api } from '../lib/api';
   import { copyText } from '../lib/clipboard';
-  import { renderMarkdown } from '../lib/markdown';
+  import { commitBody } from '../lib/commitMessage';
   import type {
     CommitDiffView,
     CommitId,
@@ -433,15 +433,6 @@
       setTimeout(() => (rangeCopied = false), 1500);
     }
   }
-
-  /** Drop the first line (subject) from the full description; that
-   *  line already renders as the H3. Trim trailing whitespace so the
-   *  pre block doesn't trail a blank row. */
-  function trimDescription(desc: string): string {
-    const idx = desc.indexOf('\n');
-    if (idx < 0) return '';
-    return desc.slice(idx + 1).trimEnd();
-  }
 </script>
 
 <div class="browse-root">
@@ -550,6 +541,7 @@
       />
     {:else if detail}
       {@const c = detail.commit}
+      {@const body = commitBody(c.description)}
       <div class="detail-body">
         <header class="detail-header">
           <div class="detail-header-top">
@@ -605,15 +597,8 @@
           </div>
         {/if}
 
-        {#if c.description.includes('\n')}
-          {@const body = trimDescription(c.description)}
-          {#if body.length > 0}
-            <!-- Commit descriptions are conventionally markdown
-                 in this codebase (and most projects we work on);
-                 render them as such so links, lists, and code
-                 blocks come through. -->
-            <div class="description markdown">{@html renderMarkdown(body)}</div>
-          {/if}
+        {#if body.length > 0}
+          <pre class="description">{body}</pre>
         {/if}
 
         <!-- Files in this commit + their stacked diffs. The tree is
@@ -945,17 +930,18 @@
     color: var(--text-muted);
   }
 
-  /* Markdown-rendered description body. The container styles
-   * the outer card; the global `.markdown` rules (in app.css)
-   * handle the inner heading / list / code styling so this
-   * pane matches review-summary rendering elsewhere. */
+  /* Commit body as plain text with the hard wraps and indentation
+   * the author chose, as `git log` shows it. */
   .description {
     margin: 12px 0;
     padding: 8px 12px;
     background: var(--bg);
     border: 1px solid var(--border-muted);
     border-radius: 4px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 12px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
   }
 
   /* Stacked per-file diffs below the file tree. `FileDiff` brings
