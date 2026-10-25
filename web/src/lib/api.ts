@@ -239,10 +239,12 @@ export const api = {
    *  Other tabs learn via the `review-deleted` SSE event. */
   deleteReview: (repo: string, number: number) =>
     request<void>('DELETE', `${repoBase(repo)}/reviews/${number}`),
-  commitDiff: (repo: string, number: number, changeId: string) =>
+  /** Per-commit diff of `changeId`, with `anchors` placing patchset
+   *  `ps`'s threads on it. */
+  commitDiff: (repo: string, number: number, changeId: string, ps: number) =>
     request<CommitDiffView>(
       'GET',
-      `${repoBase(repo)}/reviews/${number}/commits/${enc(changeId)}/diff`,
+      `${repoBase(repo)}/reviews/${number}/commits/${enc(changeId)}/diff?ps=${ps}`,
     ),
   /** Hunks for one file in a review. `openReview` ships only the
    *  file list, then the UI calls this per FileSlot as files scroll

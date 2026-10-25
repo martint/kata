@@ -164,6 +164,19 @@ with one of four **anchor states**:
 Anchor drift is visible at a glance; it never silently destroys a
 comment, and it never silently relocates one to the wrong place.
 
+In the per-commit view (a commits-panel row is selected) the same
+re-location runs against the selected commit instead of the
+patchset. Tip-side anchors resolve against the commit and base-side
+anchors against its parent. A comment or annotation written on that
+commit renders at its original lines. One written on another commit
+or in the full-review view renders where its content sits in this
+commit, with the moved or drifted badge when it applies. A rewritten
+commit carries its threads into the next patchset the same way. The
+per-commit view shows every thread on the files the commit touches:
+inline when its line is in the commit's diff, in the group above the
+file's hunks otherwise, and as outdated when its content isn't in the
+commit.
+
 ### 2.7 Annotation
 
 An *annotation* is the author's counterpart to a comment: a note
@@ -309,9 +322,10 @@ This is where the actual work happens. Three panes:
   edits, never the content it inherits from the branches it merges
   (a clean merge that just stitches branches together scopes to an
   empty diff); content brought in by a merged branch is attributed
-  to the commit that introduced it. The "N comments" pill counts
-  comments on exactly those files, so it always agrees with what
-  the comment-nav can step through in the scoped view.
+  to the commit that introduced it. A file the commit moved is one
+  entry under its new path, as in the scoped diff. The "N comments"
+  pill counts comments on exactly those files, so it always agrees
+  with what the comment-nav can step through in the scoped view.
 - **Files panel** (centre, below the commits). The diff itself,
   file by file. Each file renders its header (status icon, path,
   add/remove counts), then its hunks, then any inline threads.
@@ -386,7 +400,11 @@ diff:
 
 Added and removed files render as a single column with no pairing.
 Renames are detected explicitly and rendered with both paths in
-the header.
+the header and the hunks between the old and new contents. A
+deleted and an added file pair up as a rename when at least half
+of the content matches. Every diff view detects renames: the
+review diff, the per-commit diff (including a merge's own moves),
+and both the cumulative and the per-pair patchset interdiff (§11).
 
 ### 5.2 Whole-file vs. hunks
 
@@ -718,6 +736,12 @@ patchset if the endpoints have moved. The system never refreshes
 automatically; mere passive viewing of a review doesn't create
 patchsets.
 
+Bare string patterns in a revset are globs, as in jj. A revset like
+`bookmarks(feat)` matches only the bookmark `feat`. An existing
+review whose revset depended on substring matching re-resolves
+differently on its next refresh, either to a different commit set
+or to none.
+
 ### 10.2 Per-patchset comment authorship
 
 Every comment remembers which patchset it was written against. The
@@ -738,7 +762,8 @@ opens an inline editor. Saving validates the new expression
 against the underlying jj repo and records a new patchset for
 the resolved endpoints (or no new patchset if they happen to
 match the current one, making the operation idempotent).
-Continuation versus rewritten follows the same rule as a
+Patterns in the new revset follow the same glob rule as a refresh
+(§10.1). Continuation versus rewritten follows the same rule as a
 refresh: a descendant tip or the same change-id is a
 continuation; anything else is recorded with `parent_patchset:
 null`. Non-creators don't see the affordance — the same
@@ -1136,7 +1161,8 @@ Two pieces:
   since the cumulative diff cannot tell which commit introduced
   which lines. `manifest.commits[].changed_files[]` carries a
   `{path, added, removed, binary}` entry per file (not just the
-  path), so the per-commit shape is visible in the manifest
+  path), plus `old_path` for a file the commit moved. The
+  per-commit shape is visible in the manifest
   itself and an agent can triage which commits in a stack carry
   substantive changes without a second fetch.
 - **The `kata-review` skill** is exposed as an MCP resource at

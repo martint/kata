@@ -870,6 +870,177 @@ async fn comment_reports_moved_after_refresh_when_lines_shift() {
     );
 }
 
+#[tokio::test]
+async fn commit_diff_anchors_place_comments_on_each_commits_own_lines() {
+    let h = Harness::new().await;
+    // Commit A ("tweak") changes line 2 to TWO. Commit B inserts two
+    // lines above it, so TWO is line 4 at the patchset tip.
+    run_jj(&h.workspace_path, &["new", "-m", "shift"]);
+    std::fs::write(h.workspace_path.join("a.txt"), "header\nblank\none\nTWO\nthree\n").unwrap();
+    run_jj(&h.workspace_path, &["bookmark", "set", "feature", "-r", "@"]);
+    let (_, created) = h
+        .json(
+            "POST",
+            "/api/repos/main/reviews",
+            Some(json!({
+                "name": "feature",
+                "revset": "@--..feature",
+                "bookmark": "feature",
+                "created_by": "alice@example.com",
+            })),
+        )
+        .await;
+    let review_url = format!(
+        "/api/repos/main/reviews/{}",
+        created["number"].as_u64().unwrap()
+    );
+    let (_, view) = h.json("GET", &review_url, None).await;
+    let commit = |desc: &str| {
+        view["commits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["description_first_line"] == desc)
+            .unwrap_or_else(|| panic!("commit {desc:?} in {:?}", view["commits"]))
+            .clone()
+    };
+    let a = commit("tweak");
+    let b = commit("shift");
+    let ps1 = view["manifest"]["patchsets"][0].clone();
+
+    let (_, session) = h
+        .json("POST", &format!("{review_url}/sessions"), None)
+        .await;
+    let session_id = session["session_id"].as_str().unwrap().to_owned();
+    let post = async |change: &Value, commit: &Value, line: u32, body: &str| {
+        let (status, c) = h
+            .json(
+                "POST",
+                &format!("{review_url}/sessions/{session_id}/comments"),
+                Some(json!({
+                    "anchor_change_id": change,
+                    "anchor_commit_id": commit,
+                    "file": "a.txt",
+                    "side": "tip",
+                    "lines": {"start": line, "end": line},
+                    "flag": "suggestion",
+                    "body": body,
+                })),
+            )
+            .await;
+        assert!(status.is_success(), "draft comment: {status} {c}");
+        c["comment_id"].as_str().unwrap().to_owned()
+    };
+    // Written in commit A's per-commit view, on A's line 2.
+    let on_a = post(&a["change_id"], &a["commit_id"], 2, "on A").await;
+    // Written in the full-review view, on the tip's line 4.
+    let on_tip = post(&ps1["tip_change"], &ps1["tip_commit"], 4, "on tip").await;
+    let (status, _) = h
+        .json(
+            "POST",
+            &format!("{review_url}/sessions/{session_id}/publish"),
+            None,
+        )
+        .await;
+    assert!(status.is_success());
+
+    let diff_url =
+        |change: &Value| format!("{review_url}/commits/{}/diff", change.as_str().unwrap());
+    let (status, in_a) = h.json("GET", &diff_url(&a["change_id"]), None).await;
+    assert_eq!(status, StatusCode::OK, "{in_a}");
+    assert_eq!(
+        in_a["anchors"],
+        json!({
+            "comments": {
+                on_a.clone(): {"kind": "valid"},
+                on_tip.clone(): {"kind": "moved", "new_lines": {"start": 2, "end": 2}},
+            },
+            "annotations": {},
+        })
+    );
+    let (status, in_b) = h.json("GET", &diff_url(&b["change_id"]), None).await;
+    assert_eq!(status, StatusCode::OK, "{in_b}");
+    assert_eq!(
+        in_b["anchors"],
+        json!({
+            "comments": {
+                on_a: {"kind": "moved", "new_lines": {"start": 4, "end": 4}},
+                on_tip: {"kind": "valid"},
+            },
+            "annotations": {},
+        })
+    );
+}
+
+#[tokio::test]
+async fn commit_diff_anchors_include_only_the_viewers_drafts() {
+    let h = Harness::new().await;
+    let (_, created) = h
+        .json(
+            "POST",
+            "/api/repos/main/reviews",
+            Some(json!({
+                "name": "feature",
+                "revset": "@-..feature",
+                "bookmark": "feature",
+                "created_by": "alice@example.com",
+            })),
+        )
+        .await;
+    let review_url = format!(
+        "/api/repos/main/reviews/{}",
+        created["number"].as_u64().unwrap()
+    );
+    let (_, view) = h.json("GET", &review_url, None).await;
+    let commit = view["commits"][0].clone();
+    let (_, session) = h
+        .json("POST", &format!("{review_url}/sessions"), None)
+        .await;
+    let session_id = session["session_id"].as_str().unwrap().to_owned();
+    let (status, draft) = h
+        .json(
+            "POST",
+            &format!("{review_url}/sessions/{session_id}/comments"),
+            Some(json!({
+                "anchor_change_id": commit["change_id"],
+                "anchor_commit_id": commit["commit_id"],
+                "file": "a.txt",
+                "side": "tip",
+                "lines": {"start": 2, "end": 2},
+                "flag": "question",
+                "body": "unpublished",
+            })),
+        )
+        .await;
+    assert!(status.is_success(), "draft comment: {status} {draft}");
+    let draft_id = draft["comment_id"].as_str().unwrap().to_owned();
+    let diff_url = format!(
+        "{review_url}/commits/{}/diff",
+        commit["change_id"].as_str().unwrap()
+    );
+
+    // The draft's author gets its anchor.
+    let (status, mine) = h.json("GET", &diff_url, None).await;
+    assert_eq!(status, StatusCode::OK, "{mine}");
+    assert_eq!(
+        mine["anchors"],
+        json!({"comments": {draft_id: {"kind": "valid"}}, "annotations": {}})
+    );
+
+    // Another viewer doesn't.
+    let req = Request::builder()
+        .method("GET")
+        .uri(&diff_url)
+        .header("x-review-author", "bob@example.com")
+        .body(Body::empty())
+        .unwrap();
+    let resp = h.router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let theirs: Value =
+        serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(theirs["anchors"], json!({"comments": {}, "annotations": {}}));
+}
+
 /// Compare-mode regression: `GET /file-diff?ps=N&compare=M` must
 /// return hunks computed against patchset M's tip (not patchset N's
 /// base). The frontend's syntax-highlight pass indexes

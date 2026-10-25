@@ -28,6 +28,54 @@ use serde::{Deserialize, Serialize};
 pub use crate::error::{ServiceError, ServiceResult};
 pub use crate::events::{Event, EventBus};
 
+/// A review's comments and annotations written on patchset `n` or an
+/// earlier one, where `n` is the patchset being viewed, with the file
+/// contents their anchors resolve against already read into `cache`.
+struct PatchsetThreads {
+    published: Vec<Comment>,
+    drafts: Vec<Comment>,
+    annotations: Vec<Annotation>,
+    cache: FileCache,
+}
+
+impl PatchsetThreads {
+    /// Keeps the threads written on `viewing.n` or earlier and reads the
+    /// files their anchors need at `viewing` in one batch. Many threads
+    /// share a `(commit, path)` so each pair is read once. The batch is
+    /// best-effort. A garbage-collected anchor commit fails it, and each
+    /// anchor then falls back to its own read.
+    async fn load<B: JjBackend + ?Sized>(
+        jj: &B,
+        review: &ReviewId,
+        published: Vec<Comment>,
+        drafts: Vec<Comment>,
+        annotations: Vec<Annotation>,
+        viewing: &Patchset,
+    ) -> Self {
+        let published: Vec<Comment> =
+            published.into_iter().filter(|c| c.patchset <= viewing.n).collect();
+        let drafts: Vec<Comment> =
+            drafts.into_iter().filter(|c| c.patchset <= viewing.n).collect();
+        let annotations: Vec<Annotation> =
+            annotations.into_iter().filter(|a| a.patchset <= viewing.n).collect();
+        let keys: std::collections::HashSet<(CommitId, String)> = published
+            .iter()
+            .chain(drafts.iter())
+            .flat_map(|c| {
+                anchor_read_keys(c.file.as_deref(), c.side, c.lines, &c.anchor_commit_id, viewing)
+            })
+            .chain(annotations.iter().flat_map(|a| {
+                anchor_read_keys(a.file.as_deref(), a.side, a.lines, &a.anchor_commit_id, viewing)
+            }))
+            .collect();
+        let cache = FileCache::new();
+        if let Err(e) = cache.prefetch(jj, keys).await {
+            tracing::warn!(review = %review, error = ?e, "anchor prefetch failed; resolving anchors individually");
+        }
+        Self { published, drafts, annotations, cache }
+    }
+}
+
 /// `(commit, path)` pairs `resolve_anchor` will need to project the
 /// anchor described by `(file, side, lines, anchor_commit_id)` onto
 /// the patchset currently being rendered. Empty for non-line /
@@ -150,6 +198,7 @@ fn effective_endpoints(p: &PatchsetPair) -> Option<(CommitId, CommitId)> {
 async fn compute_pair_diff_counts<B: JjBackend + ?Sized>(
     backend: &B,
     workspace_path: Option<&std::path::Path>,
+    interdiffs: &Arc<InterdiffCache>,
     pairs: &mut [PatchsetPair],
 ) {
     // Split the pairs into two work queues:
@@ -194,25 +243,20 @@ async fn compute_pair_diff_counts<B: JjBackend + ?Sized>(
     if let Some(workspace_path) = workspace_path {
         let workspace_path = workspace_path.to_path_buf();
         let futs = interdiff_lookups.iter().map(|(_, f, t)| {
-            let wp = workspace_path.clone();
-            let from = f.clone();
-            let to = t.clone();
-            tokio::task::spawn_blocking(move || -> kata_jj::Result<kata_core::Diff> {
-                let handle = kata_jj::libjj::open_repo(&wp)?;
-                handle.compute_rebased_diff(&from, &to)
-            })
+            cached_rebased_diff(
+                interdiffs.clone(),
+                workspace_path.clone(),
+                f.clone(),
+                t.clone(),
+            )
         });
         let results = futures::future::join_all(futs).await;
         for ((i, _, _), res) in interdiff_lookups.into_iter().zip(results.into_iter()) {
-            // Outer Result = JoinError; inner = kata_jj::Result.
-            // Both failure modes leave diff_counts=None (chip omitted).
+            // A failure leaves diff_counts=None (chip omitted).
             match res {
-                Ok(Ok(diff)) => apply_diff_counts(&mut pairs[i], &diff),
-                Ok(Err(e)) => {
-                    tracing::warn!(error = ?e, "libjj rebased interdiff failed");
-                }
+                Ok(diff) => apply_diff_counts(&mut pairs[i], &diff),
                 Err(e) => {
-                    tracing::warn!(error = ?e, "libjj rebased interdiff task panicked");
+                    tracing::warn!(error = ?e, "libjj rebased interdiff failed");
                 }
             }
         }
@@ -289,6 +333,35 @@ pub enum DiffCommitsResult {
 struct RepoEntry {
     summary: RepoSummary,
     jj: Arc<dyn JjBackend>,
+    /// Rebase-based interdiffs by `(from, to)`. The per-file fetch asks
+    /// for one file of an interdiff whose list the compare view already
+    /// built.
+    interdiffs: Arc<InterdiffCache>,
+}
+
+type InterdiffCache = kata_jj::PairCache<kata_core::Diff>;
+
+/// Number of interdiffs each repo keeps. A patchset compare builds one
+/// per rewritten commit.
+const INTERDIFF_CACHE_CAPACITY: usize = 64;
+
+/// The rebase-based interdiff for `(from, to)`, from `cache` when present.
+async fn cached_rebased_diff(
+    cache: Arc<InterdiffCache>,
+    workspace_path: std::path::PathBuf,
+    from: CommitId,
+    to: CommitId,
+) -> kata_jj::Result<Arc<kata_core::Diff>> {
+    if let Some(diff) = cache.get(&from, &to) {
+        return Ok(diff);
+    }
+    tokio::task::spawn_blocking(move || -> kata_jj::Result<Arc<kata_core::Diff>> {
+        let handle = kata_jj::libjj::open_repo(&workspace_path)?;
+        let diff = handle.compute_rebased_diff(&from, &to)?;
+        Ok(cache.insert(&from, &to, diff))
+    })
+    .await
+    .map_err(|e| kata_jj::Error::Parse(format!("interdiff task join: {e}")))?
 }
 
 /// Immutable snapshot of the registered workspaces. The whole struct is
@@ -392,7 +465,16 @@ fn build_entry(
         repo_id: repo_id.clone(),
         canonical_path,
     };
-    Ok((name, repo_id, RepoEntry { summary, jj }))
+    let interdiffs = Arc::new(InterdiffCache::new(INTERDIFF_CACHE_CAPACITY));
+    Ok((
+        name,
+        repo_id,
+        RepoEntry {
+            summary,
+            jj,
+            interdiffs,
+        },
+    ))
 }
 
 impl ReviewService {
@@ -953,61 +1035,27 @@ impl ReviewService {
             self.storage.list_drafts_for(repo, review, viewer),
         )?;
 
-        // Many comments resolve against the same `(commit, path)` — every
-        // line/file comment on a given file needs both its anchor_commit
-        // and the current patchset endpoint. Read each pair once, in
-        // parallel, then let `resolve_anchor` hit the cache.
         let annotations_raw = self.storage.list_annotations(repo, review).await?;
-
-        let cache = FileCache::new();
-        let mut prefetch_keys: std::collections::HashSet<(CommitId, String)> = published
-            .iter()
-            .filter(|c| c.patchset <= selected_n)
-            .chain(drafts.comments.iter().filter(|c| c.patchset <= selected_n))
-            .flat_map(|c| {
-                anchor_read_keys(
-                    c.file.as_deref(),
-                    c.side,
-                    c.lines,
-                    &c.anchor_commit_id,
-                    &selected,
-                )
-            })
-            .collect();
-        for a in annotations_raw.iter().filter(|a| a.patchset <= selected_n) {
-            prefetch_keys.extend(anchor_read_keys(
-                a.file.as_deref(),
-                a.side,
-                a.lines,
-                &a.anchor_commit_id,
-                &selected,
-            ));
-        }
-        // Best-effort: a GC'd anchor commit makes the bulk read fail,
-        // but per-comment anchor resolution below already degrades to an
-        // un-re-anchored view, so a failed prefetch must not sink the
-        // open. Each key it couldn't fill just falls through to an
-        // individual (also-degrading) read.
-        if let Err(e) = cache.prefetch(&*jj, prefetch_keys).await {
-            tracing::warn!(review = %review, error = ?e, "anchor prefetch failed; resolving anchors individually");
-        }
-        let mut comments = Vec::with_capacity(published.len());
-        for c in published {
-            if c.patchset > selected_n {
-                continue;
-            }
+        let threads = PatchsetThreads::load(
+            &*jj,
+            review,
+            published,
+            drafts.comments,
+            annotations_raw,
+            &selected,
+        )
+        .await;
+        let mut comments = Vec::with_capacity(threads.published.len());
+        for c in threads.published {
             comments.push(
-                self.build_comment_view(repo, &cache, c, &selected, false)
+                self.build_comment_view(repo, &threads.cache, c, &selected, false)
                     .await?,
             );
         }
-        let mut draft_comments = Vec::with_capacity(drafts.comments.len());
-        for c in drafts.comments {
-            if c.patchset > selected_n {
-                continue;
-            }
+        let mut draft_comments = Vec::with_capacity(threads.drafts.len());
+        for c in threads.drafts {
             draft_comments.push(
-                self.build_comment_view(repo, &cache, c, &selected, true)
+                self.build_comment_view(repo, &threads.cache, c, &selected, true)
                     .await?,
             );
         }
@@ -1022,12 +1070,12 @@ impl ReviewService {
             .map(|r| ResponseView { response: r, draft: true })
             .collect();
 
-        let mut annotations = Vec::with_capacity(annotations_raw.len());
-        for a in annotations_raw {
-            if a.patchset > selected_n {
-                continue;
-            }
-            annotations.push(self.build_annotation_view(repo, &cache, a, &selected).await?);
+        let mut annotations = Vec::with_capacity(threads.annotations.len());
+        for a in threads.annotations {
+            annotations.push(
+                self.build_annotation_view(repo, &threads.cache, a, &selected)
+                    .await?,
+            );
         }
 
         // Compute the "since you were here" review-activity counts.
@@ -1226,8 +1274,8 @@ impl ReviewService {
         };
         let base = compare_base.as_ref().unwrap_or(&selected.base_commit);
         // Look up the file's metadata (status, rename info) — needed so
-        // we know which side(s) to read. One `jj diff -T template` call,
-        // ~50 ms; could be cached if it becomes a hot path.
+        // we know which side(s) to read. The backend caches the list per
+        // (base, tip), so later files of the same diff reuse it.
         let files = jj.changed_files(base, &selected.tip_commit).await?;
         let target = files
             .into_iter()
@@ -1274,22 +1322,12 @@ impl ReviewService {
         // (jj-native per-commit semantics), so a merge shows only its
         // own contribution rather than content inherited from the
         // branches it merges. This is the same base `list_commits`
-        // uses for the commits-panel `changed_files`, so the per-commit
-        // comment count and what's navigable here stay in lockstep.
+        // uses for the commits-panel `changed_files`, so the panel and
+        // this diff list the same files.
         // Runs against a fresh in-process handle — the trait surface
         // can't express "vs the merged parent tree". Same pattern as
         // `interdiff_commits`.
-        let entry = self.entry(repo)?;
-        let workspace_path = std::path::PathBuf::from(&entry.summary.canonical_path)
-            .parent()
-            .and_then(|p| p.parent())
-            .ok_or_else(|| {
-                ServiceError::BadRequest(format!(
-                    "cannot derive workspace path from {}",
-                    entry.summary.canonical_path
-                ))
-            })?
-            .to_path_buf();
+        let workspace_path = self.workspace_path(repo)?;
         let tip = tip_commit.clone();
         let self_diff = tokio::task::spawn_blocking(
             move || -> kata_jj::Result<kata_jj::libjj::CommitSelfDiff> {
@@ -1306,7 +1344,118 @@ impl ReviewService {
             tip_change: self_diff.tip.change_id,
             tip_commit: self_diff.tip.commit_id,
             files: self_diff.files,
+            anchors: None,
         })
+    }
+
+    /// [`Self::commit_diff`] for a commit in a review, with `anchors` set.
+    /// The anchors place the review's comments and annotations on this
+    /// diff: tip-side anchors resolve against the diff's tip and base-side
+    /// anchors against its base. They come from the same commit lookup as
+    /// the diff, so the two always agree. `patchset` selects the threads
+    /// the same way [`Self::open_review`] does, and the viewer's drafts
+    /// are included.
+    pub async fn review_commit_diff(
+        &self,
+        repo: &RepoId,
+        review: &ReviewId,
+        viewer: &Author,
+        change: &ChangeId,
+        patchset: Option<u32>,
+    ) -> ServiceResult<CommitDiffView> {
+        let manifest = self.storage.open_review(repo, review).await?;
+        let selected_n = patchset.unwrap_or(manifest.current_patchset);
+        let selected = manifest
+            .patchset(selected_n)
+            .ok_or_else(|| ServiceError::NotFound(format!("patchset {selected_n}")))?
+            .clone();
+        let mut view = self.commit_diff(repo, change).await?;
+        let viewing = Patchset {
+            base_change: view.base_change.clone(),
+            base_commit: view.base_commit.clone(),
+            tip_change: view.tip_change.clone(),
+            tip_commit: view.tip_commit.clone(),
+            ..selected
+        };
+        view.anchors = Some(self.thread_anchors(repo, review, viewer, &viewing).await?);
+        Ok(view)
+    }
+
+    /// Anchors of the review's comments and annotations up to
+    /// `viewing.n`, including the viewer's drafts, resolved against
+    /// `viewing`'s base and tip.
+    async fn thread_anchors(
+        &self,
+        repo: &RepoId,
+        review: &ReviewId,
+        viewer: &Author,
+        viewing: &Patchset,
+    ) -> ServiceResult<ThreadAnchors> {
+        let jj = self.jj_for(repo)?;
+        let (published, drafts, annotations) = tokio::try_join!(
+            self.storage.list_published_comments(repo, review),
+            self.storage.list_drafts_for(repo, review, viewer),
+            self.storage.list_annotations(repo, review),
+        )?;
+        let threads = PatchsetThreads::load(
+            &*jj,
+            review,
+            published,
+            drafts.comments,
+            annotations,
+            viewing,
+        )
+        .await;
+
+        let mut anchors = ThreadAnchors::default();
+        for c in threads.published.iter().chain(threads.drafts.iter()) {
+            let anchor = self
+                .resolve_anchor_view(
+                    &*jj,
+                    &threads.cache,
+                    c.file.as_deref(),
+                    c.lines,
+                    c.side,
+                    &c.anchor_commit_id,
+                    viewing,
+                )
+                .await;
+            anchors.comments.insert(c.comment_id.clone(), anchor);
+        }
+        for a in &threads.annotations {
+            let anchor = self
+                .resolve_anchor_view(
+                    &*jj,
+                    &threads.cache,
+                    a.file.as_deref(),
+                    a.lines,
+                    a.side,
+                    &a.anchor_commit_id,
+                    viewing,
+                )
+                .await;
+            anchors.annotations.insert(a.annotation_id.clone(), anchor);
+        }
+        Ok(anchors)
+    }
+
+    /// Workspace root of a registered repo for jj-lib's in-process
+    /// handle. The canonical path stored at registration is `.jj/repo`,
+    /// and the workspace root is the directory two levels up. It is
+    /// computed each call because that is cheap and holds no state that
+    /// could go stale across jj operations.
+    fn workspace_path(&self, repo: &RepoId) -> ServiceResult<std::path::PathBuf> {
+        let entry = self.entry(repo)?;
+        std::path::PathBuf::from(&entry.summary.canonical_path)
+            .parent()
+            .and_then(|p| p.parent())
+            .map(|p| p.to_path_buf())
+            .ok_or_else(|| {
+                ServiceError::BadRequest(format!(
+                    "cannot derive workspace path from {}",
+                    entry.summary.canonical_path
+                ))
+            })
     }
 
     /// Build the patchset-compare v2 view: the cumulative tree-vs-tree
@@ -1380,7 +1529,8 @@ impl ReviewService {
             .parent()
             .and_then(|p| p.parent())
             .map(|p| p.to_path_buf());
-        compute_pair_diff_counts(&*jj, workspace_path.as_deref(), &mut pairs).await;
+        let interdiffs = self.entry(repo)?.interdiffs;
+        compute_pair_diff_counts(&*jj, workspace_path.as_deref(), &interdiffs, &mut pairs).await;
 
         let compare_base_mismatch = from_ps.base_commit != to_ps.base_commit;
         Ok(PatchsetCompareView {
@@ -1418,36 +1568,23 @@ impl ReviewService {
         path: Option<&str>,
     ) -> ServiceResult<DiffCommitsResult> {
         let entry = self.entry(repo)?;
-        // The canonical path stored at registration is `.jj/repo`;
-        // the workspace root jj-lib expects is the directory two
-        // levels up. Computed each call — cheap and avoids
-        // long-lived cached state that could go stale across jj
-        // operations.
-        let workspace_path = std::path::PathBuf::from(&entry.summary.canonical_path)
-            .parent()
-            .and_then(|p| p.parent())
-            .ok_or_else(|| {
-                ServiceError::BadRequest(format!(
-                    "cannot derive workspace path from {}",
-                    entry.summary.canonical_path
-                ))
-            })?
-            .to_path_buf();
+        let workspace_path = self.workspace_path(repo)?;
+        let diff = cached_rebased_diff(
+            entry.interdiffs.clone(),
+            workspace_path.clone(),
+            from.clone(),
+            to.clone(),
+        )
+        .await?;
+        let Some(path) = path.map(|s| s.to_owned()) else {
+            return Ok(DiffCommitsResult::Diff(diff.as_ref().clone()));
+        };
         let from = from.clone();
         let to = to.clone();
-        let path = path.map(|s| s.to_owned());
         tokio::task::spawn_blocking(move || -> kata_jj::Result<DiffCommitsResult> {
             let handle = kata_jj::libjj::open_repo(&workspace_path)?;
-            match path {
-                None => {
-                    let diff = handle.compute_rebased_diff(&from, &to)?;
-                    Ok(DiffCommitsResult::Diff(diff))
-                }
-                Some(p) => {
-                    let file = handle.compute_rebased_file_hunks(&from, &to, &p)?;
-                    Ok(DiffCommitsResult::File(file))
-                }
-            }
+            let file = handle.compute_rebased_file_hunks(&from, &to, &diff.files, &path)?;
+            Ok(DiffCommitsResult::File(file))
         })
         .await
         .map_err(|e| ServiceError::Internal(format!("interdiff task join: {e}")))?
@@ -1849,6 +1986,7 @@ impl ReviewService {
             tip_change: tip.change_id,
             tip_commit: tip.commit_id,
             files: diff.files,
+            anchors: None,
         })
     }
 
@@ -2670,6 +2808,18 @@ pub struct CommitDiffView {
     pub tip_change: ChangeId,
     pub tip_commit: CommitId,
     pub files: Vec<kata_core::FileChange>,
+    /// Set by [`ReviewService::review_commit_diff`] and absent outside a
+    /// review.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anchors: Option<ThreadAnchors>,
+}
+
+/// Anchors of a review's threads resolved against one commit's
+/// per-commit diff, keyed by thread id.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct ThreadAnchors {
+    pub comments: std::collections::BTreeMap<CommentId, AnchorView>,
+    pub annotations: std::collections::BTreeMap<AnnotationId, AnchorView>,
 }
 
 /// Counts of review-relevant changes that landed between the

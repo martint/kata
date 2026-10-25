@@ -34,6 +34,9 @@ export interface Bookmark {
  *  the actual per-commit diff always agree. */
 export interface ChangedFile {
   path: string;
+  /** Path before the commit when the commit moved the file. The counts
+   *  then cover the old→new diff. */
+  old_path?: string;
   added: number;
   removed: number;
   binary?: boolean;
@@ -350,6 +353,16 @@ export interface CommitDiffView {
   tip_change: ChangeId;
   tip_commit: CommitId;
   files: FileChange[];
+  /** Positions of the review's threads in this diff. Set when the diff
+   *  is fetched for a review. */
+  anchors?: ThreadAnchors;
+}
+
+/** Anchors of a review's threads resolved against one commit's
+ *  per-commit diff, keyed by comment or annotation id. */
+export interface ThreadAnchors {
+  comments: Record<CommentId, AnchorView>;
+  annotations: Record<AnnotationId, AnchorView>;
 }
 
 export interface Diff {

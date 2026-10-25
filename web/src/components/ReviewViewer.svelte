@@ -31,6 +31,7 @@
     pruneFileDiffCache,
   } from '../lib/patchsetSwap';
   import { compareBaseCommit as compareBaseCommitFor } from '../lib/compareBase';
+  import { threadsInCommit } from '../lib/commitAnchors';
   import Chevron from './Chevron.svelte';
   import CommitsPanel from './CommitsPanel.svelte';
   import FileSlot from './FileSlot.svelte';
@@ -910,8 +911,8 @@
    *  then by line within a file. Drafts and published are merged.
    *  Used to drive the top-bar prev / next comment buttons. */
   const orderedComments = $derived.by(() => {
-    const all = visibleComments;
     const scoped = scopedChangeId !== null;
+    const all = scoped ? visibleCommentsForFiles : visibleComments;
     // When scoped to a single commit, `orderedFiles` already reflects
     // just that commit's files (it derives from `displayedDiff`), so
     // filtering by file membership scopes the nav automatically. In
@@ -935,13 +936,20 @@
         const bo = fileOrder.get(b.file!) ?? Number.POSITIVE_INFINITY;
         if (ao !== bo) return ao - bo;
         // File-level comments (no lines) sort before line-level within the file.
-        const al = a.lines?.start ?? -1;
-        const bl = b.lines?.start ?? -1;
+        const al = shownStart(a);
+        const bl = shownStart(b);
         if (al !== bl) return al - bl;
         return a.created_at.localeCompare(b.created_at);
       });
     return [...reviewWide, ...inFiles];
   });
+
+  /** First line a comment shows at: its moved or drifted lines when its
+   *  anchor has them, else its stored lines. -1 for a file-level comment. */
+  function shownStart(c: CommentView): number {
+    if (c.anchor.kind === 'moved' || c.anchor.kind === 'drifted') return c.anchor.new_lines.start;
+    return c.lines?.start ?? -1;
+  }
 
   /** Comment id the user last navigated to. We track the id rather than
    *  an index so reorderings (e.g. a draft discard) don't strand us on
@@ -1237,10 +1245,11 @@
       // thread folded. The bubble fallback is for comments with no
       // diff row, or comments-only mode where the rows aren't rendered
       // — that path still needs the thread mounted, so it unfolds.
-      const comment = [
-        ...current.comments,
-        ...current.drafts.comments,
-      ].find((c) => c.comment_id === commentId);
+      // `visibleCommentsForFiles` carries the anchor of the current view,
+      // which is the per-commit one in the per-commit view.
+      const comment =
+        visibleCommentsForFiles.find((c) => c.comment_id === commentId) ??
+        allComments.find((c) => c.comment_id === commentId);
       const anchor =
         showDiffs && comment ? commentAnchorRow(comment) : null;
       const slotSel = file
@@ -1805,11 +1814,24 @@
    *  for its commit-level / review-wide threads. */
   const visibleCommentsForFiles = $derived.by<CommentView[]>(() => {
     const pair = selectedComparePair;
-    if (!pair) return visibleComments;
+    if (!pair) {
+      const sd = scopedDiff;
+      if (scopedChangeId === null || sd === null) return visibleComments;
+      return threadsInCommit(visibleComments, (c) => c.comment_id, sd.anchors?.comments, sd);
+    }
     const sides = new Set<string>();
     if (pair.from_commit) sides.add(pair.from_commit);
     if (pair.to_commit) sides.add(pair.to_commit);
     return visibleComments.filter((c) => sides.has(c.anchor_commit_id));
+  });
+
+  /** Annotations for the file slots. In the per-commit view these follow
+   *  the same placement as `visibleCommentsForFiles`. */
+  const annotationsForFiles = $derived.by<AnnotationView[]>(() => {
+    const all = current.annotations ?? [];
+    const sd = scopedDiff;
+    if (selectedComparePair || scopedChangeId === null || sd === null) return all;
+    return threadsInCommit(all, (a) => a.annotation_id, sd.anchors?.annotations, sd);
   });
 
   // Sidebar layout state, persisted to localStorage.
@@ -1896,7 +1918,12 @@
     loadingDiffLabel = changeId.slice(0, 12);
     error = null;
     try {
-      scopedDiff = await api.commitDiff(repo, current.manifest.number, changeId);
+      scopedDiff = await api.commitDiff(
+        repo,
+        current.manifest.number,
+        changeId,
+        selectedPatchset,
+      );
       scopedChangeId = changeId;
       onviewchange?.({
         patchset: selectedPatchset,
@@ -2202,7 +2229,7 @@
   const visibleFiles = $derived.by(() => {
     if (showDiffs) return orderedFiles;
     const withComments = new Set(
-      visibleComments.map((c) => c.file).filter((p): p is string => !!p),
+      visibleCommentsForFiles.map((c) => c.file).filter((p): p is string => !!p),
     );
     const composingFile =
       composing && 'file' in composing ? composing.file : null;
@@ -3760,7 +3787,7 @@
           {commentsWriteable}
           eagerFetch={filesWithComments.has(f.path)}
           comments={visibleCommentsForFiles}
-          annotations={current.annotations ?? []}
+          annotations={annotationsForFiles}
           composingAnnotation={composingAnnotation &&
           'file' in composingAnnotation &&
           composingAnnotation.file === f.path

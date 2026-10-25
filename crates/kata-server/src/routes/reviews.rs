@@ -222,12 +222,28 @@ pub async fn delete_review(
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
+#[derive(Debug, Default, Deserialize)]
+pub struct CommitDiffQuery {
+    /// Patchset whose threads the response anchors. Defaults to the
+    /// current one.
+    #[serde(default)]
+    pub ps: Option<u32>,
+}
+
 pub async fn commit_diff(
     State(state): State<AppState>,
-    Path((repo_name, _review_number, change_id)): Path<(String, u32, ChangeId)>,
+    ViewerAuthor(viewer): ViewerAuthor,
+    Path((repo_name, review_number, change_id)): Path<(String, u32, ChangeId)>,
+    Query(q): Query<CommitDiffQuery>,
 ) -> AppResult<Json<CommitDiffView>> {
     let repo = state.service.resolve_repo(&repo_name)?;
-    Ok(Json(state.service.commit_diff(&repo, &change_id).await?))
+    let review_id = state.service.resolve_review_number(&repo, review_number).await?;
+    Ok(Json(
+        state
+            .service
+            .review_commit_diff(&repo, &review_id, &viewer, &change_id, q.ps)
+            .await?,
+    ))
 }
 
 #[derive(Debug, Deserialize)]
