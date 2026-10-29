@@ -58,6 +58,11 @@
    * "ticket number"), commit_id renders blue (specific to one
    * revision). Used by `RevId.svelte` and any inline span
    * that wants to colour an id consistently. */
+  /* Left-edge bar and badge of moved lines: the removed end, the
+   * added end, and the second of two touching moved blocks. */
+  --moved-from-edge: #8250df;
+  --moved-to-edge: #0f7b6c;
+  --moved-alt-edge: #bc4c00;
   --change-id-color: #8250df;
   --change-id-bg: #f3e8ff;
   --commit-id-color: #0969da;
@@ -104,6 +109,9 @@
     --question-text: #a371f7;
     --selection-tint: rgba(120, 180, 255, 0.40);
     --selection-rule: #58a6ff;
+    --moved-from-edge: #a371f7;
+    --moved-to-edge: #39c5ad;
+    --moved-alt-edge: #db6d28;
     --change-id-color: #a371f7;
     --change-id-bg: rgba(163, 113, 247, 0.18);
     --commit-id-color: #58a6ff;

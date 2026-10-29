@@ -353,9 +353,13 @@ export interface HunkLineWordDiff {
  *
  *  Returns a map keyed by the hunk-line index. Lines that don't
  *  pair (one-sided changes within the block, sub-threshold
- *  similarity) are absent; the caller falls back to the plain
- *  line-level highlight for those. */
-export function computeHunkWordDiff(lines: LineLike[]): Map<number, HunkLineWordDiff> {
+ *  similarity, lines `unpaired` names by hunk-line index) are
+ *  absent; the caller falls back to the plain line-level highlight
+ *  for those. */
+export function computeHunkWordDiff(
+  lines: LineLike[],
+  unpaired?: (index: number) => boolean,
+): Map<number, HunkLineWordDiff> {
   const out = new Map<number, HunkLineWordDiff>();
   let i = 0;
   while (i < lines.length) {
@@ -378,7 +382,10 @@ export function computeHunkWordDiff(lines: LineLike[]): Map<number, HunkLineWord
     const addTexts = Array.from({ length: addCount }, (_, k) =>
       lines[addStart + k].content.replace(/\n$/, ''),
     );
-    const alignment = alignBlock(removeTexts, addTexts);
+    const alignment = alignBlock(removeTexts, addTexts, {
+      removes: (k) => unpaired?.(removeStart + k) ?? false,
+      adds: (k) => unpaired?.(addStart + k) ?? false,
+    });
     for (const { removeIndex, addIndex } of alignment.pairs) {
       const rIdx = removeStart + removeIndex;
       const aIdx = addStart + addIndex;

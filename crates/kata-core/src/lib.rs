@@ -5,6 +5,7 @@ pub mod diff;
 pub mod documents;
 pub mod ids;
 pub mod log_graph;
+pub mod moved;
 
 pub use compare::{
     ChangeStatus, PairDiffCounts, PatchsetCompareView, PatchsetEndpoints, PatchsetPair,
@@ -23,3 +24,4 @@ pub use ids::{
     ReviewId, RevSet, SessionId, Side, is_listed_admin, normalize_author,
 };
 pub use log_graph::{LogCoord, LogLine, LogPage, LogRow};
+pub use moved::{ChangedRun, MovedEnd, MovedLines, detect_moves, runs_from_hunks};

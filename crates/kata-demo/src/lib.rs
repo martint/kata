@@ -103,10 +103,10 @@ pub async fn seed_demo(root: &Path) -> Result<SeededDemo, Error> {
 }
 
 /// Build the jj workspace: a small TypeScript module evolving across
-/// 3 commits on a `feature` bookmark. The story is intentionally
-/// tiny — a refactor, a follow-up test commit, a bug fix — so every
-/// step of the tour can point at recognisable code rather than
-/// abstract diff hunks.
+/// 4 commits on a `feature` bookmark. The story is intentionally
+/// tiny — a refactor, a follow-up test commit, moving a helper into
+/// the greeter, a bug fix — so every step of the tour can point at
+/// recognisable code rather than abstract diff hunks.
 fn seed_workspace(
     workspace_path: &Path,
     alice: &Author,
@@ -124,6 +124,7 @@ export function greet(name: string): string {
 }
 "#,
     )?;
+    write_file(workspace_path, "text.ts", TEXT_WITH_SHOUT)?;
     jj(workspace_path, &["describe", "-m", "Add greeter module"], alice)?;
     // Pin `main` on the trunk commit so the review's `trunk()..feature`
     // revset has a base to resolve against. Without `main` (or an
@@ -133,23 +134,7 @@ export function greet(name: string): string {
 
     // -- Commit 2: split greet() into formatName + printGreeting.
     jj(workspace_path, &["new", "-m", "Split greeter into helpers"], alice)?;
-    write_file(
-        workspace_path,
-        "greeter.ts",
-        r#"// A friendly module that says hello.
-
-/** Capitalise the first letter of a name, trimming whitespace. */
-export function formatName(raw: string): string {
-  const trimmed = raw.trim();
-  return trimmed[0].toUpperCase() + trimmed.slice(1);
-}
-
-/** Format a greeting line for `name`. */
-export function greet(name: string): string {
-  return "Hello, " + formatName(name) + "!";
-}
-"#,
-    )?;
+    write_file(workspace_path, "greeter.ts", GREETER_WITH_HELPERS)?;
 
     // -- Commit 3: add tests covering the new helpers.
     jj(workspace_path, &["new", "-m", "Add tests for greeter helpers"], alice)?;
@@ -176,11 +161,68 @@ describe("greet", () => {
 "#,
     )?;
 
+    // -- Commit 4: move shout() from text.ts to the end of greeter.ts,
+    // so the diff has moved code across files. Appending keeps the
+    // lines the seeded comments anchor to in place.
+    jj(workspace_path, &["new", "-m", "Move shout() into the greeter module"], alice)?;
+    write_file(workspace_path, "text.ts", TEXT_WITHOUT_SHOUT)?;
+    write_file(
+        workspace_path,
+        "greeter.ts",
+        &format!("{GREETER_WITH_HELPERS}{SHOUT}"),
+    )?;
+
     // Pin the bookmark on the last commit so kata's review-create
     // path has something to anchor on.
     jj(workspace_path, &["bookmark", "create", "feature", "-r", "@"], alice)?;
     Ok(())
 }
+
+/// greeter.ts after the helper split (commit 2).
+const GREETER_WITH_HELPERS: &str = r#"// A friendly module that says hello.
+
+/** Capitalise the first letter of a name, trimming whitespace. */
+export function formatName(raw: string): string {
+  const trimmed = raw.trim();
+  return trimmed[0].toUpperCase() + trimmed.slice(1);
+}
+
+/** Format a greeting line for `name`. */
+export function greet(name: string): string {
+  return "Hello, " + formatName(name) + "!";
+}
+"#;
+
+/// The helper commit 4 moves from text.ts to the end of greeter.ts.
+const SHOUT: &str = r#"
+/** Upper-case a message and add an exclamation mark. */
+export function shout(message: string): string {
+  const loud = message.toUpperCase();
+  return loud + "!";
+}
+"#;
+
+const TEXT_WITH_SHOUT: &str = r#"// Small string helpers.
+
+/** Upper-case a message and add an exclamation mark. */
+export function shout(message: string): string {
+  const loud = message.toUpperCase();
+  return loud + "!";
+}
+
+/** Collapse runs of whitespace into single spaces. */
+export function squash(message: string): string {
+  return message.replace(/\s+/g, " ").trim();
+}
+"#;
+
+const TEXT_WITHOUT_SHOUT: &str = r#"// Small string helpers.
+
+/** Collapse runs of whitespace into single spaces. */
+export function squash(message: string): string {
+  return message.replace(/\s+/g, " ").trim();
+}
+"#;
 
 /// Create reviews + sessions + draft / published comments via the
 /// real service APIs. Every entry here exercises a code path that
@@ -339,10 +381,7 @@ fn add_patchset(workspace_path: &Path, alice: &Author) -> Result<(), Error> {
         &["new", "-m", "Guard formatName against empty input"],
         alice,
     )?;
-    write_file(
-        workspace_path,
-        "greeter.ts",
-        r#"// A friendly module that says hello.
+    let greeter = r#"// A friendly module that says hello.
 
 /** Capitalise the first letter of a name, trimming whitespace. */
 export function formatName(raw: string): string {
@@ -355,8 +394,8 @@ export function formatName(raw: string): string {
 export function greet(name: string): string {
   return "Hello, " + formatName(name) + "!";
 }
-"#,
-    )?;
+"#;
+    write_file(workspace_path, "greeter.ts", &format!("{greeter}{SHOUT}"))?;
     jj(workspace_path, &["bookmark", "set", "feature", "-r", "@"], alice)?;
     Ok(())
 }

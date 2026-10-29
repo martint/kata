@@ -19,7 +19,8 @@ use imara_diff::{
     Algorithm, BasicLineDiffPrinter, Diff as ImaraDiff, InternedInput, UnifiedDiffConfig,
 };
 use kata_core::{
-    CommitId, ConflictHunk, Diff, FileChange, FileStatus, Hunk, HunkLine, LineOrigin, LineRange,
+    ChangedRun, CommitId, ConflictHunk, Diff, FileChange, FileStatus, Hunk, HunkLine, LineOrigin,
+    LineRange, Side, detect_moves, runs_from_hunks,
 };
 
 use crate::backend::JjBackend;
@@ -44,7 +45,8 @@ pub async fn build_diff_metadata<B: JjBackend + ?Sized>(
     let mut files = backend.changed_files(base, tip).await?;
     let (pairs, indices) = collect_blob_pairs(base, tip, &files);
     let blobs = backend.read_files(&pairs).await?;
-    for (f, (bi, ti)) in files.iter_mut().zip(indices.into_iter()) {
+    let mut runs: Vec<ChangedRun> = Vec::new();
+    for (fi, (f, (bi, ti))) in files.iter_mut().zip(indices.into_iter()).enumerate() {
         let base_bytes: &[u8] = bi.and_then(|i| blobs[i].as_deref()).unwrap_or(&[]);
         let tip_bytes: &[u8] = ti.and_then(|i| blobs[i].as_deref()).unwrap_or(&[]);
         if looks_binary(base_bytes) || looks_binary(tip_bytes) {
@@ -58,7 +60,9 @@ pub async fn build_diff_metadata<B: JjBackend + ?Sized>(
         d.postprocess_lines(&input);
         f.added = d.count_additions();
         f.removed = d.count_removals();
+        runs.extend(imara_runs(fi, &input, &d));
     }
+    mark_moves(&mut files, &runs);
     Ok(Diff {
         base: base.clone(),
         tip: tip.clone(),
@@ -236,12 +240,61 @@ pub async fn build_diff<B: JjBackend + ?Sized>(
         f.added = added;
         f.removed = removed;
     }
+    mark_moves_from_hunks(&mut files);
 
     Ok(Diff {
         base: base.clone(),
         tip: tip.clone(),
         files,
     })
+}
+
+/// Removed and added runs of one file, read off its imara diff. imara
+/// numbers lines from 0.
+fn imara_runs(file: usize, input: &InternedInput<&str>, d: &ImaraDiff) -> Vec<ChangedRun> {
+    let text = |tokens: &[imara_diff::Token]| -> Vec<String> {
+        tokens.iter().map(|&t| input.interner[t].to_string()).collect()
+    };
+    let mut runs = Vec::new();
+    for h in d.hunks() {
+        if !h.before.is_empty() {
+            runs.push(ChangedRun {
+                file,
+                side: Side::Base,
+                start: h.before.start + 1,
+                lines: text(&input.before[h.before.start as usize..h.before.end as usize]),
+            });
+        }
+        if !h.after.is_empty() {
+            runs.push(ChangedRun {
+                file,
+                side: Side::Tip,
+                start: h.after.start + 1,
+                lines: text(&input.after[h.after.start as usize..h.after.end as usize]),
+            });
+        }
+    }
+    runs
+}
+
+/// Set `moved` on every file of a whole diff from its changed runs.
+pub(crate) fn mark_moves(files: &mut [FileChange], runs: &[ChangedRun]) {
+    if !detect_moves(files, runs) {
+        tracing::debug!(
+            files = files.len(),
+            "diff exceeds the moved-line limit; moved lines not marked",
+        );
+    }
+}
+
+/// [`mark_moves`] for a diff whose files carry their hunks.
+pub(crate) fn mark_moves_from_hunks(files: &mut [FileChange]) {
+    let runs: Vec<ChangedRun> = files
+        .iter()
+        .enumerate()
+        .flat_map(|(i, f)| runs_from_hunks(i, f.hunks.as_deref().unwrap_or(&[])))
+        .collect();
+    mark_moves(files, &runs);
 }
 
 /// Run histogram diff on the two sides and convert the result into our
@@ -451,6 +504,7 @@ impl PartialFile {
             binary: self.binary,
             added,
             removed,
+            moved: Vec::new(),
         })
     }
 }

@@ -22,6 +22,9 @@
   } from '../lib/types';
   import FileViewer from './browse/FileViewer.svelte';
   import FileDiff from './FileDiff.svelte';
+  import { setContext } from 'svelte';
+  import { parseLineRangeHash } from '../lib/linkHash';
+  import { createMovedHover } from '../lib/movedHover.svelte';
   import FileTree from './FileTree.svelte';
   import GraphLog from './browse/GraphLog.svelte';
   import Chevron from './Chevron.svelte';
@@ -225,6 +228,26 @@
     );
     el?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
+
+  // Shared across files so hovering one end of a moved block lights up
+  // the other end.
+  setContext('kata-moved-hover', createMovedHover());
+
+  /** Code-moved badges in the diffs link to `#L:` line permalinks.
+   *  Every file here is already rendered, so a jump only scrolls to
+   *  the first line of the range. */
+  $effect(() => {
+    const onHashChange = () => {
+      const link = parseLineRangeHash(window.location.hash);
+      if (!link) return;
+      const row = detailPaneEl?.querySelector<HTMLElement>(
+        `[data-browse-file="${CSS.escape(link.file)}"] [data-side="${link.side}"][data-line="${link.startLine}"]`,
+      );
+      row?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    };
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  });
 
   // ---- Graph pane: width, drag-resize, one-click collapse -----------
   /** Width of the graph (log) pane in px. It's the narrow index;

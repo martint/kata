@@ -47,6 +47,15 @@ describe('lineSimilarity', () => {
 });
 
 describe('alignBlock', () => {
+  test('leaves lines named unpaired on their own rows', () => {
+    const removes = ['line one', 'line two'];
+    const adds = ['line one updated', 'line two updated'];
+    const a = alignBlock(removes, adds, { removes: (i) => i === 0 });
+    expect(a.pairs).toEqual([{ removeIndex: 1, addIndex: 1 }]);
+    expect(a.unpairedRemoves).toEqual([0]);
+    expect(a.unpairedAdds).toEqual([0]);
+  });
+
   test('pairs N:N blocks straight through when each pair is the best match', () => {
     const removes = ['line one', 'line two', 'line three'];
     const adds = ['line one updated', 'line two updated', 'line three updated'];

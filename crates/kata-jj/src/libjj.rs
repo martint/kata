@@ -354,6 +354,7 @@ impl JjRepoHandle {
                 binary,
                 added,
                 removed,
+                moved: Vec::new(),
             });
         }
 
@@ -391,6 +392,7 @@ impl JjRepoHandle {
                 binary: false,
                 added: 0,
                 removed: 0,
+                moved: Vec::new(),
             });
         };
         if target.binary {
@@ -552,6 +554,7 @@ impl JjRepoHandle {
                     binary: false,
                     added: 0,
                     removed: 0,
+                    moved: Vec::new(),
                 });
                 continue;
             }
@@ -613,6 +616,7 @@ impl JjRepoHandle {
                 binary,
                 added,
                 removed,
+                moved: Vec::new(),
             });
         }
 
@@ -646,6 +650,7 @@ impl JjRepoHandle {
                 };
             fold_commit_renames(&mut files, &records, &added_bytes, &deleted_bytes)?;
         }
+        crate::diff::mark_moves_from_hunks(&mut files);
 
         let tip = Endpoint {
             change_id: KataChangeId::new(commit.change_id().reverse_hex()),
@@ -958,6 +963,7 @@ impl JjBackend for JjLib {
                     binary: false,
                     added: 0,
                     removed: 0,
+                    moved: Vec::new(),
                 });
             }
             Ok(out)
@@ -1745,6 +1751,7 @@ fn fold_commit_renames(
             binary,
             added,
             removed,
+            moved: Vec::new(),
         };
         files.retain(|f| !(f.path.as_str() == source && matches!(f.status, FileStatus::Deleted)));
     }

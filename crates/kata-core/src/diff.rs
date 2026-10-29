@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{CommitId, LineRange};
+use crate::moved::MovedLines;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Diff {
@@ -34,6 +35,11 @@ pub struct FileChange {
     /// Removed line count. See [`Self::added`].
     #[serde(default)]
     pub removed: u32,
+    /// Blocks of this file's changed lines that moved elsewhere in the
+    /// same diff. Set only by diffs that cover every changed file,
+    /// because a move can cross files.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub moved: Vec<MovedLines>,
 }
 
 /// A region of a file diff. A regular hunk is a contiguous slice of

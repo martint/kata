@@ -55,10 +55,12 @@ const GAP_PENALTY = 0;
 
 /** Compute the best alignment of a remove/add block. Both arrays are
  *  the block's lines in their original order; the result is positions
- *  within those arrays. */
+ *  within those arrays. `unpaired` names lines that must stay on their
+ *  own row, such as moved lines. */
 export function alignBlock(
   removes: readonly string[],
   adds: readonly string[],
+  unpaired?: { removes?: (i: number) => boolean; adds?: (j: number) => boolean },
 ): BlockAlignment {
   const m = removes.length;
   const n = adds.length;
@@ -84,6 +86,10 @@ export function alignBlock(
   const sim = new Float64Array(m * n);
   for (let i = 0; i < m; i++) {
     for (let j = 0; j < n; j++) {
+      if (unpaired?.removes?.(i) || unpaired?.adds?.(j)) {
+        sim[i * n + j] = -Infinity;
+        continue;
+      }
       const s = lineSimilarity(removes[i], adds[j]);
       sim[i * n + j] = s >= SIMILARITY_THRESHOLD ? s : -Infinity;
     }

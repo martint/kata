@@ -296,10 +296,14 @@
    *  otherwise resurrect the wrong hunks under a scoped view). Fall
    *  back to the cache for the metadata-only flow (open_review files
    *  arrive without hunks), and finally to the metadata-only original
-   *  while the fetch is still in flight. */
-  const effectiveFile = $derived(
-    file.hunks != null ? file : (diffCache.get(cacheKey) ?? file),
-  );
+   *  while the fetch is still in flight. A single-file fetch can't see
+   *  moves to other files, so the cached hunks keep the metadata's
+   *  `moved`. Both come from the same diff. */
+  const effectiveFile = $derived.by(() => {
+    if (file.hunks != null) return file;
+    const fetched = diffCache.get(cacheKey);
+    return fetched ? { ...fetched, moved: file.moved } : file;
+  });
 
   /** Generous rootMargin so files don't churn mount/unmount during normal
    *  scrolling — we keep ~3 viewport-heights' worth of files alive at a

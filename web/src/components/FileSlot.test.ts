@@ -166,4 +166,27 @@ describe('FileSlot effectiveFile', () => {
     const text = container.textContent ?? '';
     expect(text).toContain('new-cached');
   });
+
+  test("keeps the metadata's moved lines on cached hunks", async () => {
+    // A single-file fetch can't see moves to other files, so its
+    // result never carries `moved`. The metadata does.
+    const cache = new Map<string, FileChange>();
+    cache.set('5||a.txt', file({ hunks: [hunk('cached')] }));
+    const { container } = renderSlot({
+      file: file({
+        hunks: null as unknown as undefined,
+        moved: [
+          {
+            side: 'base',
+            lines: { start: 1, end: 1 },
+            other: { path: 'b.txt', lines: { start: 3, end: 3 } },
+          },
+        ],
+      }),
+      diffCache: cache,
+    });
+    await tick();
+    const badges = [...container.querySelectorAll('a.moved-badge')].map((b) => b.textContent);
+    expect(badges).toEqual(['Code moved to b.txt line 3']);
+  });
 });

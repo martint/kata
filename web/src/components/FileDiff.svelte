@@ -34,6 +34,7 @@
   import CommentThread from './CommentThread.svelte';
   import HunkLines from './HunkLines.svelte';
   import HunkLinesSideBySide from './HunkLinesSideBySide.svelte';
+  import { movedLookup } from '../lib/moved';
   import SelectionPopup from './SelectionPopup.svelte';
   import type { AnnotationComposerTarget } from './AnnotationComposer.svelte';
 
@@ -1417,6 +1418,9 @@
     !narrowViewport && (file.status === 'modified' || file.status === 'renamed'),
   );
 
+  /** This file's moved blocks by side and line, for the row renderers. */
+  const movedAt = $derived(movedLookup(file.moved));
+
   /** Files where it makes sense to expand context — both sides exist. */
   const canExpand = $derived(
     file.status === 'modified' || file.status === 'renamed',
@@ -2372,6 +2376,7 @@
             <HunkLinesSideBySide
               hunk={eh}
               filePath={file.path}
+              {movedAt}
               comments={fileComments}
               annotations={fileAnnotations}
               {composingAnnotation}
@@ -2405,6 +2410,7 @@
             <HunkLines
               hunk={eh}
               filePath={file.path}
+              {movedAt}
               comments={fileComments}
               annotations={fileAnnotations}
               {composingAnnotation}

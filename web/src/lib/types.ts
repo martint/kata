@@ -337,6 +337,20 @@ export interface FileChange {
   added: number;
   /** Removed line count. See [[added]]. */
   removed: number;
+  /** Blocks of this file's changed lines that moved elsewhere in the
+   *  same diff. Absent when nothing moved. */
+  moved?: MovedLines[];
+}
+
+/** One end of a moved block: removed lines (`base`) that reappear as
+ *  added lines elsewhere, or those added lines (`tip`). */
+export interface MovedLines {
+  side: Side;
+  lines: LineRange;
+  /** The block directly follows another moved block on this side. */
+  alt?: boolean;
+  /** The block's other end. `path` is that file's `FileChange.path`. */
+  other: { path: string; lines: LineRange };
 }
 
 /** Result of fetching one commit's diff. Carries the endpoints' change

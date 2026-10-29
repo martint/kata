@@ -2270,3 +2270,88 @@ async fn browse_file_history_returns_commits_that_touched_the_path() {
     }
 }
 
+
+/// A function moved to a new file comes back as moved lines on both
+/// files, from the review diff and from the per-commit diff.
+#[tokio::test]
+async fn review_and_commit_diffs_mark_a_block_moved_across_files() {
+    let h = Harness::new().await;
+    let billing_before = "import math\n\
+        \n\
+        def apply_discount(total, code):\n\
+        \x20   if code == \"SAVE10\":\n\
+        \x20       return total * 0.9\n\
+        \x20   return total\n\
+        \n\
+        def tax(total, rate):\n\
+        \x20   return round(total * rate, 2)\n";
+    let billing_after = "import math\n\
+        \n\
+        def tax(total, rate):\n\
+        \x20   return round(total * rate, 2)\n";
+    let discounts = "def apply_discount(total, code):\n\
+        \x20   if code == \"SAVE10\":\n\
+        \x20       return total * 0.9\n\
+        \x20   return total\n";
+    run_jj(&h.workspace_path, &["new", "-m", "add billing"]);
+    std::fs::write(h.workspace_path.join("billing.py"), billing_before).unwrap();
+    run_jj(&h.workspace_path, &["new", "-m", "move discount"]);
+    std::fs::write(h.workspace_path.join("billing.py"), billing_after).unwrap();
+    std::fs::write(h.workspace_path.join("discounts.py"), discounts).unwrap();
+    run_jj(&h.workspace_path, &["bookmark", "set", "feature", "-r", "@"]);
+
+    let (status, created) = h
+        .json(
+            "POST",
+            "/api/repos/main/reviews",
+            Some(json!({
+                "name": "move",
+                "revset": "feature-..feature",
+                "bookmark": "feature",
+                "created_by": "alice@example.com",
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let review_url = format!(
+        "/api/repos/main/reviews/{}",
+        created["number"].as_u64().unwrap()
+    );
+    let expected = |files: &Value| -> Vec<(String, Value)> {
+        files
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| (f["path"].as_str().unwrap().to_string(), f["moved"].clone()))
+            .collect()
+    };
+    let moves = vec![
+        (
+            "billing.py".to_string(),
+            json!([{
+                "side": "base",
+                "lines": { "start": 3, "end": 6 },
+                "other": { "path": "discounts.py", "lines": { "start": 1, "end": 4 } },
+            }]),
+        ),
+        (
+            "discounts.py".to_string(),
+            json!([{
+                "side": "tip",
+                "lines": { "start": 1, "end": 4 },
+                "other": { "path": "billing.py", "lines": { "start": 3, "end": 6 } },
+            }]),
+        ),
+    ];
+
+    let (status, view) = h.json("GET", &review_url, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(expected(&view["diff"]["files"]), moves);
+
+    let change = view["commits"][0]["change_id"].as_str().unwrap().to_string();
+    let (status, commit) = h
+        .json("GET", &format!("{review_url}/commits/{change}/diff"), None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(expected(&commit["files"]), moves);
+}

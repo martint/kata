@@ -8,6 +8,7 @@
   import { setContext } from 'svelte';
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import { createFoldStore, type FoldStore } from '../lib/foldStore';
+  import { movedLookup, type MovedLookup } from '../lib/moved';
   import HunkLines from './HunkLines.svelte';
   import type {
     CommentView,
@@ -25,6 +26,7 @@
      *  user previously folded. Each entry calls `set('comment', id,
      *  value)` on the store before the component mounts. */
     seedFolds?: Record<string, boolean>;
+    movedAt?: MovedLookup;
   }
   const {
     hunk,
@@ -33,6 +35,7 @@
     lastVisitAt = null,
     viewer = '',
     seedFolds = {},
+    movedAt = movedLookup(undefined),
   }: Props = $props();
 
   const foldStore: FoldStore = createFoldStore('repo', 1);
@@ -71,6 +74,7 @@
 <HunkLines
   {hunk}
   filePath="a.txt"
+  {movedAt}
   {comments}
   {responses}
   {lastVisitAt}

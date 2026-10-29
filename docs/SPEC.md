@@ -476,6 +476,42 @@ resolve every conflict in its tip first; until then, the conflict
 panels are a tool for the local participants to discuss what
 the conflict actually is.
 
+### 5.7 Moved code
+
+A block of removed lines that comes back as added lines elsewhere
+in the same diff, in the same file or another one, renders as moved
+code. Detection follows `git diff --color-moved=zebra
+--color-moved-ws=allow-indentation-change`:
+
+- Lines match on their content after the leading whitespace, and
+  every line of a block shifts its indentation by the same amount.
+  Code wrapped in a new block or class still reads as moved.
+- A block needs at least 20 letters and digits, so short repeated
+  lines such as a closing brace never count.
+- Unlike git, a block also needs at least two lines, so a single
+  import that moves between files doesn't count.
+- Blank lines inside a block move with it.
+
+Moved rows render on a faint tint with slightly dimmed text and a
+bar on the code's left edge, in one colour per end: purple where
+the code left, teal where it arrived. When two moved blocks touch, the second one's bar is
+orange so the boundary shows. A label row above each block names
+the other end ("Code moved to util.py lines 3–8") and links to it.
+The label shows the other file by name, with its full path on hover,
+and ends in an ellipsis when it would be wider than the pane.
+Hovering any row of a moved block, or its label, highlights both
+ends of the block in its colour, across files.
+"Code" keeps the label apart from a comment's "moved" anchor badge
+(§2). Lines edited during the move keep their red and green, so the
+edit stands out from the move. Moved lines take no part in the
+word-level highlight.
+
+The review diff, the per-commit view, patchset compare and the
+repository browser mark moved code. A *changed* pair in the
+per-pair interdiff (§11) doesn't, and a diff with more than 50,000
+changed lines skips detection. Matching is greedy, so a block that
+occurs more than once can pair differently than git would pair it.
+
 ---
 
 ## 6. Commenting

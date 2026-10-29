@@ -123,6 +123,17 @@ export const tour: TourStep[] = [
       "cumulative diff for the whole review.",
   },
   {
+    id: 'moved-code',
+    target: '[data-tour=moved-badge]',
+    placement: 'bottom',
+    title: 'Moved code',
+    body:
+      "Code that moved, within a file or to another one, gets a " +
+      "faint tint and a coloured edge so the real edits stand out. " +
+      "The label above each moved block names its other end. Hover " +
+      "a block to light up both ends, or click the label to jump.",
+  },
+  {
     id: 'inline-thread',
     target: '[data-tour=comment-thread]',
     placement: 'left',
