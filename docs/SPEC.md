@@ -476,6 +476,53 @@ resolve every conflict in its tip first; until then, the conflict
 panels are a tool for the local participants to discuss what
 the conflict actually is.
 
+### 5.7 Hunk headers
+
+Each regular hunk opens with a one-line header naming the scope
+it sits in — the enclosing function, method, class or heading —
+the way the tail of a GitHub `@@ … @@ fn foo()` hunk header does.
+It answers "whose body am I reading?" without the reader having
+to expand context upward to find out.
+
+The server computes it (`RegularHunk.context`, see §16 for the
+MCP view) with a rule in the spirit of git's `xfuncname`:
+
+- Scan **upward from the hunk's first line, inclusive**, on the
+  tip side; a pure-deletion hunk has no tip lines, so it scans the
+  base side instead. Inclusive because a hunk whose leading
+  context line *is* the signature is about that function.
+- The first line matching the language's signature patterns wins.
+  Languages are picked by file extension: Rust, Java, Kotlin, Go,
+  Python, JavaScript / TypeScript (and `.svelte` script blocks),
+  C / C++ / Objective-C, Ruby, and Markdown (ATX headings). Lines
+  that are declarations rather than scopes — `use` / `import`,
+  `let` / `const` (other than arrow-function assignments that
+  open a body; a one-line `const inc = (x) => x + 1;` is an
+  expression), a `pub struct Foo;` or `static int counter;`
+  ending in `;`, a control-flow keyword like `if` / `for` /
+  `while` that looks like a call — are rejected so the header
+  names a scope, not the nearest statement.
+- In a `.svelte` file, `<script>`, `</script>`, `<style>` and
+  `</style>` tags are block boundaries: the scan stops there with
+  no context. A hunk in the template or the style block therefore
+  gets no header rather than the last function of the script
+  block above it.
+- Any other file type falls back to git's default rule: a
+  non-indented line beginning with a letter, `_` or `$`.
+- The match is trimmed and capped at 120 characters (with an
+  ellipsis). When nothing above the hunk qualifies, the field is
+  absent and no header renders.
+
+The SPA renders it as a muted monospace band at the top of the
+hunk, indented past the line-number gutter so it lines up with
+code. It is a single line — long signatures ellipsise and the
+full text is available on hover — and it never widens the diff's
+horizontal scroll context, so narrow layouts are unaffected.
+Selection and comment stripes that span across a header bridge
+it the same way they bridge inter-hunk gaps. Whole-file mode
+(§5.2) hides hunk headers: the hunks stitch into one continuous
+listing there, and a label mid-stream would be noise.
+
 ---
 
 ## 6. Commenting
@@ -1125,7 +1172,11 @@ Two pieces:
   matching slug. `get_review` returns file-level
   metadata only; `read_file_diff` fetches the cumulative
   `base..tip` hunks for one file (matching the SPA's lazy-per-file
-  fetch pattern). `get_review` also inlines only *unresolved*
+  fetch pattern). Each regular hunk may carry an optional
+  `context` string — the enclosing function / method / class
+  signature line from §5.7 — so an agent can tell which scope a
+  change lands in without reading the whole file; it is omitted
+  when nothing above the hunk qualified. `get_review` also inlines only *unresolved*
   comment threads by default — reviews with a long resolved
   history would otherwise balloon the response past an agent's
   context budget; pass `comments: "all"` for the full discussion
@@ -1170,10 +1221,11 @@ tour: a floating bubble narrates a sequence of steps, each
 spotlighting the part of the UI it's describing. The tour covers:
 the review list; opening a review; patchsets and "compared to";
 the file tree; the commits panel; scoping the diff to a single
-commit; inline threads with severity flags; the three ways to
-comment (inline / per-commit / review-wide); author annotations;
-per-thread and per-file folding; filter chips; comment navigation;
-view modes. Sixteen steps total, with `← / →` keyboard navigation,
+commit; hunk headers naming the enclosing function; inline
+threads with severity flags; the three ways to comment (inline /
+per-commit / review-wide); author annotations; per-thread and
+per-file folding; filter chips; search; comment navigation; view
+modes. Twenty steps total, with `← / →` keyboard navigation,
 an Esc-to-leave escape hatch, and a "Skip tour" button that's
 always visible.
 

@@ -210,4 +210,30 @@ describe('FileDiff', () => {
     );
     expect(tipReads.length).toBeGreaterThan(0);
   });
+
+  test('renders the hunk header with the enclosing signature when context is set', () => {
+    const f = file({
+      hunks: [
+        {
+          kind: 'regular',
+          base_range: { start: 5, end: 5 },
+          tip_range: { start: 5, end: 5 },
+          context: 'fn greet(name: &str) -> String {',
+          lines: [
+            { origin: 'removed', base_line: 5, content: 'old\n' },
+            { origin: 'added', tip_line: 5, content: 'new\n' },
+          ],
+        },
+      ],
+    });
+    const { container } = renderFileDiff({ file: f });
+    const header = container.querySelector('.hunk-header');
+    expect(header).not.toBeNull();
+    expect(header?.textContent?.trim()).toBe('fn greet(name: &str) -> String {');
+  });
+
+  test('omits the hunk header when the hunk carries no context', () => {
+    const { container } = renderFileDiff();
+    expect(container.querySelector('.hunk-header')).toBeNull();
+  });
 });

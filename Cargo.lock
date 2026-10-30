@@ -2766,6 +2766,7 @@ dependencies = [
  "imara-diff",
  "jj-lib",
  "kata-core",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",

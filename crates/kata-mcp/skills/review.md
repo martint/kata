@@ -41,7 +41,12 @@ MCP server can front multiple repositories; every tool call takes a
    from `diff.files[]`) to fetch the hunks for one file. Each hunk
    line carries a `side` (`base` or `tip`) and a 1-based line
    number on that side — the same coordinates you anchor comments
-   with. Pull only the files you actually need to read; for a big
+   with. A hunk may also carry `context` — the enclosing function
+   / method / class signature line, like the tail of a GitHub
+   `@@ … @@` header — so you can tell which scope a change lands
+   in without fetching the whole file; it's absent when nothing
+   above the hunk looked like a signature. Pull only the files you
+   actually need to read; for a big
    refactor the full diff is often much larger than your context
    budget.
 

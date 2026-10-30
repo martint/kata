@@ -296,6 +296,12 @@ export interface RegularHunk {
   base_range?: LineRange;
   tip_range?: LineRange;
   lines: HunkLine[];
+  /** The enclosing function / class / heading the hunk sits in —
+   *  the `fn foo()` tail of a GitHub-style hunk header. Computed
+   *  server-side from the nearest signature line at or above the
+   *  hunk's first tip line (base for pure deletions); absent when
+   *  nothing above the hunk qualifies. Already trimmed and capped. */
+  context?: string;
 }
 
 /** A conflict region as jj keeps it. Each *term* is one component

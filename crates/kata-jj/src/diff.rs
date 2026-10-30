@@ -24,6 +24,7 @@ use kata_core::{
 
 use crate::backend::JjBackend;
 use crate::error::{Error, Result};
+use crate::hunk_context;
 
 /// File list + per-file `added` / `removed` counts. No hunks, no
 /// per-line content. Used by `open_review` to keep the initial JSON
@@ -281,7 +282,39 @@ pub(crate) fn histogram_hunks(base: &str, tip: &str, path: &str) -> Result<Vec<H
     synthetic.push('\n');
     synthetic.push_str(&unified);
     let parsed = parse_git_diff(synthetic.as_bytes())?;
-    Ok(parsed.into_iter().next().and_then(|f| f.hunks).unwrap_or_default())
+    let mut hunks = parsed
+        .into_iter()
+        .next()
+        .and_then(|f| f.hunks)
+        .unwrap_or_default();
+    fill_hunk_context(&mut hunks, base, tip, path);
+    Ok(hunks)
+}
+
+/// Label each regular hunk with the signature line it sits under
+/// (see [`hunk_context`]). Scans the tip side from the hunk's first
+/// tip line; a pure-deletion hunk has no tip lines, so it scans the
+/// base side instead. The language comes from the tip path (on a
+/// rename the extension is what the file is *now*). Hunks come in
+/// file order, so one [`hunk_context::ContextScanner`] per side
+/// labels them all in a single pass.
+fn fill_hunk_context(hunks: &mut [Hunk], base: &str, tip: &str, path: &str) {
+    if hunks.is_empty() {
+        return;
+    }
+    let lang = hunk_context::Language::for_path(path);
+    let base_lines: Vec<&str> = base.lines().collect();
+    let tip_lines: Vec<&str> = tip.lines().collect();
+    let mut base_scan = hunk_context::ContextScanner::new(&base_lines, lang);
+    let mut tip_scan = hunk_context::ContextScanner::new(&tip_lines, lang);
+    for h in hunks {
+        let Hunk::Regular(r) = h else { continue };
+        r.context = match (&r.tip_range, &r.base_range) {
+            (Some(t), _) => tip_scan.context_at(t.start),
+            (None, Some(b)) => base_scan.context_at(b.start),
+            (None, None) => None,
+        };
+    }
 }
 
 /// Git's binary-detection heuristic: a NUL byte in the first 8 KB.
@@ -393,6 +426,9 @@ impl PartialHunk {
             base_range,
             tip_range,
             lines: self.lines,
+            // Filled by `histogram_hunks`, which has the whole-file
+            // text to scan; the parser only sees the hunk itself.
+            context: None,
         })
     }
 }
@@ -826,5 +862,79 @@ diff --git a/f b/f
         assert_eq!(h.lines.len(), 2);
         assert_eq!(h.lines[0].origin, LineOrigin::Removed);
         assert_eq!(h.lines[1].origin, LineOrigin::Added);
+    }
+
+    #[test]
+    fn histogram_hunks_label_each_hunk_with_its_enclosing_signature() {
+        // Two functions far enough apart for two hunks; the change in
+        // each sits deep enough that the 3-line context above it
+        // stops short of the signature, so the label has to come
+        // from the backward scan and not from the hunk itself.
+        let base = "\
+pub fn first() -> u32 {
+    let a = 1;
+    let b = 2;
+    let c = 3;
+    let d = 4;
+    let e = 5;
+    let f = 6;
+    let g = 7;
+    a + b + c + d + e + f + g
+}
+
+pub fn second() -> u32 {
+    let a = 1;
+    let b = 2;
+    let c = 3;
+    let d = 4;
+    let e = 5;
+    let f = 6;
+    let g = 7;
+    a + b + c + d + e + f + g
+}
+";
+        let tip = base.replace("    a + b + c + d", "    a * b * c * d");
+        let hunks = histogram_hunks(base, &tip, "src/lib.rs").unwrap();
+        assert_eq!(hunks.len(), 2);
+        assert_eq!(
+            reg(&hunks[0]).context.as_deref(),
+            Some("pub fn first() -> u32 {")
+        );
+        assert_eq!(
+            reg(&hunks[1]).context.as_deref(),
+            Some("pub fn second() -> u32 {")
+        );
+    }
+
+    #[test]
+    fn histogram_hunks_use_the_base_side_for_pure_deletions() {
+        // Emptying the file leaves the hunk with no tip lines at all
+        // (`tip_range` is None — any surviving line would show up as
+        // tip-side context), so the base text is the only side that
+        // can name the scope.
+        let base = "\
+fn gone() {
+    let x = 1;
+    x + 1;
+}
+";
+        let tip = "";
+        let hunks = histogram_hunks(base, tip, "src/lib.rs").unwrap();
+        assert_eq!(hunks.len(), 1);
+        let h = reg(&hunks[0]);
+        assert!(
+            h.tip_range.is_none(),
+            "pure deletion should have no tip range"
+        );
+        assert_eq!(h.context.as_deref(), Some("fn gone() {"));
+    }
+
+    #[test]
+    fn histogram_hunks_leave_context_unset_when_nothing_qualifies() {
+        let base = "  one\n  two\n  three\n";
+        let tip = "  one\n  deux\n  three\n";
+        let hunks = histogram_hunks(base, tip, "notes.txt").unwrap();
+        assert_eq!(hunks.len(), 1);
+        assert_eq!(reg(&hunks[0]).context, None);
     }
 }

@@ -482,7 +482,7 @@
             ? 'var(--measured-gutter-2)'
             : 'var(--measured-gutter)';
         for (const sep of wrapper.querySelectorAll<HTMLElement>(
-          '.hunk-gap, .expand-row',
+          '.hunk-gap, .expand-row, .hunk-header',
         )) {
           const r = sep.getBoundingClientRect();
           if (r.top >= firstRect.top && r.bottom <= lastRect.bottom) {
@@ -1740,6 +1740,7 @@
 
     return {
       kind: 'regular',
+      context: hunk.context,
       base_range:
         hunk.base_range && baseStart != null && baseEnd != null
           ? { start: baseStart - before.length, end: baseEnd + after.length }
@@ -2305,6 +2306,16 @@
                   <line x1="2" y1="13" x2="14" y2="13" />
                 </svg>
               </button>
+            </div>
+          {/if}
+          <!-- GitHub-style hunk header: the enclosing function /
+               class / heading the hunk sits in, computed server-side
+               (`RegularHunk.context`). Hidden in whole-file mode,
+               where hunks stitch into one continuous listing and a
+               label mid-stream would just be noise. -->
+          {#if eh.kind === 'regular' && eh.context && !wholeFile}
+            <div class="hunk-header" data-tour="hunk-header" title={eh.context}>
+              <code>{eh.context}</code>
             </div>
           {/if}
           {#if eh.kind === 'conflict'}
@@ -3100,7 +3111,8 @@
    * same panel-grey backdrop so all "artificial space" between
    * content reads as one cohesive band. */
   .hunk-gap,
-  .expand-row {
+  .expand-row,
+  .hunk-header {
     position: relative;
     background: var(--bg-panel);
   }
@@ -3120,8 +3132,10 @@
    * without stepping on the other. */
   .hunk-gap.drag-bridge::before,
   .expand-row.drag-bridge::before,
+  .hunk-header.drag-bridge::before,
   .hunk-gap.comment-bridge::before,
-  .expand-row.comment-bridge::before {
+  .expand-row.comment-bridge::before,
+  .hunk-header.comment-bridge::before {
     content: '';
     position: absolute;
     top: 0;
@@ -3130,18 +3144,44 @@
     pointer-events: none;
   }
   .hunk-gap.drag-bridge::before,
-  .expand-row.drag-bridge::before {
+  .expand-row.drag-bridge::before,
+  .hunk-header.drag-bridge::before {
     width: 4px;
     background: var(--selection-rule);
   }
   .hunk-gap.comment-bridge::before,
-  .expand-row.comment-bridge::before {
+  .expand-row.comment-bridge::before,
+  .hunk-header.comment-bridge::before {
     width: 3px;
     background: var(--link);
   }
 
   .hunk-gap {
     height: 8px;
+  }
+
+  /* Hunk header: the enclosing signature, GitHub `@@ … @@ fn foo()`
+   * style. Starts past the gutter so it lines up with code, not with
+   * line numbers; one line only — a long signature ellipsises rather
+   * than wrapping or widening the horizontal scroll context (the
+   * full text is in `title`). `min-width: 0` lets it shrink at
+   * narrow widths instead of forcing a scrollbar. */
+  .hunk-header {
+    padding: 2px 12px 2px calc(var(--measured-gutter, 65px) + 12px);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12.5px;
+    line-height: 1.6;
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+    user-select: none;
+  }
+  /* Lift the text above the positioned `::before` gutter rule. */
+  .hunk-header code {
+    position: relative;
+    font: inherit;
   }
 
   /* Flex (not block + text-align) so the button is vertically
@@ -3163,7 +3203,8 @@
    * gutter-2` collapses the second line out of view in unified-tip
    * / unified-base where only one gutter exists. */
   .hunk-gap::before,
-  .expand-row::before {
+  .expand-row::before,
+  .hunk-header::before {
     content: '';
     position: absolute;
     top: 0;

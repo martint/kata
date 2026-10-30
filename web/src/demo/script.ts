@@ -123,6 +123,17 @@ export const tour: TourStep[] = [
       "cumulative diff for the whole review.",
   },
   {
+    id: 'hunk-header',
+    target: '[data-tour=hunk-header]',
+    placement: 'bottom',
+    title: 'Hunk headers',
+    body:
+      "Each hunk opens with the enclosing function, class or " +
+      "heading — the nearest signature at or above the hunk's first " +
+      "line — so you know whose body you're reading without " +
+      "expanding context.",
+  },
+  {
     id: 'inline-thread',
     target: '[data-tour=comment-thread]',
     placement: 'left',

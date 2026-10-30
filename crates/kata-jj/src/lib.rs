@@ -9,6 +9,7 @@ pub mod anchor;
 pub mod backend;
 pub mod diff;
 pub mod error;
+pub mod hunk_context;
 pub mod libjj;
 pub mod log_graph;
 

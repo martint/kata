@@ -62,6 +62,17 @@ pub struct RegularHunk {
     /// `None` for pure-deletion hunks where no tip lines are involved.
     pub tip_range: Option<LineRange>,
     pub lines: Vec<HunkLine>,
+    /// The enclosing function / method / class / heading the hunk
+    /// sits in — the tail of a GitHub-style `@@ … @@ fn foo()` hunk
+    /// header. The nearest signature line at or above the hunk's
+    /// first line on the tip side (base side for pure deletions),
+    /// trimmed and capped at 120 characters; which lines count is a
+    /// per-language rule (see `kata_jj::hunk_context`). `None` when
+    /// nothing above the hunk qualifies. Omitted from JSON when
+    /// absent, so pre-existing consumers and stored payloads are
+    /// unaffected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
 }
 
 /// Structured conflict region. jj keeps conflicted commits as live
