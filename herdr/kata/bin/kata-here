@@ -1,0 +1,172 @@
+#!/usr/bin/env python3
+"""What kata reviews the calling agent works on, inside Herdr.
+
+  kata-here                      this agent's space, primary review and the reviews open in its space
+  kata-here open <repo>/<n>      open that review's tab in this space, without moving the person's view
+  kata-here assign <repo>/<n>    open it if needed, make it this agent's primary review and move this agent into
+                                 its tab; the person's view follows only if they were looking at this agent's tab
+  kata-here unassign             mark this agent as working on no review
+
+Prints JSON. The agent is $HC_TERMINAL_ID; Herdr sets it in every terminal it starts.
+"""
+
+import json
+import os
+import re
+import secrets
+import subprocess
+import sys
+import tempfile
+import time
+
+LABEL = "kata.review"
+UNASSIGNED = "unassigned"
+APP_HOME = os.environ.get("HERDR_APP_HOME") or os.path.expanduser("~/.config/herdr-app")
+STATE = os.path.join(APP_HOME, "data", "kata", "state.json")
+
+
+def fail(message):
+    print(json.dumps({"error": message}))
+    sys.exit(1)
+
+
+def run(*args):
+    result = subprocess.run(args, capture_output=True, text=True)
+    if result.returncode != 0:
+        fail((result.stderr or result.stdout).strip() or f"{args[0]} failed")
+    return result.stdout
+
+
+def run_json(*args):
+    return json.loads(run(*args))
+
+
+def me():
+    terminal = os.environ.get("HC_TERMINAL_ID")
+    if not terminal:
+        fail("Not inside a Herdr terminal (HC_TERMINAL_ID isn't set)")
+    info = run_json("hc", "get", terminal)
+    labels = info.get("labels") or {}
+    space = labels.get("herdr.space")
+    if not space:
+        fail(f"Terminal {terminal} isn't in a Herdr space")
+    return terminal, space, labels.get("herdr.tab"), labels.get(LABEL)
+
+
+def read_state():
+    try:
+        with open(STATE) as f:
+            state = json.load(f)
+        if isinstance(state.get("panes"), dict):
+            return state
+    except (OSError, ValueError):
+        pass
+    return {"version": 1, "panes": {}}
+
+
+def write_state(state):
+    os.makedirs(os.path.dirname(STATE), exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(STATE), prefix=".state-")
+    with os.fdopen(fd, "w") as f:
+        json.dump(state, f, indent=2)
+        f.write("\n")
+    os.replace(tmp, STATE)
+
+
+def live_tabs(space):
+    for s in run_json("herdr-app", "ls")["spaces"]:
+        if s["id"] == space:
+            return {t["id"] for t in s["tabs"]}
+    return set()
+
+
+# Review panes recorded in this space whose tab still exists, as {"<repo>/<n>": tab}.
+def open_reviews(space):
+    tabs = live_tabs(space)
+    out = {}
+    for record in read_state()["panes"].values():
+        review = record.get("review")
+        if review and record.get("space") == space and record.get("tab") in tabs:
+            out[f"{review['repo']}/{review['review']}"] = record["tab"]
+    return out
+
+
+def parse(review):
+    match = re.fullmatch(r"(.+)/(\d+)", review or "")
+    if not match:
+        fail(f"Expected <repo>/<number>, got {review!r}")
+    return match.group(1), int(match.group(2))
+
+
+def open_review(space, review):
+    repo, number = parse(review)
+    existing = open_reviews(space).get(review)
+    if existing:
+        return existing
+    key = "k" + secrets.token_hex(6)
+    props = json.dumps({"key": key, "repo": repo, "review": number})
+    made = run_json("herdr-app", "do", "tab.new", "--space", space, "--mod", "kata", "--props", props, "--focus", "false")
+    state = read_state()
+    state["panes"][made["pane"]] = {"key": key, "space": space, "tab": made["tab"], "review": {"repo": repo, "review": number}}
+    write_state(state)
+    return made["tab"]
+
+
+def tab_of(terminal, space):
+    for s in run_json("herdr-app", "ls")["spaces"]:
+        if s["id"] != space:
+            continue
+        for t in s["tabs"]:
+            if any(x["terminal"] == terminal for x in t["terminals"]):
+                return t["id"]
+    return None
+
+
+# Herdr has no "move terminal to tab": park it (its pane goes, the program keeps running), relabel its space and
+# tab, and keep it, which adopts it into that tab as a new pane.
+def move_into(terminal, space, tab):
+    current = tab_of(terminal, space)
+    if current == tab:
+        return False
+    status = run_json("herdr-app", "status")
+    watching = status.get("space") == space and current is not None and status.get("tab") == current
+    run("herdr-app", "do", "terminal.park", "--terminal", terminal)
+    for _ in range(30):
+        if tab_of(terminal, space) is None:
+            break
+        time.sleep(0.1)
+    run("hc", "label", terminal, f"herdr.space={space}", f"herdr.tab={tab}")
+    run("hc", "keep", terminal)
+    if watching:
+        run("herdr-app", "do", "tab.select", "--id", tab)
+    return True
+
+
+def summary(terminal, space, primary):
+    status = primary if primary and primary != UNASSIGNED else None
+    return {"terminal": terminal, "space": space, "primary": status, "open": sorted(open_reviews(space))}
+
+
+def main(argv):
+    terminal, space, _tab, primary = me()
+    command = argv[0] if argv else None
+    if command is None:
+        print(json.dumps(summary(terminal, space, primary), indent=2))
+    elif command == "open" and len(argv) == 2:
+        open_review(space, argv[1])
+        print(json.dumps(summary(terminal, space, primary), indent=2))
+    elif command == "assign" and len(argv) == 2:
+        tab = open_review(space, argv[1])
+        run("hc", "label", terminal, f"{LABEL}={argv[1]}")
+        move_into(terminal, space, tab)
+        print(json.dumps(summary(terminal, space, argv[1]), indent=2))
+    elif command == "unassign" and len(argv) == 1:
+        run("hc", "label", terminal, f"{LABEL}={UNASSIGNED}")
+        print(json.dumps(summary(terminal, space, None), indent=2))
+    else:
+        print(__doc__.strip(), file=sys.stderr)
+        sys.exit(2)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

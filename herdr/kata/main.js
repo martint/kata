@@ -1,11 +1,12 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, v_virtual_list, VirtualListScrollHandle, TextareaState, TextView, InputState, Input } from "gpui-base";
-import { props, panes, focused, spaces, theme, settings, run, checking } from "herdr";
-import { kata, repoRoot, authorName } from "./api.js";
+import { props, panes, focused, spaces, theme, settings, run, checking, knownAgents, exec } from "herdr";
+import { kata, repoRoot, authorName, nextEvent } from "./api.js";
 import { readState, updateState } from "./state.js";
 import { reviewRows, threadsByFile, resolution, expandChange, CARD_INDENT } from "./rows.js";
 import { buildTree, orderedFiles, treeRows } from "./tree.js";
 import { composerDrawer, threadDrawer } from "./drawer.js";
+import { agentsInSpace, checkLabel, labelsByAgent, moveAgent, reviewKey, setLabel, UNASSIGNED } from "./agents.js";
 import { FLAG_COLORS, FLAG_LABELS, RESOLUTION_LABELS, STATUS_LETTERS, statusColor, button, chip } from "./ui.js";
 
 const MOD = "kata";
@@ -69,6 +70,11 @@ export default class Kata extends View {
     this.identifyAttempts = 0;
     this.identifying = false;
     this.scroll = VirtualListScrollHandle.new();
+    this.moving = new Set();
+    this.adopting = new Set();
+    this.openInSpace = null;
+    this.reconciled = null;
+    this.listening = 0;
     this.unified = false;
     this.showSummary = true;
     this.patchset = null;
@@ -194,6 +200,8 @@ export default class Kata extends View {
         this.setView(view);
         this.rename();
         this.fetchDiffs(target, cx);
+        this.listen(target, view.manifest.review_id, cx);
+        if (!this.repos) this.repos = await kata.repos().catch(() => null);
       } catch (e) {
         if (sameReview(this.current, target)) this.error = e.message;
       }
@@ -348,6 +356,43 @@ export default class Kata extends View {
     for (let i = 0; i < DIFF_FETCHES; i++) cx.spawn(worker);
   }
 
+  // Follow the server's events for this review: someone (usually an agent) publishing, refreshing or
+  // deleting it reloads the pane. One loop per loaded review; a newer load ends the older loop.
+  listen(target, reviewId, cx) {
+    const generation = ++this.listening;
+    const live = () => generation === this.listening && sameReview(this.current, target);
+    cx.spawn(async (cx) => {
+      let failures = 0;
+      while (live()) {
+        // Touching cx each pass ends this loop once a newer build of the mod replaces this copy.
+        await new Promise((resolve) => cx.timer.after(1, () => resolve()));
+        let event = null;
+        try {
+          event = await nextEvent(exec);
+          failures = 0;
+        } catch {
+          failures += 1;
+          // The server is down: wait before asking again rather than spinning.
+          await new Promise((resolve) => cx.timer.after(Math.min(30000, 2000 * failures), () => resolve()));
+          continue;
+        }
+        if (!live() || !event || event.review_id !== reviewId) continue;
+        if (event.kind === "review-deleted") {
+          this.notice = "This review was deleted";
+          cx.notify();
+          continue;
+        }
+        if (this.busy) continue;
+        try {
+          await this.reloadView(cx);
+        } catch (e) {
+          this.notice = e.message;
+        }
+        cx.notify();
+      }
+    });
+  }
+
   // Re-fetch comments and drafts after a change, keeping the loaded diffs.
   async reloadView(cx) {
     const target = this.current;
@@ -390,6 +435,99 @@ export default class Kata extends View {
   bump() {
     this.uiVersion += 1;
     this.rowsFor = null;
+  }
+
+  async close() {
+    this.listening += 1;
+  }
+
+  // ---- Agents --------------------------------------------------------------
+
+  // Herdr re-renders on every terminal, label and tab change; act only when something about this space's agents did.
+  maybeReconcile(cx) {
+    if (checking() || this.mode !== "review" || !this.current || !this.pane || !this.tab || !this.space) return;
+    const labels = labelsByAgent();
+    const mine = reviewKey(this.current.repo, this.current.review);
+    const list = agentsInSpace(this.space);
+    const signature = `${mine}|${this.tab}|${list.map((a) => `${a.address}@${a.tab}=${labels.get(a.address) ?? ""}`).join(",")}`;
+    if (signature === this.reconciled) return;
+    this.reconciled = signature;
+    for (const agent of list) {
+      const label = labels.get(agent.address);
+      if (label === mine && agent.tab !== this.tab) this.pull(agent, cx);
+      else if (label == null && agent.tab === this.tab) this.adopt(agent, mine, cx);
+    }
+    cx.spawn(async (cx) => {
+      this.openInSpace = await this.openReviewsInSpace().catch(() => null);
+      cx.notify();
+    });
+  }
+
+  async openReviewsInSpace() {
+    const { state } = await readState();
+    const live = livePanes();
+    const open = new Set();
+    for (const [pane, record] of Object.entries(state.panes)) {
+      if (record.review && record.space === this.space && live.has(pane)) open.add(reviewKey(record.review.repo, record.review.review));
+    }
+    if (this.current) open.add(reviewKey(this.current.repo, this.current.review));
+    return open;
+  }
+
+  pull(agent, cx) {
+    if (this.moving.has(agent.address)) return;
+    this.moving.add(agent.address);
+    const [space, tab] = [this.space, this.tab];
+    cx.spawn(async (cx) => {
+      try {
+        await moveAgent(cx, agent.address, space, tab);
+      } catch (e) {
+        this.notice = `Couldn't move ${agent.address}: ${e.message}`;
+      }
+      this.moving.delete(agent.address);
+      cx.notify();
+    });
+  }
+
+  // An agent started inside a review tab works on that review.
+  adopt(agent, mine, cx) {
+    if (this.adopting.has(agent.address)) return;
+    this.adopting.add(agent.address);
+    cx.spawn(async (cx) => {
+      try {
+        await setLabel(agent.address, mine);
+      } catch (e) {
+        this.notice = e.message;
+      }
+      this.adopting.delete(agent.address);
+      cx.notify();
+    });
+  }
+
+  assign(agent, value, cx) {
+    cx.spawn(async (cx) => {
+      try {
+        await setLabel(agent.address, value);
+      } catch (e) {
+        this.notice = e.message;
+      }
+      cx.notify();
+    });
+  }
+
+  newAgent(cx) {
+    if (!this.pane) return;
+    const pane = this.pane;
+    cx.spawn(async (cx) => {
+      try {
+        const agent = (await knownAgents()).find((a) => a.installed);
+        if (!agent) this.notice = "No installed agent to start";
+        else run("pane.split", { pane, direction: "right", argv: agent.run });
+      } catch (e) {
+        this.notice = e.message;
+      }
+      cx.notify();
+    });
   }
 
   // ---- Navigation ----------------------------------------------------------
@@ -769,6 +907,7 @@ export default class Kata extends View {
   // Close review: the pane stays, empty, and the review leaves this space's open reviews.
   closeReview(cx) {
     this.current = null;
+    this.listening += 1;
     this.resetReview();
     this.rename();
     cx.spawn(async (cx) => {
@@ -886,6 +1025,7 @@ export default class Kata extends View {
 
   render(cx) {
     if (!checking() && !this.pane && !this.identifying && this.identifyAttempts < 5) this.identify(cx);
+    this.maybeReconcile(cx);
     const t = theme();
     let body;
     if (this.mode === "loading") body = this.message("Loading…", t);
@@ -1092,11 +1232,53 @@ export default class Kata extends View {
         .child(div().text_size(11).text_color(t.ansi1).child(`−${f.removed}`));
     });
     return v_flex().w(SIDEBAR_WIDTH).flex_none().h_full().border_r(1).border_color(t.border).text_size(12)
+      .child(this.renderAgents(t))
       .child(this.renderCommits(t))
       .child(header)
       .child(div().flex_1().min_h(0).relative()
         .child(v_flex().id("kata-tree").absolute().inset_0().overflow_y_scroll().p(4).children(rows))
         .child(Scrollbar.vertical("kata-tree").absolute().inset_0()));
+  }
+
+  renderAgents(t) {
+    if (!this.space || !this.current) return div();
+    const labels = labelsByAgent();
+    const mine = reviewKey(this.current.repo, this.current.review);
+    const here = [];
+    const unassigned = [];
+    const elsewhere = [];
+    for (const agent of agentsInSpace(this.space)) {
+      const label = labels.get(agent.address);
+      if (label === mine) {
+        here.push(agent);
+        continue;
+      }
+      const check = checkLabel(label, this.repos, this.openInSpace);
+      if (check.kind === "ok") elsewhere.push([agent, `on ${check.repo}#${check.review}`]);
+      else unassigned.push([agent, check.kind === "error" ? check.message : null]);
+    }
+    const row = (agent, note, action, error) => h_flex().id(`agent-${agent.address}`).h(26).flex_none().px(10).gap(6).items_center().rounded(6).cursor_pointer()
+      .hover((s) => s.bg(t.hover))
+      .on_click((_e, cx) => run("agent.focus", { terminal: agent.address }))
+      .child(div().w(7).h(7).flex_none().rounded(4).bg(t[agent.status] ?? t.dim))
+      .child(div().flex_none().child(agent.program?.name ?? agent.app ?? agent.address))
+      .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(error ? t.ansi1 : t.dim)
+        .child(error ?? note ?? (this.moving.has(agent.address) ? "moving here…" : agent.title)))
+      .when(Boolean(action), (e) => e.child(action));
+    const group = (title, items) => (items.length ? [div().px(10).pt(4).text_size(10).text_color(t.dim).child(title), ...items] : []);
+    const rows = [
+      ...group("On this review", here.map((a) => row(a, a.tab === this.tab ? null : "moving here…",
+        button(`unassign-${a.address}`, "Unassign", (cx) => this.assign(a, UNASSIGNED, cx), t)))),
+      ...group("Unassigned", unassigned.map(([a, error]) => row(a, null, button(`assign-${a.address}`, "Assign here", (cx) => this.assign(a, mine, cx), t), error))),
+      ...group("On other reviews", elsewhere.map(([a, note]) => row(a, note, button(`move-${a.address}`, "Move here", (cx) => this.assign(a, mine, cx), t)))),
+    ];
+    return v_flex().flex_none().max_h(200).border_b(1).border_color(t.border)
+      .child(h_flex().h(34).flex_none().px(10).gap(6).items_center().border_b(1).border_color(t.border)
+        .child(div().font_semibold().child(`Agents (${here.length})`))
+        .child(div().flex_1())
+        .child(button("agent-new", "+ Agent", (cx) => this.newAgent(cx), t)))
+      .child(v_flex().id("kata-agents").max_h(166).overflow_y_scroll().py(2)
+        .children(rows.length ? rows : [div().px(10).py(6).text_size(11).text_color(t.dim).child("No agents in this space")]));
   }
 
   renderCommits(t) {

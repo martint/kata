@@ -78,6 +78,25 @@ export const kata = {
     request("DELETE", `${sessionBase(repo, number, session)}/responses/${enc(response)}`),
 };
 
+// The next event from the server's stream (SSE "data:" line), or null when none came within the window.
+// curl is killed as soon as one arrives, so nothing lingers between calls.
+const WAIT_SECONDS = 280;
+export async function nextEvent(exec) {
+  const script = `exec 3< <(exec curl -sN --max-time ${WAIT_SECONDS} ${BASE}/api/events); pid=$!
+while IFS= read -r line <&3; do case "$line" in data:*) echo "\${line#data: }"; kill $pid 2>/dev/null; exit 0;; esac; done`;
+  const result = await exec("bash", ["-c", script], { timeout: (WAIT_SECONDS + 10) * 1000 });
+  const line = result.stdout.trim();
+  if (!line) {
+    if (result.code !== 0) throw new KataError(0, `Can't reach kata at ${BASE}`);
+    return null;
+  }
+  try {
+    return JSON.parse(line);
+  } catch {
+    return null;
+  }
+}
+
 export function repoRoot(repo) {
   return repo.canonical_path.replace(/\/\.jj\/repo$/, "");
 }

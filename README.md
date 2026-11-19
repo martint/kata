@@ -145,6 +145,28 @@ reports are in the *server's* filesystem namespace, so they don't
 match across a container bind-mount — `resolve_repo` maps a local
 commit id (e.g. the working copy's `@`) to the right slug.
 
+## Reviewing in Herdr
+
+[Herdr](https://herdr.dev) is a desktop app for terminals and coding
+agents. `herdr/kata/` is a Herdr mod that puts a review in a pane next
+to the agents working on it, so the browser isn't needed for a review
+round: a stacked, split diff with word and Java syntax highlights,
+commenting, replies and resolution, commits, patchsets, filters and
+search, talking to the same local `kata serve` as the web UI.
+
+Each review is a tab; an agent's primary review is a label on its
+terminal, and the review pane pulls its agents into its tab. Agents
+find their review with the mod's `kata-here` helper (Python 3), which
+the `kata-review` skill tells them to use inside Herdr.
+
+```sh
+herdr/dev.sh    # links herdr/kata into ~/.config/herdr-app/mods and reloads it on save
+herdr-app do tab.new --mod kata --props '{"key":"k1","repo":"<repo>","review":<n>}'
+```
+
+The design, what was verified about Herdr, and the roadmap are in
+[`docs/herdr.md`](docs/herdr.md).
+
 ## Architecture
 
 | Crate          | Purpose                                                       |

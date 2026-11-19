@@ -1757,3 +1757,25 @@ the integration narrow:
   fork head, so the fetch works, but kata's resolver matches
   against the base repo's remote URL only. Fork-specific
   handling would need its own pass.
+
+## 22. Herdr client
+
+A second client of the same server, for people who review inside the
+[Herdr](https://herdr.dev) desktop app next to their agents. It lives in
+`herdr/kata/` and talks to the HTTP API exactly as the web UI does, so
+everything it writes follows §6, §8 and §9 unchanged; it acts as the
+server's default author (§18a).
+
+- A review opens as a Herdr tab; the review pane mirrors §5, §6, §10,
+  §11 (cumulative compare only) and §12 where the layout allows.
+  Composing happens in a drawer under the diff rather than inline.
+- An agent's primary review is the `kata.review` label on its
+  terminal. The review pane moves agents with its review into its tab
+  and labels agents started there; agents read and set their review
+  with the mod's `kata-here` helper, as the `kata-review` skill
+  (§16) describes.
+- Out of scope for the Herdr client: annotations (§7), GitHub import
+  and publish (§21), creating reviews, the repository browser (§17a),
+  remote machines, and auth modes other than trust-client (§18a).
+
+Design, Herdr constraints and roadmap: `docs/herdr.md`.
