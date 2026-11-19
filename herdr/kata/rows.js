@@ -198,14 +198,14 @@ export function reviewRows(files, changes, threads, width, ui) {
     const collapsed = ui.collapsed.has(path);
     rows.push({ key: `file:${path}`, kind: "file", file: path, info: file, collapsed, height: HEADER_HEIGHT });
     if (collapsed) continue;
-    const thread = (t, note, inline) => {
+    const thread = (t, note, inline, under = null) => {
       const id = t.comment.comment_id;
       const resolved = resolution(t) !== "open";
       // A resolved thread stays a marker even while open in the drawer, so its history shows once.
       if (inline && resolved) {
-        rows.push({ key: `marker:${id}`, kind: "marker", file: path, thread: t, selected: ui.thread === id, height: MARKER_HEIGHT });
+        rows.push({ key: `marker:${id}`, kind: "marker", file: path, thread: t, selected: ui.thread === id, under, height: MARKER_HEIGHT });
       } else {
-        rows.push({ key: `thread:${id}`, kind: "thread", file: path, thread: t, note, resolved, height: cardHeight(t, width) });
+        rows.push({ key: `thread:${id}`, kind: "thread", file: path, thread: t, note, resolved, under, height: cardHeight(t, width) });
       }
     };
     // The comments above the diff fold to one line once every one of them is resolved.
@@ -266,7 +266,9 @@ export function reviewRows(files, changes, threads, width, ui) {
             key: `line:${at}:${lineIndex}`, kind: "line", origin: line.origin, file: path, base: line.base_line, tip: line.tip_line,
             pieces: line.pieces, selected: isSelected(side, side === "base" ? line.base_line : line.tip_line), height: LINE_HEIGHT,
           });
-          for (const t of [...threadsAt("tip", line.tip_line), ...(line.origin !== "added" ? threadsAt("base", line.base_line) : [])]) thread(t, null, true);
+          for (const t of [...threadsAt("tip", line.tip_line), ...(line.origin !== "added" ? threadsAt("base", line.base_line) : [])]) {
+            thread(t, null, true, { origin: line.origin });
+          }
         }
         continue;
       }
@@ -282,7 +284,8 @@ export function reviewRows(files, changes, threads, width, ui) {
         if (rightHalf) rightHalf.selected = isSelected("tip", rightHalf.number);
         rows.push({ key: `split:${at}:${k++}`, kind: "split", file: path, left: leftHalf, right: rightHalf, height: LINE_HEIGHT });
         const here = [...(rightHalf ? threadsAt("tip", rightHalf.number) : []), ...(leftHalf ? threadsAt("base", leftHalf.number) : [])];
-        for (const t of new Set(here)) thread(t, null, true);
+        const under = { split: true, left: leftHalf?.origin ?? null, right: rightHalf?.origin ?? null };
+        for (const t of new Set(here)) thread(t, null, true, under);
       };
       while (index < lines.length) {
         if (lines[index].origin === "context") {

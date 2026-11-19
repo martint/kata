@@ -1,4 +1,16 @@
-const BASE = "http://127.0.0.1:7878";
+import { appHome, readTextFile } from "herdr";
+
+const DEFAULT_URL = "http://127.0.0.1:7878";
+
+// The server's address: data/kata/config.json's "url" in the Herdr home, else kata serve's default.
+let configured = null;
+function base() {
+  configured ??= readTextFile(`${appHome()}/data/kata/config.json`)
+    .then((text) => (text ? JSON.parse(text).url : null) || DEFAULT_URL)
+    .then((url) => url.replace(/\/+$/, ""))
+    .catch(() => DEFAULT_URL);
+  return configured;
+}
 const enc = encodeURIComponent;
 const repoBase = (repo) => `/api/repos/${enc(repo)}`;
 
@@ -16,11 +28,12 @@ async function request(method, path, body) {
     options.headers = { "content-type": "application/json" };
     options.body = JSON.stringify(body);
   }
+  const url = await base();
   let response;
   try {
-    response = await fetch(`${BASE}${path}`, options);
+    response = await fetch(`${url}${path}`, options);
   } catch (e) {
-    throw new KataError(0, `Can't reach kata at ${BASE}`);
+    throw new KataError(0, `Can't reach kata at ${url}`);
   }
   if (!response.ok) {
     let detail = `HTTP ${response.status}`;
@@ -42,11 +55,12 @@ const reviewBase = (repo, number) => `${repoBase(repo)}/reviews/${number}`;
 const sessionBase = (repo, number, session) => `${reviewBase(repo, number)}/sessions/${enc(session)}`;
 
 async function requestText(path) {
+  const url = await base();
   let response;
   try {
-    response = await fetch(`${BASE}${path}`);
+    response = await fetch(`${url}${path}`);
   } catch (e) {
-    throw new KataError(0, `Can't reach kata at ${BASE}`);
+    throw new KataError(0, `Can't reach kata at ${url}`);
   }
   if (!response.ok) throw new KataError(response.status, `HTTP ${response.status}`);
   return response.text();
@@ -82,12 +96,13 @@ export const kata = {
 // curl is killed as soon as one arrives, so nothing lingers between calls.
 const WAIT_SECONDS = 280;
 export async function nextEvent(exec) {
-  const script = `exec 3< <(exec curl -sN --max-time ${WAIT_SECONDS} ${BASE}/api/events); pid=$!
+  const url = await base();
+  const script = `exec 3< <(exec curl -sN --max-time ${WAIT_SECONDS} '${url}/api/events'); pid=$!
 while IFS= read -r line <&3; do case "$line" in data:*) echo "\${line#data: }"; kill $pid 2>/dev/null; exit 0;; esac; done`;
   const result = await exec("bash", ["-c", script], { timeout: (WAIT_SECONDS + 10) * 1000 });
   const line = result.stdout.trim();
   if (!line) {
-    if (result.code !== 0) throw new KataError(0, `Can't reach kata at ${BASE}`);
+    if (result.code !== 0) throw new KataError(0, `Can't reach kata at ${url}`);
     return null;
   }
   try {

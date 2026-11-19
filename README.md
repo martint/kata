@@ -159,10 +159,27 @@ terminal, and the review pane pulls its agents into its tab. Agents
 find their review with the mod's `kata-here` helper (Python 3), which
 the `kata-review` skill tells them to use inside Herdr.
 
+To install, run once from this checkout (Herdr picks it up on its next
+start, or right away if it's open):
+
 ```sh
-herdr/dev.sh    # links herdr/kata into ~/.config/herdr-app/mods and reloads it on save
+herdr/install.sh            # links the mod to this checkout; --copy copies it instead
+```
+
+You can then open a review in the space you're looking at with:
+
+```sh
 herdr-app do tab.new --mod kata --props '{"key":"k1","repo":"<repo>","review":<n>}'
 ```
+
+and open others from the pane's "Open review". Agents open reviews with
+`~/.config/herdr-app/mods/kata/bin/kata-here open <repo>/<n>` instead,
+which opens them in the agent's own space whatever you're looking at
+(`assign` also moves the agent there). It needs `kata serve`
+running (at `http://127.0.0.1:7878`, or the `url` in
+`~/.config/herdr-app/data/kata/config.json`), plus `bash` and `curl`
+for live refresh. `herdr/dev.sh` is for working on the mod: it links it
+and reloads it on every save.
 
 The design, what was verified about Herdr, and the roadmap are in
 [`docs/herdr.md`](docs/herdr.md).

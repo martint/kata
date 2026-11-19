@@ -45,3 +45,15 @@ export async function moveAgent(cx, address, space, tab) {
   const keep = await hc(["keep", address]);
   if (keep.code !== 0) throw new Error((keep.stderr || keep.stdout).trim() || `Couldn't keep ${address}`);
 }
+
+// Whether the person has text in the agent's prompt, so typing a note there would mix with it. Claude Code's input
+// box is the last "❯" line on screen (earlier ones are the transcript); its empty-state hint starts with 'Try "'.
+// Agents without that prompt read as empty.
+export async function promptHasText(address) {
+  const screen = await hc(["read", address, "--lines", "15"]);
+  if (screen.code !== 0) return false;
+  const lines = screen.stdout.split("\n").filter((line) => /^\s*❯/.test(line));
+  if (!lines.length) return false;
+  const text = lines[lines.length - 1].replace(/^\s*❯/, "").trim();
+  return Boolean(text) && !text.startsWith('Try "');
+}

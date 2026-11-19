@@ -1,9 +1,9 @@
 # Kata in Herdr — design
 
-Status: draft, not implemented. This describes the intended experience of
-reviewing with kata inside [Herdr](https://herdr.dev) and the mechanisms
-it relies on. Once it ships, the user-visible behaviour moves into
-`SPEC.md` as its own section and this file keeps only the rationale.
+Status: built (`herdr/kata/`). This describes the experience of reviewing
+with kata inside [Herdr](https://herdr.dev), the mechanisms it relies on,
+and what was verified about Herdr along the way. `SPEC.md` §22 summarizes
+the user-visible behaviour; §7 here lists what's built and what isn't.
 
 ## 1. Problem
 
@@ -61,8 +61,9 @@ Rules:
    (terminals, labels, tabs, panes) and to the person's clicks.
 
 Because a review is a tab, switching agents and switching reviews are
-the same action: selecting a1 in the agents list shows k1's tab; clicking
-k2's tab shows a3.
+the same action: selecting an agent in Herdr's agents list shows its
+review's tab, and selecting a review's tab shows the agents working on
+it.
 
 ## 3. Experience
 
@@ -105,8 +106,7 @@ On this review
   ● Claude Code   fixing the retry loop     [Unassign]
 Unassigned
   ● Claude Code   ⚠ No kata repo stargte    [Assign here]
-On other reviews
-  ● Claude Code   on kata-fork#3            [Move here]
+▸ On other reviews (1)
 ```
 
 - Clicking an agent shows it.
@@ -118,6 +118,8 @@ On other reviews
   is and isn't re-adopted. No label and `unassigned` both mean
   Unassigned.
 - An agent whose label doesn't resolve shows why (§4.6).
+- Agents on other reviews in the space fold to one line; opening it
+  lists them with **Move here**.
 
 Agents set their own label the same way, with `kata-here` (§4.5).
 
@@ -388,7 +390,9 @@ makes sense in a narrower native pane.
   have Edit and Delete, draft replies have Delete.
 - Header: Publish N and Discard (asks once more) for your draft
   session; "New patchset" when the branch has moved (the web UI's
-  Refresh); Reload re-fetches.
+  Refresh). There's no reload button: the pane follows the server's
+  events (§7.6), and reloads by itself when the server comes back
+  after being unreachable.
 
 Known gaps in what's built, fixed in later slices rather than bugs:
 comments on another commit of a stack aren't placed inline (slice 4);
@@ -451,6 +455,13 @@ review) aren't detected yet.
   resolve, won't fix, reopen, edit, delete). The menu is a popup copy
   of the mod that hands the pick back through shared state.
 - The comments toolbar wraps instead of clipping in a narrow pane.
+- Hovering a line shows a "+" in its gutter and tints it, as the web
+  UI's comment icon does. It's a hover style on an overlay over the
+  row, so Herdr draws it natively with no script work per mouse move.
+- Publishing types a note into every agent on the review ("I published
+  N new comments on repo#n; read them with get_review and address
+  them") with `hc send`, so they pick the comments up without being
+  asked. "Tell agents" next to Publish turns it off.
 
 ### 7.7 Planned
 

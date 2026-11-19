@@ -1,15 +1,21 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, v_virtual_list, VirtualListScrollHandle, TextareaState, TextView, InputState, Input } from "gpui-base";
-import { props, panes, focused, spaces, theme, settings, run, checking, knownAgents, exec } from "herdr";
+import { props, panes, focused, spaces, theme, settings, run, checking, knownAgents, exec, hc, shared, setShared, openOverlay, closeOverlay } from "herdr";
 import { kata, repoRoot, authorName, nextEvent } from "./api.js";
 import { readState, updateState } from "./state.js";
-import { reviewRows, threadsByFile, resolution, expandChange, CARD_INDENT } from "./rows.js";
+import { reviewRows, threadsByFile, resolution, expandChange, CARD_INDENT, LINE_HEIGHT } from "./rows.js";
 import { buildTree, orderedFiles, treeRows } from "./tree.js";
 import { composerDrawer, threadDrawer } from "./drawer.js";
-import { agentsInSpace, checkLabel, labelsByAgent, moveAgent, reviewKey, setLabel, UNASSIGNED } from "./agents.js";
-import { FLAG_COLORS, FLAG_LABELS, RESOLUTION_LABELS, STATUS_LETTERS, statusColor, button, chip } from "./ui.js";
+import { agentsInSpace, checkLabel, labelsByAgent, moveAgent, promptHasText, reviewKey, setLabel, UNASSIGNED } from "./agents.js";
+import { FLAG_COLORS, FLAG_LABELS, RESOLUTION_LABELS, STATUS_LETTERS, statusColor, button, chip, toggleSwitch, diffColors } from "./ui.js";
 
 const MOD = "kata";
+// Roughly one monospace character at the diff's 11px text, for how far the code can scroll sideways.
+const CHAR_WIDTH = 6.7;
+const MENU = "kata.menu";
+const MENU_CLOSED = "kata.menu-closed";
+// A click outside a popup closes it and still reaches the list; one landing this soon after is that click.
+const MENU_CLICK_GRACE_MS = 700;
 const SIDEBAR_WIDTH = 280;
 const DIFF_FETCHES = 6;
 const reviewLabel = (repo, number) => `${repo}#${number}`;
@@ -18,6 +24,18 @@ const sameReview = (a, b) => Boolean(a && b && a.repo === b.repo && a.review ===
 const livePanes = () => new Set(panes().map((p) => p.pane));
 const spaceOfTab = (tab) => spaces().find((s) => s.tabs.some((t) => t.id === tab)) ?? null;
 const mono = () => settings().font_family ?? "JetBrains Mono";
+const plural = (n, word, many = `${word}s`) => `${n} ${n === 1 ? word : many}`;
+
+// What a publish holds, for the note to agents: "2 new comments and 1 reply"; null when it's only resolutions.
+function publishedSummary(drafts) {
+  const comments = drafts?.comments?.length ?? 0;
+  const replies = (drafts?.responses ?? []).filter((r) => (r.body ?? "").trim()).length;
+  const parts = [];
+  if (comments) parts.push(plural(comments, "new comment"));
+  if (replies) parts.push(plural(replies, "reply", "replies"));
+  return parts.length ? parts.join(" and ") : null;
+}
+
 const piecesText = (list) => (list ?? []).map((p) => p.text).join("");
 // What a row says, for search.
 function rowText(row) {
@@ -51,6 +69,9 @@ const SYNTAX_COLORS = {
 export default class Kata extends View {
   init(_props, cx) {
     const given = props() ?? {};
+    // A right-click menu is a popup copy of this mod; it only lists the pane's actions and hands the pick back.
+    this.menu = given.menu ?? null;
+    if (this.menu) return;
     this.key = given.key ?? null;
     this.current = given.repo && given.review ? { repo: given.repo, review: Number(given.review) } : null;
     this.pane = null;
@@ -71,11 +92,14 @@ export default class Kata extends View {
     this.identifying = false;
     this.scroll = VirtualListScrollHandle.new();
     this.moving = new Set();
+    this.showOtherAgents = false;
+    this.tellAgents = true;
     this.adopting = new Set();
     this.openInSpace = null;
     this.reconciled = null;
     this.listening = 0;
     this.unified = false;
+    this.scrollX = 0;
     this.showSummary = true;
     this.patchset = null;
     this.compare = null;
@@ -99,6 +123,7 @@ export default class Kata extends View {
 
   resetReview() {
     this.view = null;
+    this.scrollX = 0;
     this.expanded = new Map();
     this.changes = new Map();
     this.files = [];
@@ -366,14 +391,22 @@ export default class Kata extends View {
       while (live()) {
         // Touching cx each pass ends this loop once a newer build of the mod replaces this copy.
         await new Promise((resolve) => cx.timer.after(1, () => resolve()));
+        if (failures > 0) {
+          // After the server was unreachable, reload once it answers: what changed meanwhile came without an event.
+          try {
+            await this.reloadView(cx);
+            failures = 0;
+          } catch {
+            failures += 1;
+            await new Promise((resolve) => cx.timer.after(Math.min(30000, 2000 * failures), () => resolve()));
+            continue;
+          }
+        }
         let event = null;
         try {
           event = await nextEvent(exec);
-          failures = 0;
         } catch {
-          failures += 1;
-          // The server is down: wait before asking again rather than spinning.
-          await new Promise((resolve) => cx.timer.after(Math.min(30000, 2000 * failures), () => resolve()));
+          failures = 1;
           continue;
         }
         if (!live() || !event || event.review_id !== reviewId) continue;
@@ -413,7 +446,7 @@ export default class Kata extends View {
     const target = this.current;
     cx.spawn(async (cx) => {
       try {
-        await work(target);
+        await work(target, cx);
         done?.();
         await this.reloadView(cx);
       } catch (e) {
@@ -438,7 +471,130 @@ export default class Kata extends View {
   }
 
   async close() {
+    if (this.menu) {
+      setShared(MENU_CLOSED, { pane: this.menu.pane, at: Date.now() });
+      return;
+    }
     this.listening += 1;
+  }
+
+  // ---- Right-click menu ----------------------------------------------------
+
+  menuItems(row) {
+    switch (row.kind) {
+      case "line":
+      case "split": {
+        const items = [];
+        if (this.writable()) items.push(["comment-line", "Comment on this line"], ["comment-file", "Comment on this file"]);
+        return [...items, ["top", "Top of file"], ["toggle-file", "Collapse file"]];
+      }
+      case "file": {
+        const info = this.files.find((f) => f.path === row.file);
+        const items = [["toggle-file", row.collapsed ? "Expand file" : "Collapse file"]];
+        if (info && (info.status === "modified" || info.status === "renamed")) items.push(["expand", this.isExpanded(row.file) ? "Collapse to diff" : "Show full file"]);
+        if (this.writable()) items.push(["comment-file", "Comment on this file"]);
+        return items;
+      }
+      case "thread":
+      case "marker": {
+        const { comment } = row.thread;
+        if (comment.draft) return [["open", "Open"], ["edit", "Edit draft"], ["delete", "Delete draft"]];
+        const open = resolution(row.thread) === "open";
+        return [["open", "Reply…"], ...(open ? [["resolve", "Resolve"], ["wontfix", "Won't fix"]] : [["reopen", "Reopen"]])];
+      }
+      default:
+        return [];
+    }
+  }
+
+  openMenu(key, event, cx) {
+    const row = this.rows[this.rowIndex.get(key)];
+    if (!row || !this.pane) return;
+    const items = this.menuItems(row);
+    if (!items.length) return;
+    // Which half of a split row was pressed, for "Comment on this line".
+    const half = (event?.local_position?.x ?? 0) < (event?.bounds?.width ?? this.diffWidth) / 2 ? "left" : "right";
+    openOverlay({ mod: MOD, kind: "popup", width: 220, height: items.length * 28 + 12, props: { menu: { pane: this.pane, key, half, items } } });
+    this.menuOpen = true;
+  }
+
+  // The popup writes its pick to shared state; the pane it was opened for acts on it once.
+  takeMenuPick(cx) {
+    const closed = shared(MENU_CLOSED);
+    if (this.menuOpen && closed?.pane === this.pane && closed.at !== this.menuClosedAt) {
+      this.menuClosedAt = closed.at;
+      // Escape or a pick closed it; only a click arriving right now is the closing click.
+      if (Date.now() - closed.at >= MENU_CLICK_GRACE_MS) this.menuOpen = false;
+    }
+    const pick = shared(MENU);
+    if (!pick || pick.pane !== this.pane || pick.id === this.menuPick) return;
+    this.menuPick = pick.id;
+    this.menuOpen = false;
+    cx.spawn(async (cx) => {
+      this.runMenu(pick, cx);
+      cx.notify();
+    });
+  }
+
+  runMenu({ action, key, half }, cx) {
+    const row = this.rows[this.rowIndex.get(key)];
+    if (!row) return;
+    const thread = row.thread;
+    switch (action) {
+      case "comment-line":
+        if (row.kind === "split") {
+          this.pressX = half === "left" ? 0 : this.diffWidth;
+          this.clickSplit(row, cx);
+        } else {
+          this.clickUnified(row, cx);
+        }
+        break;
+      case "comment-file":
+        this.openComposer({ kind: "file", file: row.file }, cx);
+        break;
+      case "top":
+        this.jumpToFile(row.file, cx);
+        break;
+      case "toggle-file":
+        this.toggleFile(row.file, cx);
+        break;
+      case "expand": {
+        const info = this.files.find((f) => f.path === row.file);
+        if (info) this.toggleExpand(info, cx);
+        break;
+      }
+      case "open":
+        this.openThread(thread, cx);
+        break;
+      case "edit":
+        this.editDraft(thread.comment, cx);
+        break;
+      case "delete":
+        this.deleteDraft(thread.comment, cx);
+        break;
+      case "resolve":
+        this.respond(thread.comment.comment_id, "resolve", cx);
+        break;
+      case "wontfix":
+        this.respond(thread.comment.comment_id, "wont-fix", cx);
+        break;
+      case "reopen":
+        this.respond(thread.comment.comment_id, "unresolve", cx);
+        break;
+    }
+  }
+
+  renderMenu() {
+    const t = theme();
+    const { pane, key, half, items } = this.menu;
+    return v_flex().id("kata-menu").size_full().p(6).gap(2).bg(t.popover).text_color(t.foreground).text_size(13)
+      .children(items.map(([action, label]) => div().id(`menu-${action}`).h(26).flex_none().px(10).flex().items_center().rounded(6).cursor_pointer()
+        .hover((s) => s.bg(t.hover))
+        .on_click(() => {
+          setShared(MENU, { pane, key, half, action, id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}` });
+          closeOverlay(props().overlay);
+        })
+        .child(label)));
   }
 
   // ---- Agents --------------------------------------------------------------
@@ -515,14 +671,22 @@ export default class Kata extends View {
     });
   }
 
+  // Beside the review, in the review's repo: a mod pane has no folder, so a plain split would start in ~.
   newAgent(cx) {
-    if (!this.pane) return;
+    if (!this.pane || !this.current) return;
     const pane = this.pane;
+    const target = this.current;
     cx.spawn(async (cx) => {
       try {
         const agent = (await knownAgents()).find((a) => a.installed);
-        if (!agent) this.notice = "No installed agent to start";
-        else run("pane.split", { pane, direction: "right", argv: agent.run });
+        if (!agent) {
+          this.notice = "No installed agent to start";
+        } else {
+          this.repos ??= await kata.repos();
+          const repo = this.repos.find((r) => r.name === target.repo);
+          run("pane.focus", { pane });
+          run("terminal.open", { argv: agent.run, place: "right", ...(repo ? { folder: repoRoot(repo) } : {}) });
+        }
       } catch (e) {
         this.notice = e.message;
       }
@@ -667,7 +831,17 @@ export default class Kata extends View {
 
   // ---- Clicks in the diff --------------------------------------------------
 
+  // The click that closes the right-click menu only closes it.
+  closingMenu() {
+    const closed = shared(MENU_CLOSED);
+    const recent = closed?.pane === this.pane && Date.now() - closed.at < MENU_CLICK_GRACE_MS;
+    const open = this.menuOpen;
+    this.menuOpen = false;
+    return open || recent;
+  }
+
   clickRow(key, cx) {
+    if (this.closingMenu()) return;
     const row = this.rows[this.rowIndex.get(key)];
     if (!row) return;
     if (row.kind === "file") this.toggleFile(row.file, cx);
@@ -848,58 +1022,69 @@ export default class Kata extends View {
   publish(cx) {
     const session = this.view?.drafts?.session;
     if (!session) return;
-    this.mutate(cx, (target) => kata.publishSession(target.repo, target.review, session.session_id), () => {
+    const published = publishedSummary(this.view.drafts);
+    // Resolutions alone give an agent nothing to address, so they don't interrupt it.
+    const tell = this.tellAgents && published ? this.agentsOnReview() : [];
+    this.told = null;
+    this.mutate(cx, async (target, cx) => {
+      await kata.publishSession(target.repo, target.review, session.session_id);
+      await this.tellAgentsAbout(target, published, tell, cx);
+    }, () => {
       this.confirmDiscard = false;
     });
   }
 
-  discard(cx) {
-    const session = this.view?.drafts?.session;
-    if (!session) return;
-    if (!this.confirmDiscard) {
-      this.confirmDiscard = true;
-      cx.notify();
-      return;
-    }
-    this.mutate(cx, (target) => kata.discardSession(target.repo, target.review, session.session_id), () => {
-      this.confirmDiscard = false;
-      this.composer = null;
-      this.reply = null;
-      this.closeDrawerState();
-    });
+  agentsOnReview() {
+    if (!this.space || !this.current) return [];
+    const labels = labelsByAgent();
+    const mine = reviewKey(this.current.repo, this.current.review);
+    return agentsInSpace(this.space).filter((a) => labels.get(a.address) === mine).map((a) => a.address);
   }
 
-  toggleArchive(cx) {
-    const archived = Boolean(this.view?.manifest.archived_at);
-    this.mutate(cx, (target) => (archived ? kata.unarchiveReview(target.repo, target.review) : kata.archiveReview(target.repo, target.review)));
-  }
-
-  // Deleting removes the review and its comments for everyone, so it asks once more, then empties the pane.
-  deleteReview(cx) {
-    if (!this.confirmDelete) {
-      this.confirmDelete = true;
-      cx.notify();
-      return;
+  // Publishing types a short note into each agent on this review, so it picks the new comments up without being asked.
+  // An agent whose prompt has the person's text in it is told once that prompt is empty, checked every few seconds.
+  async tellAgentsAbout(target, what, addresses, cx) {
+    if (!addresses.length) return;
+    const text = `[kata] I published ${what} on ${target.repo}#${target.review}. Read them with the kata MCP (get_review, repo "${target.repo}", review ${target.review}) and address them.`;
+    const failed = [];
+    let told = 0;
+    const send = async (address) => {
+      const result = await hc(["send", address, text]);
+      if (result.code !== 0) failed.push(address);
+      else told += 1;
+    };
+    const waiting = [];
+    for (const address of addresses) {
+      if (await promptHasText(address)) waiting.push(address);
+      else await send(address);
     }
-    const target = this.current;
-    this.busy = true;
-    cx.notify();
+    const report = () => {
+      this.told = told ? `Told ${told} agent${told === 1 ? "" : "s"}` : null;
+      const parts = [];
+      if (waiting.length) parts.push(`Will tell ${waiting.join(", ")} once its prompt is empty`);
+      if (failed.length) parts.push(`Couldn't tell ${failed.join(", ")}`);
+      this.notice = parts.length ? parts.join(" · ") : null;
+    };
+    report();
+    if (!waiting.length) return;
     cx.spawn(async (cx) => {
-      try {
-        await kata.deleteReview(target.repo, target.review);
-        this.busy = false;
-        if (sameReview(this.current, target)) this.closeReview(cx);
-      } catch (e) {
-        this.busy = false;
-        this.confirmDelete = false;
-        this.notice = e.status === 403 ? "Only the review's creator or an admin can delete it" : e.message;
+      const deadline = Date.now() + 10 * 60 * 1000;
+      while (waiting.length && Date.now() < deadline) {
+        await new Promise((resolve) => cx.timer.after(3000, () => resolve()));
+        for (const address of [...waiting]) {
+          if (await promptHasText(address)) continue;
+          waiting.splice(waiting.indexOf(address), 1);
+          await send(address);
+        }
+        report();
+        cx.notify();
       }
-      cx.notify();
+      if (waiting.length) {
+        failed.push(...waiting.splice(0));
+        report();
+        cx.notify();
+      }
     });
-  }
-
-  newPatchset(cx) {
-    this.mutate(cx, (target) => kata.refreshReview(target.repo, target.review));
   }
 
   // ---- Picker --------------------------------------------------------------
@@ -1014,6 +1199,8 @@ export default class Kata extends View {
         mode: this.viewMode, shows: (thread) => this.shows(thread),
       });
       this.rowIndex = new Map(this.rows.map((row, i) => [row.key, i]));
+      this.widestLine = this.rows.reduce((most, row) => Math.max(most, piecesText(row.pieces).length,
+        piecesText(row.left?.pieces).length, piecesText(row.right?.pieces).length), 0);
       const current = this.matches[this.matchAt]?.key;
       const matched = new Set(this.matches.map((m) => m.key));
       for (const row of this.rows) {
@@ -1024,6 +1211,8 @@ export default class Kata extends View {
   }
 
   render(cx) {
+    if (this.menu) return this.renderMenu();
+    this.takeMenuPick(cx);
     if (!checking() && !this.pane && !this.identifying && this.identifyAttempts < 5) this.identify(cx);
     this.maybeReconcile(cx);
     const t = theme();
@@ -1139,11 +1328,15 @@ export default class Kata extends View {
       .when(this.busy, (e) => e.child(chip("Saving…", null, t)))
       .when(Boolean(this.notice), (e) => e.child(div().max_w(260).truncate().text_size(11).text_color(t.ansi1).child(this.notice)))
       .when(view.is_stale, (e) => e.child(button("review-patchset", "New patchset", (cx) => this.newPatchset(cx), t)))
-      .child(button("review-reload", "Reload", (cx) => this.mutate(cx, async () => {}), t))
       .child(button("review-open", "Open review", (cx) => this.openPicker("other", cx), t))
       .child(button("review-close", "Close review", (cx) => this.closeReview(cx), t))
+      .when(Boolean(this.told) && drafts === 0, (e) => e.child(div().flex_none().text_size(11).text_color(t.dim).child(this.told)))
       .when(drafts > 0, (e) => e
         .child(button("review-discard", this.confirmDiscard ? `Discard ${drafts}?` : "Discard", (cx) => this.discard(cx), t))
+        .child(toggleSwitch("review-tell", "Tell agents", this.tellAgents, (cx) => {
+          this.tellAgents = !this.tellAgents;
+          cx.notify();
+        }, t))
         .child(button("review-publish", `Publish ${drafts}`, (cx) => this.publish(cx), t, true)));
     const summary = this.renderSummary(m, t);
     const content = view.diff_unavailable
@@ -1270,7 +1463,15 @@ export default class Kata extends View {
       ...group("On this review", here.map((a) => row(a, a.tab === this.tab ? null : "moving here…",
         button(`unassign-${a.address}`, "Unassign", (cx) => this.assign(a, UNASSIGNED, cx), t)))),
       ...group("Unassigned", unassigned.map(([a, error]) => row(a, null, button(`assign-${a.address}`, "Assign here", (cx) => this.assign(a, mine, cx), t), error))),
-      ...group("On other reviews", elsewhere.map(([a, note]) => row(a, note, button(`move-${a.address}`, "Move here", (cx) => this.assign(a, mine, cx), t)))),
+      ...(elsewhere.length ? [
+        div().id("agents-others").px(10).pt(4).text_size(10).text_color(t.dim).cursor_pointer().hover((s) => s.text_color(t.foreground))
+          .on_click((_e, cx) => {
+            this.showOtherAgents = !this.showOtherAgents;
+            cx.notify();
+          })
+          .child(`${this.showOtherAgents ? "▾" : "▸"} On other reviews (${elsewhere.length})`),
+        ...(this.showOtherAgents ? elsewhere.map(([a, note]) => row(a, note, button(`move-${a.address}`, "Move here", (cx) => this.assign(a, mine, cx), t))) : []),
+      ] : []),
     ];
     return v_flex().flex_none().max_h(200).border_b(1).border_color(t.border)
       .child(h_flex().h(34).flex_none().px(10).gap(6).items_center().border_b(1).border_color(t.border)
@@ -1348,7 +1549,7 @@ export default class Kata extends View {
     const statuses = [["draft", "Draft", t.ansi3], ["open", "Open", t.ansi4], ["resolved", "Resolved", t.ansi2]];
     const flags = [["must-do", "Must do", t.ansi1], ["suggestion", "Suggestion", t.ansi4], ["question", "Question", t.ansi5]];
     const modes = [["both", "Both"], ["diff", "Diff"], ["comments", "Comments"]];
-    return h_flex().h(34).flex_none().px(12).gap(6).items_center().border_b(1).border_color(t.border).text_size(11)
+    return h_flex().min_h(34).flex_none().flex_wrap().px(12).py(4).gap(6).items_center().border_b(1).border_color(t.border).text_size(11)
       .child(div().flex_none().text_color(t.dim).child("Comments"))
       .child(button("comment-prev", "‹", (cx) => this.stepComment(-1, cx), t))
       .child(div().flex_none().text_color(t.dim).child(String(total)))
@@ -1357,7 +1558,7 @@ export default class Kata extends View {
       .children(statuses.map(([key, label, color]) => this.toggleChip(`status-${key}`, label, this.statuses.has(key), color, (cx) => this.toggleIn(this.statuses, key, cx), t)))
       .child(div().w(10).flex_none())
       .children(flags.map(([key, label, color]) => this.toggleChip(`flag-filter-${key}`, label, this.flags.has(key), color, (cx) => this.toggleIn(this.flags, key, cx), t)))
-      .child(div().flex_1())
+      .child(div().flex_1().min_w(8))
       .child(this.toggleChip("search-toggle", "Search", this.searchOpen, t.accent, (cx) => this.openSearch(cx), t))
       .children(modes.map(([key, label]) => this.toggleChip(`mode-${key}`, label, this.viewMode === key, t.accent, (cx) => {
         this.viewMode = key;
@@ -1400,7 +1601,10 @@ export default class Kata extends View {
     const list = v_virtual_list("kata-diff", rows.length, rows.map((r) => r.height), (i) => rows[i].key, (range) => {
       this.visibleStart = range.start;
       return rows.slice(range.start, range.end).map((row) => this.safeRow(row, t));
-    }).track_scroll(this.scroll).on_item_click((key, cx) => this.clickRow(key, cx)).size_full();
+    }).track_scroll(this.scroll)
+      .on_item_click((key, cx) => this.clickRow(key, cx))
+      .on_item_secondary_click((key, event, cx) => this.openMenu(key, event, cx))
+      .size_full();
     return v_flex().flex_1().min_w(0).h_full()
       .child(this.renderToolbar(t))
       .when(this.searchOpen, (e) => e.child(this.renderSearch(t)))
@@ -1411,8 +1615,34 @@ export default class Kata extends View {
           this.shiftPressed = Boolean(event.modifiers?.shift);
           this.pressX = event.local_position?.x ?? 0;
         })
+        // Rows of a virtual list don't ask for a redraw when hover changes; redraw when the pointer crosses into
+        // another line's band, so the hover marker follows it. Only the visible rows rebuild.
+        .on_mouse_move((event, cx) => {
+          const band = `${Math.floor((event.local_position?.y ?? 0) / LINE_HEIGHT)}:${(event.local_position?.x ?? 0) < this.diffWidth / 2}`;
+          if (band !== this.hoverBand) {
+            this.hoverBand = band;
+            cx.notify();
+          }
+        })
         .on_size_change((size) => {
           this.diffWidth = size.width;
+        })
+        // The list only scrolls vertically: sideways wheel movement (a trackpad swipe, or shift+scroll) moves every
+        // line's code by one shared offset instead, leaving the line numbers in place.
+        .on_scroll_wheel((event, cx) => {
+          const dx = event.delta?.x ?? 0;
+          const dy = event.delta?.y ?? 0;
+          const by = Math.abs(dx) > Math.abs(dy) ? dx : event.modifiers?.shift ? dy : 0;
+          if (!by) return;
+          const split = this.rows.some((row) => row.kind === "split");
+          const visible = (split ? this.diffWidth / 2 : this.diffWidth) - 120;
+          const most = Math.max(0, (this.widestLine ?? 0) * CHAR_WIDTH - visible + 24);
+          const current = this.scrollX ?? 0;
+          const next = Math.min(most, Math.max(0, current - by));
+          if (Math.abs(next - current) >= 1) {
+            this.scrollX = next;
+            cx.notify();
+          }
         })
         .child(list)
         .child(Scrollbar.vertical("kata-diff").viewport_from_layout().absolute().inset_0()))
@@ -1464,7 +1694,8 @@ export default class Kata extends View {
   }
 
   pieces(list, origin, t) {
-    const changedBg = origin === "added" ? `${t.ansi2}55` : `${t.ansi1}55`;
+    const colors = diffColors(t);
+    const changedBg = origin === "added" ? colors.addWord : colors.removeWord;
     return list.map((piece) => div().flex_none().whitespace_nowrap().text_color(SYNTAX_COLORS[piece.kind]?.(t) ?? t.foreground)
       .when(piece.kind === "keyword", (e) => e.font_semibold())
       .when(piece.changed, (e) => e.bg(changedBg).rounded(2))
@@ -1475,28 +1706,71 @@ export default class Kata extends View {
     if (match === "current") return e.bg(`${t.ansi3}55`);
     if (match === "other") return e.bg(`${t.ansi3}22`);
     if (selected) return e.bg(`${t.accent}33`);
-    if (origin === "added") return e.bg(`${t.ansi2}18`);
-    if (origin === "removed") return e.bg(`${t.ansi1}18`);
+    if (origin === "added") return e.bg(diffColors(t).addRow);
+    if (origin === "removed") return e.bg(diffColors(t).removeRow);
     return e;
+  }
+
+  gutter(width, number, origin, t) {
+    return div().w(width).flex_none().h_full().flex().items_center().justify_end().pr(4).text_color(origin === "context" ? t.dim : t.muted)
+      .child(number == null ? "" : String(number));
+  }
+
+  // Behind a thread or marker under a line, the colors of that line, so the comment doesn't cut a gap in a block.
+  underlay(row, t) {
+    const under = row.under;
+    if (!under) return null;
+    const tint = (origin, empty) => {
+      const box = div().flex_1().h_full();
+      if (empty) return box.bg(t.raised);
+      return this.lineTint(box, origin, false, t);
+    };
+    if (under.split) {
+      return h_flex().absolute().inset_0()
+        .child(tint(under.left, under.left == null))
+        .child(tint(under.right, under.right == null));
+    }
+    return h_flex().absolute().inset_0().child(tint(under.origin, false));
+  }
+
+  // An overlay over the whole row whose hover style shows a "+" in the left gutter and tints the row, as the
+  // web UI's comment icon does. Hover is a style, so it costs no handler and no script work as the pointer moves.
+  // Hover may only restyle the box, not its text, so the whole overlay (tint and "+") fades in with opacity.
+  hoverMark(row, t) {
+    if (!this.writable()) return null;
+    return h_flex().absolute().inset_0().items_center().pl(2).bg(`${t.accent}14`).text_color(t.accent).text_size(12).font_semibold()
+      .opacity(0)
+      .hover((s) => s.opacity(1))
+      .child("+");
   }
 
   lineRow(row, t) {
     const marker = row.origin === "added" ? "+" : row.origin === "removed" ? "−" : " ";
-    return this.lineTint(h_flex().w_full().h(row.height).flex_none().gap(8).overflow_hidden(), row.origin, row.selected, t, row.match)
-      .child(div().w(34).flex_none().text_right().text_color(t.dim).child(row.base == null ? "" : String(row.base)))
-      .child(div().w(34).flex_none().text_right().text_color(t.dim).child(row.tip == null ? "" : String(row.tip)))
-      .child(div().w(10).flex_none().text_color(row.origin === "added" ? t.ansi2 : t.ansi1).child(marker))
-      .child(h_flex().flex_1().min_w(0).overflow_hidden().children(this.pieces(row.pieces, row.origin, t)));
+    const mark = this.hoverMark(row, t);
+    return this.lineTint(h_flex().relative().w_full().h(row.height).flex_none().gap(8).pl(14).overflow_hidden(), row.origin, row.selected, t, row.match)
+      .child(this.gutter(38, row.base, row.origin, t))
+      .child(this.gutter(38, row.tip, row.origin, t))
+      .child(div().w(10).flex_none().text_color(row.origin === "added" ? diffColors(t).add : diffColors(t).remove).child(marker))
+      .child(this.code(row.pieces, row.origin, t))
+      .when(Boolean(mark), (e) => e.child(mark));
+  }
+
+  // A line's code, shifted left by the diff's sideways scroll.
+  code(pieces, origin, t) {
+    return div().flex_1().min_w(0).h_full().overflow_hidden().relative()
+      .child(h_flex().absolute().top(0).bottom(0).left(-(this.scrollX ?? 0)).items_center().children(this.pieces(pieces, origin, t)));
   }
 
   splitHalf(half, t, divider, match) {
-    const box = h_flex().flex_1().min_w(0).h_full().gap(6).overflow_hidden().when(divider, (e) => e.border_l(1).border_color(t.border));
+    const box = h_flex().relative().flex_1().min_w(0).h_full().gap(6).pl(14).overflow_hidden().when(divider, (e) => e.border_l(1).border_color(t.border));
     if (!half) return box.bg(`${t.raised}`);
     const marker = half.origin === "added" ? "+" : half.origin === "removed" ? "−" : " ";
+    const mark = this.hoverMark(half, t);
     return this.lineTint(box, half.origin, half.selected, t, match)
-      .child(div().w(38).flex_none().text_right().text_color(t.dim).child(half.number == null ? "" : String(half.number)))
-      .child(div().w(10).flex_none().text_color(half.origin === "added" ? t.ansi2 : t.ansi1).child(marker))
-      .child(h_flex().flex_1().min_w(0).overflow_hidden().children(this.pieces(half.pieces, half.origin, t)));
+      .child(this.gutter(42, half.number, half.origin, t))
+      .child(div().w(10).flex_none().text_color(half.origin === "added" ? diffColors(t).add : diffColors(t).remove).child(marker))
+      .child(this.code(half.pieces, half.origin, t))
+      .when(Boolean(mark), (e) => e.child(mark));
   }
 
   splitRow(row, t) {
@@ -1518,7 +1792,9 @@ export default class Kata extends View {
         .when(first && Boolean(row.note), (e) => e.child(div().text_color(t.dim).text_size(11).child(row.note)))
         .when(first && state !== "open", (e) => e.child(chip(state === "resolved" ? "Resolved" : "Won't fix", t.ansi2, t))))
       .when(Boolean(item.body), (e) => e.child(div().text_size(12).child(item.body)));
-    return div().w_full().h(row.height).flex_none().pl(CARD_INDENT).pr(12).py(3)
+    const under = this.underlay(row, t);
+    return div().relative().w_full().h(row.height).flex_none().pl(CARD_INDENT).pr(12).py(3)
+      .when(Boolean(under), (e) => e.child(under))
       .child(v_flex().size_full().overflow_hidden().gap(4).px(8).py(6).rounded(6).bg(t.surface).border_1()
         .border_color(selected ? t.accent : row.match ? t.ansi3 : t.border).font_family(settings().ui_font ?? "Geist").text_size(12)
         .child(entry(comment, true))
@@ -1528,11 +1804,14 @@ export default class Kata extends View {
   threadMarker(row, t) {
     const { comment, responses } = row.thread;
     const first = (comment.body ?? "").split("\n")[0];
-    return h_flex().w_full().h(row.height).flex_none().pl(CARD_INDENT).pr(12).gap(6).items_center().text_size(10)
-      .text_color(row.selected ? t.accent : t.dim).when(row.selected, (e) => e.bg(`${t.accent}22`))
+    const under = this.underlay(row, t);
+    return h_flex().relative().w_full().h(row.height).flex_none().pl(CARD_INDENT).pr(12).gap(6).items_center().text_size(10)
+      .text_color(row.selected ? t.accent : t.dim)
       .font_family(settings().ui_font ?? "Geist")
-      .child(div().flex_none().child(row.selected ? "▾" : "▸"))
-      .child(div().flex_1().min_w(0).truncate()
+      .when(Boolean(under), (e) => e.child(under))
+      .when(row.selected, (e) => e.child(div().absolute().inset_0().bg(`${t.accent}22`)))
+      .child(div().relative().flex_none().child(row.selected ? "▾" : "▸"))
+      .child(div().relative().flex_1().min_w(0).truncate()
         .child(`${resolution(row.thread) === "resolved" ? "Resolved" : "Won't fix"} · ${authorName(comment.author)}: ${first}${responses.length ? ` (${responses.length})` : ""}`));
   }
 }
