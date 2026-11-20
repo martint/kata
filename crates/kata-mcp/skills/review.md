@@ -182,6 +182,30 @@ relevant — clean it up:
 Both are creator-only. Both are idempotent (calling twice doesn't
 error).
 
+## Inside Herdr
+
+Skip this section unless `$HC_TERMINAL_ID` is set and
+`~/.config/herdr-app/mods/kata/bin/kata-here` exists: then you're an
+agent in a Herdr window with the kata mod, where each review the person
+has open is a tab, and the agents working on a review sit beside it.
+
+- **Start of a task:** run `kata-here`. It prints your `primary`
+  review (`<repo>/<number>`, or null) and `open`, the reviews open in
+  your space. Work on the primary one; the others are context you may
+  read with `get_review` but shouldn't act on unasked.
+- **After `create_review`:**
+  - With no primary review, run `kata-here assign <repo>/<number>`. It
+    opens the review's tab, makes it your primary review and moves you
+    into that tab. The person's view follows you only if they were
+    looking at your tab.
+  - With a primary review already, run `kata-here open
+    <repo>/<number>`, then ask the person in your reply whether to make
+    it your primary review, and run `kata-here assign …` only if they
+    agree.
+- Use only `<repo>/<number>` values that `list_reviews`,
+  `create_review` or `kata-here` gave you. Never select tabs or focus
+  panes yourself: what the person is looking at is theirs.
+
 ## Tips
 
 - Read the entire diff before writing any comments. Comments stamped on
